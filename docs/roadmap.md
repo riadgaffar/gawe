@@ -35,7 +35,9 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 - **Whether internal email, low-risk CRM records and low-level access grants should need
   approval.** Policy allows all three without a person, so a fooled model could cause them. The
   first run never fooled the model, so this stayed theoretical; it is a policy decision, not an
-  engine change.
+  engine change. Decide the risk downgrade first: a fooled Reader can return "low risk", an
+  allowed value, and policy writes it with no approval. Runs where the model resisted do not
+  close that gap (raised independently by two readers).
 - **Record which layer stopped each attack.** The injection report counts a fooled model and an
   attacker step that ran, but not whether the Reader never emitted the value, plan validation
   rejected it, policy denied it, or it waited for an approval. With a model that gets fooled,
@@ -62,14 +64,17 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   needs a few hundred attacks that genuinely differ. Model spend is small (about $0.015 a run);
   writing them is the cost. If they are generated, check that they test something different
   rather than varying 25 templates.
-- **A bigger contract sample before comparing setups.** With 12% of answers changing between
-  repeats, telling two setups apart by 5 points needs about 330 items per setup; the current
-  sample has 153 (51 contracts, 3 clause types), enough only for differences of about 7 points or
-  more. Clause checks from one contract are not independent either, so count contracts as well as
-  items. CUAD has 495 usable contracts, at about $0.04 per read.
-- **A Haiku 5.5 comparison run** on the same attacks, to see whether a cheaper model is good enough
-  for the Reader or Planner. Run it on the bigger contract sample above; on the current 153 items
-  only a large difference would show.
+- **A bigger contract sample, if paired comparison is not enough.** Treated as independent
+  samples, two setups 5 points apart need about 330 items each to tell apart (12% of answers
+  change between repeats); the current sample has 153 (51 contracts, 3 clause types), enough for
+  about 7 points. But comparing two setups on the same contracts is paired: differences between
+  contracts cancel and the remaining noise is the 12% already measured, so 153 items compared per
+  (contract, clause type), with the interval from resampling whole contracts as the existing
+  intervals already do, may be enough. Grow the sample only if that interval is too wide. CUAD
+  has 495 usable contracts, at about $0.04 per read.
+- **A Haiku 5.5 comparison run** on the same attacks and contracts, to see whether a cheaper model
+  is good enough for the Reader or Planner. Compare it with Sonnet paired, per (contract, clause
+  type), and take the interval by resampling the 51 contracts.
 - **Publishing a report in `docs/`** once one has been read and accepted (design decision 8).
 
 ## Decisions in force
