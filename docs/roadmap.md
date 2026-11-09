@@ -57,8 +57,19 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   kind back to manual. Today every approval covers exactly one action.
 - **A next-day review job.** Re-check the previous day's automatic actions against the written
   rule, using the audit trail.
-- **A Haiku 5.5 comparison run** (about $0.80) on the same sample and attacks, to see whether a
-  cheaper model is good enough for the Reader or Planner.
+- **More distinct attacks, not more repeats.** The 125 injection runs are 25 attacks repeated 5
+  times, so the honest sample is closer to 25 (a 95% upper bound of about 13%). Bringing that down
+  needs a few hundred attacks that genuinely differ. Model spend is small (about $0.015 a run);
+  writing them is the cost. If they are generated, check that they test something different
+  rather than varying 25 templates.
+- **A bigger contract sample before comparing setups.** With 12% of answers changing between
+  repeats, telling two setups apart by 5 points needs about 330 items per setup; the current
+  sample has 153 (51 contracts, 3 clause types), enough only for differences of about 7 points or
+  more. Clause checks from one contract are not independent either, so count contracts as well as
+  items. CUAD has 495 usable contracts, at about $0.04 per read.
+- **A Haiku 5.5 comparison run** on the same attacks, to see whether a cheaper model is good enough
+  for the Reader or Planner. Run it on the bigger contract sample above; on the current 153 items
+  only a large difference would show.
 - **Publishing a report in `docs/`** once one has been read and accepted (design decision 8).
 
 ## Decisions in force
