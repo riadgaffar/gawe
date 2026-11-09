@@ -1,0 +1,7 @@
+SOFTWARE LICENSE AGREEMENT between BetaSoft Corp. and Globex Holdings (synthetic test text).
+
+1. Grant. BetaSoft grants Globex a non-exclusive license to use the Software.
+
+2. Ownership of developments. All improvements and work product created by Globex under this Agreement are hereby assigned to BetaSoft, together with all intellectual property rights in them.
+
+3. Liability cap. Each party's total liability is limited to the fees paid in the twelve months before the claim.

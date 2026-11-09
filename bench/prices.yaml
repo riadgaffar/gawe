@@ -1,0 +1,12 @@
+# USD per million tokens, Claude API first-party rates. Re-check against the source page before
+# every paid run and update `checked_on`; the row used is copied into each run's manifest.
+# A model missing here cannot be benchmarked: the harness refuses to guess a price.
+checked_on: 2026-10-29
+source: https://platform.claude.com/docs/en/about-claude/pricing
+models:
+  claude-sonnet-5-5:
+    input: "2.00"
+    output: "10.00"
+  claude-opus-5-5:
+    input: "4.00"
+    output: "20.00"

@@ -1,0 +1,49 @@
+# Contract Review policy. Anything not allowed here is denied (default-deny).
+# The strictest matching outcome wins: deny > needs_approval > allow.
+rules:
+  - id: read-tools-allowed
+    effect: allow
+    when: {side_effect_class: read}
+
+  - id: crm-assessment-allowed
+    effect: allow
+    when: {tool: crm.write_assessment}
+
+  - id: email-baseline-allowed
+    effect: allow
+    when: {tool: email.send}
+
+  - id: external-email-needs-legal
+    effect: needs_approval
+    approver_role: legal_reviewer
+    reason: Email to an external recipient needs legal review
+    when:
+      tool: email.send
+      args:
+        to: {domain_not_in: $tenant.internal_domains}
+
+  - id: blocked-domain-email-denied
+    effect: deny
+    reason: Never email a blocked domain from this workflow
+    when:
+      tool: email.send
+      args:
+        to: {domain_in: $tenant.blocked_domains}
+
+  - id: signature-standard-needs-legal
+    effect: needs_approval
+    approver_role: legal_reviewer
+    reason: Sending for signature needs legal review
+    when:
+      tool: esign.send_for_signature
+      args:
+        deal_value: {lte: 100000}
+
+  - id: signature-high-value-needs-finance
+    effect: needs_approval
+    approver_role: finance_approver
+    reason: Deals over 100,000 need finance approval
+    when:
+      tool: esign.send_for_signature
+      args:
+        deal_value: {gt: 100000}

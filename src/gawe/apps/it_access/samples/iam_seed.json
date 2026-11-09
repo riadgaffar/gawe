@@ -1,0 +1,8 @@
+{
+  "note": "Synthetic data. Names and addresses are invented.",
+  "users": [
+    {"email": "dana.ortiz@acme.example", "name": "Dana Ortiz", "department": "Finance", "manager": "lee.chen@acme.example"},
+    {"email": "sam.okafor@acme.example", "name": "Sam Okafor", "department": "Engineering", "manager": "lee.chen@acme.example"},
+    {"email": "lee.chen@acme.example", "name": "Lee Chen", "department": "Engineering", "manager": "ceo@acme.example"}
+  ]
+}

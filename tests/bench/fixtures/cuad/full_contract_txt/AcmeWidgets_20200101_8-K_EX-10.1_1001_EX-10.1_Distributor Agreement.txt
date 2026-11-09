@@ -1,0 +1,9 @@
+DISTRIBUTOR AGREEMENT between Acme Widgets Inc. and Northwind Retail LLC (synthetic test text).
+
+1. Exclusivity and non-competition. During the term the Distributor shall not sell, market or distribute any product that competes with the Products in the Territory.
+
+2. Liability. Nothing in this Agreement limits either party's liability for breach of Section 5 (Confidentiality); such liability is uncapped.
+
+3. Termination. Either party may terminate this Agreement for convenience on ninety days' written notice.
+
+4. Term. This Agreement renews for successive one-year terms unless either party gives notice.

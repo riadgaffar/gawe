@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${GAWE_DB_USER:-gawe}
+      POSTGRES_PASSWORD: ${GAWE_DB_PASSWORD:?set GAWE_DB_PASSWORD in .env}
+      POSTGRES_DB: ${GAWE_DB_NAME:-gawe}
+    ports:
+      - "5432:5432"
+    volumes:
+      - gawe_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${GAWE_DB_USER:-gawe}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  gawe_pg:

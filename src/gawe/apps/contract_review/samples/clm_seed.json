@@ -1,0 +1,29 @@
+{
+  "note": "Synthetic data. Every name, address and figure is invented; .example domains never resolve.",
+  "contracts": [
+    {
+      "contract_id": "C-1001",
+      "title": "Master Services Agreement - Northwind Logistics",
+      "counterparty": "Northwind Logistics Ltd",
+      "counterparty_contact": "counsel@northwind.example",
+      "deal_value": 45000,
+      "status": "in_review"
+    },
+    {
+      "contract_id": "C-1002",
+      "title": "Software Licence and Support - Globex Systems",
+      "counterparty": "Globex Systems Inc",
+      "counterparty_contact": "legal@globex.example",
+      "deal_value": 250000,
+      "status": "in_review"
+    },
+    {
+      "contract_id": "C-1003",
+      "title": "Statement of Work - Initech Partners",
+      "counterparty": "Initech Partners LLP",
+      "counterparty_contact": "contracts@initech.example",
+      "deal_value": 80000,
+      "status": "in_review"
+    }
+  ]
+}

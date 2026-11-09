@@ -1,0 +1,63 @@
+# GAWE threat model
+
+What GAWE protects, who might attack it, how each attack is stopped, and what is **not** stopped.
+Every control below names the test that proves it. `scripts/check_threat_model.py` fails if a
+named test does not exist, so this page cannot drift silently.
+
+## What is protected
+
+| Asset | Why it matters |
+|---|---|
+| The decision to run an action | A wrong "allow" sends an email, signs a contract or grants access |
+| Approvals | They are the human check on sensitive actions |
+| The audit log | The evidence that the above happened as recorded |
+| Uploaded documents and run data | Contracts and tickets are confidential |
+| API tokens, the policy signing key, the LLM API key | Each one unlocks something above |
+| External systems (mail, e-sign, CRM, IAM) | Where the real-world effect happens |
+
+## Trust boundaries
+
+1. **Document to Reader.** Documents are attacker-controlled text. The Reader has no tools and a closed output schema.
+2. **Reader to Planner.** Only structured findings cross; raw document text never does.
+3. **Planner to the rest.** A plan is untrusted input: it is validated, and each step is judged by the policy engine.
+4. **Policy to executor.** Only a signed decision for the exact action hash can run; the executor re-checks everything.
+5. **Browser to UI server to API.** The token lives in an httpOnly cookie on the UI server; the browser never holds it.
+6. **API to database.** The API connects as `gawe_app`, which cannot rewrite the audit log or change the schema.
+7. **Executor to connectors.** One idempotency key per action, so a retry cannot repeat an effect.
+
+## Who attacks
+
+An author of a document or ticket (prompt injection); a signed-in insider who wants to approve their own request or use a role they lack; a user from another tenant; a compromised or misbehaving model; someone holding the application's database credential; someone who steals a token.
+
+## Threats and controls
+
+| # | Threat | Control | Proof | Not covered |
+|---|---|---|---|---|
+| T1 | A document tells the agent to send data or approve itself | Quarantined Reader; Planner sees findings only; policy decides regardless of the plan | `tests/adversarial/test_injection_pipeline.py::test_document_text_never_reaches_the_planner`, `tests/adversarial/test_injection_pipeline.py::test_a_hijacked_reader_cannot_widen_its_channel`, `tests/adversarial/test_injection_pipeline.py::test_a_hijacked_planner_gets_no_authority_from_the_validator_or_policy`, `tests/adversarial/test_governance_flow.py::test_injection_style_recipients_never_auto_send` | Reader's free-text summary can carry attacker words into a CRM note; a person reads it |
+| T2 | Fake boundary markers or hidden characters in the document | Fence the data, strip control and invisible characters first | `tests/adversarial/test_injection_pipeline.py::test_the_documents_fake_boundary_cannot_close_the_fence`, `tests/adversarial/test_injection_pipeline.py::test_hidden_characters_in_the_document_are_removed_before_reading` | |
+| T3 | A model invents tools, loops or recipients | Plan validator; tool registry; recipient rules in policy | `tests/adversarial/test_injection_pipeline.py::test_a_planner_that_invents_tools_or_loops_is_stopped_by_validation`, `tests/adversarial/test_governance_flow.py::test_unregistered_tool_is_refused_even_with_a_valid_decision`, `tests/adversarial/test_injection_pipeline.py::test_smuggled_recipients_never_get_automatic_approval` | |
+| T4 | A forged, replayed or reused policy decision | HMAC-signed decision bound to step and action hash; executor verifies | `tests/adversarial/test_governance_flow.py::test_forged_outcome_is_refused`, `tests/adversarial/test_governance_flow.py::test_decision_signed_with_another_key_is_refused`, `tests/adversarial/test_governance_flow.py::test_decision_for_another_step_is_refused`, `tests/adversarial/test_governance_flow.py::test_old_decision_cannot_be_replayed_for_a_new_action`, `tests/adversarial/test_governance_flow.py::test_denied_action_never_runs_even_with_valid_signature` | Theft of the signing key defeats this; it lives in the environment, rotate by redeploying |
+| T5 | Approval abuse: self-approval, wrong role, wrong hash, expired, changed arguments | Approval bound to the action hash; separation of duties; role check; expiry | `tests/adversarial/test_governance_flow.py::test_self_approval_cannot_authorize_execution`, `tests/adversarial/test_governance_flow.py::test_wrong_role_cannot_approve`, `tests/adversarial/test_governance_flow.py::test_approver_who_saw_a_different_action_cannot_approve`, `tests/adversarial/test_governance_flow.py::test_expired_approval_cannot_be_decided_or_used`, `tests/adversarial/test_governance_flow.py::test_args_changed_after_approval_are_caught_by_stored_hash_check`, `tests/adversarial/test_governance_flow.py::test_approval_for_one_action_does_not_cover_a_modified_action` | Two colluding people can still approve each other's requests; that is a policy choice |
+| T6 | An approval outlives its run | Open approvals are closed (rejected by the system) when a run ends | `tests/unit/test_approvals.py::test_a_closed_approval_cannot_be_approved_later`, `tests/unit/test_orchestrator.py::test_cancel_closes_the_open_approval_so_it_cannot_be_approved_later`, `tests/adversarial/test_api_boundaries.py::test_a_cancelled_run_leaves_no_approval_that_can_still_be_approved` | |
+| T7 | An action runs twice after a crash or retry | Compare-and-set claim, idempotency key, resume with lease | `tests/adversarial/test_governance_flow.py::test_crash_and_resume_never_duplicates_the_external_effect`, `tests/adversarial/test_governance_flow.py::test_approved_external_email_runs_exactly_once`, `tests/unit/test_recovery.py::test_a_run_left_mid_execution_is_finished_without_a_second_effect` | Real connectors must deduplicate on the key; mock ones do |
+| T8 | The audit log is edited or deleted | Append-only triggers; chain linkage in the database; `gawe_app` has INSERT only; `verify_chain`; each finished run's head is anchored outside the database (`GAWE_ANCHOR_SINKS`: a local file and/or a signed RFC 3161 timestamp from DigiCert or Sectigo, checked against pinned roots) and the verify route checks it, or an auditor's own copy | `tests/adversarial/test_governance_flow.py::test_audit_chain_is_intact_after_attacks`, `tests/unit/test_audit.py::test_editing_an_event_is_detected`, `tests/unit/test_audit.py::test_rewriting_hash_to_match_is_still_detected_downstream`, `tests/unit/test_audit.py::test_a_rewritten_history_with_recomputed_hashes_fails_against_the_anchor`, `tests/unit/test_audit.py::test_truncation_below_the_anchor_is_detected`, `tests/adversarial/test_api_boundaries.py::test_a_database_owner_cannot_silently_rewrite_or_truncate_a_finished_run`, `tests/unit/test_anchoring_flow.py::test_every_ending_anchors_the_last_event_once`, `tests/unit/test_rfc3161.py::test_a_recorded_token_verifies_against_its_pinned_root`, `tests/unit/test_rfc3161.py::test_a_tampered_signature_is_refused`, `tests/unit/test_rfc3161.py::test_altered_timestamp_content_is_refused`, `tests/unit/test_rfc3161.py::test_a_token_that_does_not_chain_to_a_pinned_root_is_refused`, `tests/sql/test_app_role.sql`, `tests/sql/test_schema.sql` | Anchoring is off unless configured, and runs still in progress are not anchored. The `file` sink is only as independent as its storage; the `rfc3161` sink is independent, but proves only that the head existed at the stamped time, not that the chain was right before it. Timestamp certificates are pinned and not checked for revocation |
+| T9 | One tenant reads or changes another's data | Every lookup checks the tenant and answers 404 | `tests/unit/test_api_service.py::test_other_tenants_see_nothing`, `tests/adversarial/test_api_boundaries.py::test_failures_do_not_reveal_whether_another_tenants_objects_exist` | Isolation is in application code; there is no row-level security yet |
+| T10 | Someone steers a run they do not own, or decides an approval not meant for them | Owner-or-admin checks; inbox shows only what the caller may decide | `tests/adversarial/test_api_boundaries.py::test_only_the_starter_or_an_admin_can_steer_a_run`, `tests/adversarial/test_api_boundaries.py::test_the_inbox_shows_only_what_this_person_may_decide`, `tests/adversarial/test_api_boundaries.py::test_a_requester_who_also_holds_the_role_still_cannot_see_or_decide_their_own_request` | |
+| T11 | Responses or errors leak documents, arguments, hashes or signatures | Views carry hashes and ids only; errors use fixed words | `tests/adversarial/test_api_boundaries.py::test_no_view_or_error_ever_contains_the_uploaded_document`, `tests/adversarial/test_api_boundaries.py::test_error_messages_do_not_leak_arguments_or_hashes`, `tests/unit/test_api_service.py::test_internal_run_completes_and_view_is_safe` | Approvers do see the exact arguments of what they approve; that is the point |
+| T12 | Token guessing | 256-bit random tokens stored only as SHA-256 hashes; failed attempts per address are limited (429) | `tests/unit/test_api_throttle.py::test_reaching_the_limit_blocks_and_says_how_long`, `tests/api/test_http.py::test_repeated_bad_tokens_get_429_with_retry_after_and_good_users_elsewhere_are_fine`, `tests/unit/test_api_auth.py` | Behind the UI every user shares one address, so a flood of bad sign-ins can lock the UI out for up to five minutes. Tokens are static dev tokens with no expiry; use OIDC before real users |
+| T13 | Oversized or malformed input | Body size cap, field limits, validation errors that never echo values | `tests/api/test_http.py::test_oversized_body_is_rejected`, `tests/api/test_http.py::test_validation_errors_do_not_echo_input`, `tests/unit/test_api_service.py::test_oversized_document_is_refused` | No per-tenant quotas or rate limits on starting runs, so cost and load are unbounded |
+| T14 | The application's database credential is stolen | The role cannot update or delete history, cannot change the schema, cannot delete rows | `tests/sql/test_app_role.sql` | It can still INSERT audit rows; the database enforces linkage but not hash correctness, so a forged tail event is possible. The signed decisions and `verify_chain` limit the damage |
+| T15 | A restart strands runs | Unfinished runs are driven again at startup | `tests/unit/test_recovery.py::test_a_run_waiting_for_approval_stays_waiting_and_an_approved_one_moves_on`, `tests/unit/test_api_service.py::test_recover_interrupted_drives_runs_a_previous_process_left_behind` | Single process only; two API servers need a database lease |
+| T16 | The model service is down or refuses | Planning is deferred and retried, never executed on a malformed answer. A model that refuses or runs out of output tokens is a failed attempt, so the run fails cleanly instead of stalling and paying for every resume | `tests/unit/test_orchestrator.py::test_llm_outage_leaves_run_planning_and_next_advance_recovers`, `tests/unit/test_anthropic_provider.py::test_unusable_replies_are_output_errors`, `tests/unit/test_anthropic_provider.py::test_transient_errors_become_unavailable`, `tests/unit/test_orchestrator.py::test_a_reader_that_keeps_stopping_early_fails_the_run_instead_of_stalling`, `tests/unit/test_orchestrator.py::test_a_planner_that_keeps_stopping_early_fails_the_run_instead_of_stalling` | |
+| T17 | Browser-side theft or forgery (XSS, CSRF) | Token in an httpOnly cookie; React escapes output; SameSite=Lax; server actions check origin; security headers | `ui/tests/api-client.test.ts` (token handling), manual check in the demo | Not covered by browser automation. The cookie is not `Secure` unless `GAWE_UI_SECURE_COOKIE=1`; set it behind HTTPS |
+| T18 | Vulnerable dependencies | None yet | | `npm audit` reports two issues in the UI dependencies at the time of writing; no automated dependency scanning in CI |
+
+## Assumptions
+
+- The signing key, the API tokens file and the database credentials are kept out of source control and out of logs.
+- The database owner and the person running the servers are trusted. GAWE records what they do; it does not stop them.
+- Real connectors are written to the connector contract (idempotency key, scoped service account).
+
+## Not covered yet
+
+Single sign-on, token expiry and revocation, per-tenant quotas, row-level security, encrypted storage of documents beyond what the database provides, and parsing of PDF or Word files (uploads are text and Markdown only because file parsing is its own attack surface).

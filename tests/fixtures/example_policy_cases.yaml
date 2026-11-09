@@ -1,0 +1,95 @@
+# Golden cases for example_policies.yaml. Changing a policy means changing these on purpose.
+# Defaults: roles [case_manager], variables {tenant: {internal_domains: [acme.com]}}.
+cases:
+  - name: read tool is allowed
+    tool: contracts.extract_risks
+    roles: []
+    args: {document_id: d1}
+    expect: {outcome: allow, rule_ids: [read-tools-allowed]}
+
+  - name: write assessment is allowed
+    tool: crm.write_assessment
+    args: {contract_id: c1, risk_score: 7}
+    expect: {outcome: allow, rule_ids: [crm-write-allowed]}
+
+  - name: internal email is allowed
+    tool: contracts.send_email
+    args: {to: bob@acme.com, body: hi}
+    expect: {outcome: allow, rule_ids: [email-baseline-allowed]}
+
+  - name: internal email domain is case-insensitive
+    tool: contracts.send_email
+    args: {to: Bob@ACME.COM, body: hi}
+    expect: {outcome: allow, rule_ids: [email-baseline-allowed]}
+
+  - name: external email needs legal approval
+    tool: contracts.send_email
+    args: {to: counsel@partner.io, body: hi}
+    expect:
+      outcome: needs_approval
+      approver_role: legal_reviewer
+      rule_ids: [email-baseline-allowed, external-email-needs-legal]
+
+  - name: look-alike suffix domain is external
+    tool: contracts.send_email
+    args: {to: bob@acme.com.evil.io, body: hi}
+    expect: {outcome: needs_approval, approver_role: legal_reviewer}
+
+  - name: multi-recipient string cannot hide behind an internal address
+    tool: contracts.send_email
+    args: {to: "attacker@evil.io, bob@acme.com", body: hi}
+    expect: {outcome: needs_approval, approver_role: legal_reviewer}
+
+  - name: display-name form is not trusted as internal
+    tool: contracts.send_email
+    args: {to: "Bob <bob@acme.com>", body: hi}
+    expect: {outcome: needs_approval, approver_role: legal_reviewer}
+
+  - name: competitor email is denied even though other rules match
+    tool: contracts.send_email
+    args: {to: ceo@competitor.com, body: hi}
+    expect:
+      outcome: deny
+      rule_ids: [email-baseline-allowed, external-email-needs-legal, deny-competitor-email]
+
+  - name: email without a required role is denied by RBAC
+    tool: contracts.send_email
+    roles: [intern]
+    args: {to: bob@acme.com, body: hi}
+    expect: {outcome: deny, rule_ids: [rbac.missing_role]}
+
+  - name: missing tenant variable fails closed
+    tool: contracts.send_email
+    variables: {}
+    args: {to: counsel@partner.io, body: hi}
+    expect: {outcome: deny, rule_ids: [engine.error]}
+
+  - name: standard deal needs legal
+    tool: crm.mark_approved_for_signature
+    args: {contract_id: c1, deal_value: 5000}
+    expect: {outcome: needs_approval, approver_role: legal_reviewer, rule_ids: [signature-standard-needs-legal]}
+
+  - name: deal at the threshold is standard
+    tool: crm.mark_approved_for_signature
+    args: {contract_id: c1, deal_value: 100000}
+    expect: {outcome: needs_approval, approver_role: legal_reviewer}
+
+  - name: deal just over the threshold needs finance
+    tool: crm.mark_approved_for_signature
+    args: {contract_id: c1, deal_value: 100000.01}
+    expect: {outcome: needs_approval, approver_role: finance_approver, rule_ids: [signature-high-value-needs-finance]}
+
+  - name: schema-invalid args are denied before any rule runs
+    tool: crm.mark_approved_for_signature
+    args: {contract_id: c1, deal_value: lots}
+    expect: {outcome: deny, rule_ids: [engine.invalid_args]}
+
+  - name: negative deal value is schema-invalid
+    tool: crm.mark_approved_for_signature
+    args: {contract_id: c1, deal_value: -1}
+    expect: {outcome: deny, rule_ids: [engine.invalid_args]}
+
+  - name: tool with no rule is default-denied
+    tool: esign.send_for_signature
+    args: {contract_id: c1}
+    expect: {outcome: deny, rule_ids: [default-deny]}

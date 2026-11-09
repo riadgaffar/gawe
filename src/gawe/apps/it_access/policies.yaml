@@ -1,0 +1,35 @@
+# IT access policy. Default-deny; the strictest matching outcome wins.
+rules:
+  - id: lookup-allowed
+    effect: allow
+    when: {side_effect_class: read}
+
+  - id: grant-baseline-allowed
+    effect: allow
+    when: {tool: iam.grant_access}
+
+  - id: elevated-access-needs-security
+    effect: needs_approval
+    approver_role: security_admin
+    reason: Admin-level access needs security approval
+    when:
+      tool: iam.grant_access
+      args:
+        level: {eq: admin}
+
+  - id: production-database-needs-security
+    effect: needs_approval
+    approver_role: security_admin
+    reason: Production database access needs security approval
+    when:
+      tool: iam.grant_access
+      args:
+        system: {eq: prod_db}
+
+  - id: external-user-denied
+    effect: deny
+    reason: Access can only be granted to company accounts
+    when:
+      tool: iam.grant_access
+      args:
+        email: {domain_not_in: $tenant.internal_domains}

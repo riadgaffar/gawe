@@ -1,0 +1,21 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+*.egg-info/
+node_modules/
+.next/
+.dev-tokens.json
+.demo-data/
+.anchors/
+.bench-data/
+bench-results/
+
+# UI build info
+ui/*.tsbuildinfo

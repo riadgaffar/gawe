@@ -1,0 +1,46 @@
+rules:
+  - id: read-tools-allowed
+    effect: allow
+    when: {side_effect_class: read}
+
+  - id: crm-write-allowed
+    effect: allow
+    when: {tool: crm.write_assessment}
+
+  - id: email-baseline-allowed
+    effect: allow
+    when: {tool: contracts.send_email}
+
+  - id: external-email-needs-legal
+    effect: needs_approval
+    approver_role: legal_reviewer
+    reason: External email requires legal review
+    when:
+      tool: contracts.send_email
+      args:
+        to: {domain_not_in: $tenant.internal_domains}
+
+  - id: deny-competitor-email
+    effect: deny
+    reason: Never email competitors from this workflow
+    when:
+      tool: contracts.send_email
+      args:
+        to: {domain_in: [competitor.com]}
+
+  - id: signature-standard-needs-legal
+    effect: needs_approval
+    approver_role: legal_reviewer
+    when:
+      tool: crm.mark_approved_for_signature
+      args:
+        deal_value: {lte: 100000}
+
+  - id: signature-high-value-needs-finance
+    effect: needs_approval
+    approver_role: finance_approver
+    reason: Deals over 100k need finance approval
+    when:
+      tool: crm.mark_approved_for_signature
+      args:
+        deal_value: {gt: 100000}
