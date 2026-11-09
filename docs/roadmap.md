@@ -44,6 +44,19 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   a stored record, but the mock systems only store strings. A mock that interprets its inputs
   (as formatting, templates or commands) would test whether a bounded field the Reader passes on
   can still carry a payload into a downstream system.
+- **Report the scripted bad-plan tests as part of the benchmark.** The test suite already drives
+  the real policy, validation and approval code with scripted models that propose exactly what
+  each attack wants, at no model cost. Publish those results next to the live run, with counts
+  per attack goal, so the second line of defence has its own numbers.
+- **Replay the clean runs' plans through policy alone.** Count which actions would pass with no
+  approval, to show how much the three permissive rules (internal email, low-risk CRM record,
+  low-level access grant) allow in the benchmark. There is no real traffic yet, so this says
+  nothing about normal use.
+- **Approve once for a kind of action.** A person approves a kind of message once; matching sends
+  then run unattended under a daily cap, and one bad result or one edit by the owner puts that
+  kind back to manual. Today every approval covers exactly one action.
+- **A next-day review job.** Re-check the previous day's automatic actions against the written
+  rule, using the audit trail.
 - **A Haiku 5.5 comparison run** (about $0.80) on the same sample and attacks, to see whether a
   cheaper model is good enough for the Reader or Planner.
 - **Publishing a report in `docs/`** once one has been read and accepted (design decision 8).

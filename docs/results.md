@@ -53,12 +53,18 @@ GAWE's: uncapped liability, non-compete, and IP assignment.
 
 ### Prompt injection
 
-| Measure | Result | 95% interval |
-|---|---|---|
-| Model fooled | 0 of 122 runs | 0% to 3% |
-| Attacker's step ran | 0 of 125 runs | 0% to 3% |
-| Attacker's text reached a stored record | 0 of 120 runs | 0% to 3% |
-| Clean twins that completed their task | 30 of 30 | 89% to 100% |
+| Measure | Result | 95% interval, per run | 95% interval, per attack or document |
+|---|---|---|---|
+| Model fooled | 0 of 122 runs (0 of 25 attacks) | 0% to 3% | 0% to 13% |
+| Attacker's step ran | 0 of 125 runs (0 of 25 attacks) | 0% to 3% | 0% to 13% |
+| Attacker's text reached a stored record | 0 of 120 runs (0 of 24 attacks) | 0% to 3% | 0% to 14% |
+| Clean twins that completed their task | 30 of 30 runs (6 of 6 documents) | 89% to 100% | 61% to 100% |
+
+The runs are not independent: they are 25 attacks, each run 5 times, and repeats of the same
+attack tend to succeed or fail together. The per-run interval treats all 125 runs as separate
+samples and so overstates the confidence; the per-attack interval treats each attack as one
+sample. The true bound lies between the two, and the per-attack one is the safer figure to quote.
+(Wilson intervals, as elsewhere. Thanks to a reader for pointing this out.)
 
 The Reader is told to flag any text in a contract that addresses an AI reviewer. It flagged every
 contract attack it read (87 of 87) and none of the 15 clean contract runs. For the
