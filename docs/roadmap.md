@@ -31,10 +31,19 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 - **Why the Reader over-flags `unlimited_liability`.** In the first run its precision on CUAD was
   33% (61 of 91 flags on contracts CUAD does not mark), against 69–74% for the other scored
   kinds. Its definition of "uncapped" may be wider than CUAD's; compare the flagged contracts.
+  A yes/no field may be the cause: try "capped / capped with carve-outs / uncapped" instead.
 - **Whether internal email, low-risk CRM records and low-level access grants should need
   approval.** Policy allows all three without a person, so a fooled model could cause them. The
   first run never fooled the model, so this stayed theoretical; it is a policy decision, not an
   engine change.
+- **Record which layer stopped each attack.** The injection report counts a fooled model and an
+  attacker step that ran, but not whether the Reader never emitted the value, plan validation
+  rejected it, policy denied it, or it waited for an approval. With a model that gets fooled,
+  that tells the defences apart.
+- **Injection through short text fields.** The benchmark checks that attacker text never reaches
+  a stored record, but the mock systems only store strings. A mock that interprets its inputs
+  (as formatting, templates or commands) would test whether a bounded field the Reader passes on
+  can still carry a payload into a downstream system.
 - **A Haiku 5.5 comparison run** (about $0.80) on the same sample and attacks, to see whether a
   cheaper model is good enough for the Reader or Planner.
 - **Publishing a report in `docs/`** once one has been read and accepted (design decision 8).
