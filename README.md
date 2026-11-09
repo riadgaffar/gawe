@@ -17,6 +17,7 @@ deterministic code disposes.
 
 Design: [docs/architecture.md](docs/architecture.md). Attacks and their tests:
 [docs/threat-model.md](docs/threat-model.md).
+Benchmark results, and what they do and don't show: [docs/results.md](docs/results.md).
 
 ## Quick start
 
@@ -50,7 +51,8 @@ See [docs/roadmap.md](docs/roadmap.md) for milestones and status.
 
 `bench/` measures the Reader's accuracy on CUAD (public contracts labelled by lawyers) and runs a
 prompt-injection suite through the full engine, counting "model fooled" separately from
-"unauthorized step ran". Design: [docs/m12-design.md](docs/m12-design.md). It needs the `llm`
+"unauthorized step ran". Design: [docs/m12-design.md](docs/m12-design.md); results of the first
+run: [docs/results.md](docs/results.md). It needs the `llm`
 extra and `ANTHROPIC_API_KEY` and `GAWE_LLM_MODEL` in `.env`; the model must be in
 `bench/prices.yaml`.
 
