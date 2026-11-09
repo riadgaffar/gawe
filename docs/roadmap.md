@@ -40,7 +40,7 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 
 ## Decisions in force
 
-- Python 3.13 backend (FastAPI), Postgres, own state machine now (Temporal later), TypeScript UI.
+- Python 3.12+ backend (FastAPI), Postgres, own state machine now (Temporal later), TypeScript UI.
 - The policy engine, not the LLM, authorizes execution. Plans are untrusted input.
 - Approvals bind to the action hash (tool, version, resolved args, run, step).
 - Dual-LLM design: a quarantined Reader with no tools; a Planner that sees structured findings only.
@@ -66,7 +66,7 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 - Policy sees the arguments the model proposed. Where an argument carries a fact policy relies on (the deal value), the tool re-checks it against the system of record and refuses on a mismatch.
 - Uploads accept text and Markdown only; PDF/DOCX extraction is a separate parsing risk and comes later.
 - Failed-sign-in limiting is per address; behind the UI all users share one address. See docs/threat-model.md.
-- Dependencies are not scanned automatically; `npm audit` reported two issues in the UI.
+- Dependencies are not scanned automatically; `npm audit` reported no issues in the UI on a fresh install (2026-11-09).
 - Reader free-text fields are still attacker-influenced. Keep them to a minimum in each app's
   Reader schema and prefer enums, numbers and booleans.
 

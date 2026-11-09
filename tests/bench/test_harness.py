@@ -570,3 +570,19 @@ def test_a_report_from_older_sessions_shows_unknowns_honestly(tmp_path: Path) ->
     report = md.read_text()
     assert "$5 for the first session, then $15" in report  # first session's cap from the manifest
     assert "session 1 commit `deadbeef`; session 2 not recorded" in report
+
+
+def test_the_counter_works_without_the_anthropic_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`make install` leaves out the optional SDK; a counter with its own client must still work."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "anthropic", None)  # makes `import anthropic` fail
+
+    class Client:
+        def __init__(self) -> None:
+            self.messages = self
+
+        def count_tokens(self, **kwargs: Any) -> Any:
+            return type("Count", (), {"input_tokens": 7})()
+
+    assert AnthropicTokenCounter(MODEL, client=Client()).count(reader_request(PRESENCE, "x")) == 7

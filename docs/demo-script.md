@@ -11,7 +11,8 @@ Everything below is a `make` target.
 1. `make env env-fill` creates `.env` if needed and adds any missing demo settings
    (`GAWE_POLICY_SIGNING_KEY`, `GAWE_APP`, `GAWE_API_TOKENS_FILE`, `GAWE_STORE`). It never
    changes a line that is already there.
-2. Edit `.env` yourself: set `ANTHROPIC_API_KEY` and `GAWE_LLM_MODEL` (never commit this file).
+2. Install the model SDK, which `make install` leaves out: `pip install -e ".[llm]"`. Then edit
+   `.env` yourself: set `ANTHROPIC_API_KEY` and `GAWE_LLM_MODEL` (never commit this file).
 3. `make up migrate app-role seed dev-tokens` (`app-role` needs `GAWE_APP_DB_PASSWORD` in `.env`;
    skip it and the API runs as the database owner with a warning). The last command prints one token per person; keep them.
    - alice: case manager (starts runs) · bob: legal reviewer · fiona: finance approver · root: admin

@@ -40,11 +40,10 @@ class AnthropicTokenCounter:
         client: Any = None,
         api_errors: tuple[type[BaseException], ...] | None = None,
     ) -> None:
-        sdk: Any = None
-        if client is None or api_errors is None:
-            sdk = importlib.import_module("anthropic")
-        self._client = client if client is not None else sdk.Anthropic()
-        self._api_errors = api_errors if api_errors is not None else (sdk.APIError,)
+        if client is None:
+            client = importlib.import_module("anthropic").Anthropic()
+        self._client = client
+        self._api_errors = api_errors if api_errors is not None else _sdk_api_errors()
         self._model = model
 
     def count(self, request: LLMRequest) -> int:
@@ -61,6 +60,15 @@ class AnthropicTokenCounter:
             raise ProviderConfigError(
                 f"the Anthropic API refused the token count ({type(exc).__name__}): {detail}"
             ) from exc
+
+
+def _sdk_api_errors() -> tuple[type[BaseException], ...]:
+    """The Anthropic SDK's API error, or nothing to catch if the SDK is not installed (the `llm`
+    extra is optional, and tests pass in their own client)."""
+    try:
+        return (importlib.import_module("anthropic").APIError,)
+    except ImportError:
+        return ()
 
 
 class _Captured(Exception):

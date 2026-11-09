@@ -20,6 +20,10 @@ Design: [docs/architecture.md](docs/architecture.md). Attacks and their tests:
 
 ## Quick start
 
+Needs Python 3.12 or newer. `make check` needs nothing else; the steps after it also need
+Docker (Postgres runs in a container on port 5432, so stop any local Postgres first or change the
+port in `docker-compose.yml`) and, for the UI, Node 22.6 or newer.
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 make install      # core + db + dev dependencies
@@ -35,6 +39,10 @@ make test-schema       # SQL-level tests of constraints and the append-only audi
 make app-role          # creates the limited database role the API runs as (see below)
 make test-integration  # Python tests against the live database (isolated schema)
 ```
+
+Running the API, the demo or the benchmark calls a real model. Install its SDK with
+`pip install -e ".[llm]"` and set `ANTHROPIC_API_KEY` and `GAWE_LLM_MODEL` in `.env`; calls are
+billed to that Anthropic account. `make check` uses a fake model and needs neither.
 
 See [docs/roadmap.md](docs/roadmap.md) for milestones and status.
 
