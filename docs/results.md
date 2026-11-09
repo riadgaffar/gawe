@@ -105,10 +105,10 @@ finished trial. Model fees were $15.42, plus $0.35 for a small trial run beforeh
   [`tests/adversarial/`](../tests/adversarial/), the benchmark's own scripted runs in
   [`tests/bench/test_injection.py`](../tests/bench/test_injection.py), and
   [`docs/threat-model.md`](threat-model.md).
-- **Some attacks would have worked had the model been fooled.** Policy as written lets internal
-  email and low-level access grants run without approval. Three of the seven goals targeted
-  exactly those steps. This run did not trigger them; that is a property of the model, not the
-  engine.
+- **Some attacks would have worked had the model been fooled.** Policy as written lets three of
+  the attackers' goals run without approval: an email to an internal address, a CRM risk record
+  marked low, and a low-level access grant. This run did not trigger them; that is a property
+  of the model, not the engine.
 - **We wrote the attacks.** They are fixed in advance. An attacker who adapts to the defenses may
   do better. A low rate here is evidence about this set of attacks, not a guarantee.
 - **These numbers are not comparable to published results on AgentDojo,** the shared public

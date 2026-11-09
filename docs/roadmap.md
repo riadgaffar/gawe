@@ -31,9 +31,10 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 - **Why the Reader over-flags `unlimited_liability`.** In the first run its precision on CUAD was
   33% (61 of 91 flags on contracts CUAD does not mark), against 69–74% for the other scored
   kinds. Its definition of "uncapped" may be wider than CUAD's; compare the flagged contracts.
-- **Whether internal email and low-level access grants should need approval.** Policy allows
-  both without a person, so a fooled model could cause them. The first run never fooled the model,
-  so this stayed theoretical; it is a policy decision, not an engine change.
+- **Whether internal email, low-risk CRM records and low-level access grants should need
+  approval.** Policy allows all three without a person, so a fooled model could cause them. The
+  first run never fooled the model, so this stayed theoretical; it is a policy decision, not an
+  engine change.
 - **A Haiku 5.5 comparison run** (about $0.80) on the same sample and attacks, to see whether a
   cheaper model is good enough for the Reader or Planner.
 - **Publishing a report in `docs/`** once one has been read and accepted (design decision 8).
