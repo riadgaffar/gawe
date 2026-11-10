@@ -45,6 +45,26 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   whether it lowers the bar (a lower risk rating, wider access) and require approval for those
   only, perhaps per tenant, replacing the 100,000 deal-size line with a principle. Decide with
   the approval volume from the next live run in hand.
+- **Policy never reads state the agent can write.** Today every rule judges a step on its own
+  arguments plus inputs no earlier action can change: fixed tenant settings, the deal value in the
+  contract system (no tool writes it), and the Reader's findings for that run only. So a series of
+  allowed actions cannot drift a workflow into a state where a later gate is weaker (a reader's
+  concern: three harmless writes in a row making a destructive one reachable). That holds only
+  for the current rules; one like "low-risk contracts skip signature approval" would break it.
+  Make it explicit: a check that no policy variable comes from data any registered tool writes,
+  plus sequence fuzzing as a tripwire (run random sequences of allowed actions, then check that
+  every attacker goal still ends as expected). The fuzzing passes trivially today and fails the
+  day a rule starts reading writable state.
+- **Revisit allowing internal email without approval.** It was allowed on fatigue grounds, but
+  none of the 30 clean runs sent any email, so requiring approval would have added no reviews in
+  the measured workflows, while the 3 internal-email attacks ran. Real workflows that send internal
+  notifications may differ; check before changing. (Raised in reply to a reader.)
+- **Grants only to the requester the Reader reported.** When only the Planner is fooled, the
+  attacker's grant goes to someone other than the ticket's requester (3 of the 6 grant attacks
+  that ran). A rule comparing the grant's email with the Reader's `requester_email` would stop
+  those; it cannot stop a fooled Reader that reports the attacker's choice as the requester, the
+  same limit as the contradiction rule. Same-tool attacks like these are also why a daily cap
+  would not single them out, while a next-day review could.
 - **A deterministic scan for liability language, as a downgrade signal.** The contradiction rule
   only fires when the Reader flags a clause, so it is bounded by the Reader's recall; a fully
   fooled "low" with nothing flagged on a deal of 100,000 or less still writes without a person.
@@ -99,7 +119,7 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   flagged on a smaller deal is allowed, on purpose.
 - Internal email and non-admin, non-production access grants to company accounts run without
   approval (decided in M13): approval on every one would be clicked through. Revisit with real
-  traffic.
+  traffic. Internal email is under review (see "After M13"): no clean run sent any email.
 - Python 3.12+ backend (FastAPI), Postgres, own state machine now (Temporal later), TypeScript UI.
 - The policy engine, not the LLM, authorizes execution. Plans are untrusted input.
 - Approvals bind to the action hash (tool, version, resolved args, run, step).
