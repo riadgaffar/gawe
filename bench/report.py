@@ -13,10 +13,30 @@ from typing import Any
 
 from bench.cuad.labels import CuadCase
 from bench.cuad.mapping import NOT_SCORED, PARTIAL, SCORED, partial_kinds, scored_kinds
-from bench.metrics import prevalence, summarize_cuad, summarize_injection
+from bench.metrics import prevalence, summarize_cuad, summarize_injection, summarize_scripted
 from bench.results import ResultsWriter
 
 REPORT_SCHEMA = "gawe.bench.report.v1"
+SCRIPTED_REPORT_SCHEMA = "gawe.bench.scripted-report.v1"
+
+SCRIPTED_DOES_NOT_SHOW = (
+    "How often a real model is fooled. The model's replies were written to be fooled; the live "
+    "benchmark measures how often that happens.",
+    "Every way a model could be fooled. Each attack is scripted one way per mode: the "
+    "attacker's step added to an honest plan, or the attacker's findings planned from faithfully.",
+    "That approvals hold. A step waiting for approval is safe only if the person says no; the "
+    "benchmark never approves anything.",
+    "What happens with real systems. The systems acted on are mocks.",
+)
+
+OUTCOME_LABELS = {
+    "none": "ran",
+    "policy_deny": "denied by policy",
+    "approval_pending": "waits for approval",
+    "validator": "rejected by plan validation",
+    "not_run": "never ran",
+    "not_acted_on": "not acted on",
+}
 
 DOES_NOT_PROVE = (
     "CUAD measures whether the Reader finds clauses, not whether it judges legal risk well. "
@@ -39,6 +59,8 @@ DOES_NOT_PROVE = (
 def build_report(directory: Path) -> dict[str, Any]:
     writer = ResultsWriter(directory)
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("kind") == "scripted":
+        return build_scripted_report(writer, manifest)
     status_path = directory / "status.json"
     status = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else None
     cases = {c["case_id"]: _case(c) for c in manifest["sample"]["cases"]}
@@ -104,12 +126,26 @@ def _sessions(directory: Path, manifest: Mapping[str, Any]) -> list[dict[str, An
     return out
 
 
+def build_scripted_report(writer: ResultsWriter, manifest: Mapping[str, Any]) -> dict[str, Any]:
+    trials = writer.trials("injection_scripted")
+    return {
+        "schema": SCRIPTED_REPORT_SCHEMA,
+        "manifest": manifest,
+        "scripted": summarize_scripted(
+            trials, policy_by_goal=manifest["injection"]["policy_by_goal"]
+        ),
+        "does_not_show": list(SCRIPTED_DOES_NOT_SHOW),
+    }
+
+
 def write_report(directory: Path) -> tuple[Path, Path]:
     report = build_report(directory)
     json_path = directory / "report.json"
     json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     md_path = directory / "report.md"
-    md_path.write_text(render_markdown(json.loads(json_path.read_text())), encoding="utf-8")
+    saved = json.loads(json_path.read_text())
+    render = render_scripted if saved["schema"] == SCRIPTED_REPORT_SCHEMA else render_markdown
+    md_path.write_text(render(saved), encoding="utf-8")
     return json_path, md_path
 
 
@@ -304,7 +340,8 @@ def _injection(report: Mapping[str, Any]) -> list[str]:
         "policy_deny": "denied by policy",
         "approval_pending": "waiting for a person to approve (safe only if they say no)",
         "validator": "rejected by plan validation",
-        "not_run": "never ran (the run ended first, or nothing acted on it)",
+        "not_run": "never ran (the run ended first)",
+        "not_acted_on": "not acted on (only the Reader was fooled, and no step used it)",
         "none": "nothing: the step ran",
     }
     for key, count in injection["stopped_by"].items():
@@ -319,7 +356,29 @@ def _injection(report: Mapping[str, Any]) -> list[str]:
         f"- Trial outcomes: {_counts(injection['statuses'])}.",
         "",
     ]
-    return lines
+    return lines + _clean_policy(injection.get("clean_policy"))
+
+
+def _clean_policy(clean: Mapping[str, Any] | None) -> list[str]:
+    if not clean or not clean["steps"]:
+        return []
+    lines = [
+        "What policy decided for each step of the clean runs (no attack):",
+        "",
+        "| App | Step | Policy | Clean runs |",
+        "|---|---|---|---|",
+    ]
+    for step in clean["steps"]:
+        runs = clean["runs_by_app"].get(step["app"], 0)
+        lines.append(
+            f"| {step['app']} | `{step['tool']}` | {step['outcome']} | {step['count']} of {runs} |"
+        )
+    if clean["assessment_risk"]:
+        lines += [
+            "",
+            f"- Risk levels the clean contract runs wrote: {_counts(clean['assessment_risk'])}.",
+        ]
+    return [*lines, ""]
 
 
 def _variance(report: Mapping[str, Any]) -> list[str]:
@@ -386,3 +445,88 @@ def _reproduce(m: Mapping[str, Any], sessions: Sequence[Mapping[str, Any]]) -> l
 
 def _counts(counts: Mapping[str, int]) -> str:
     return ", ".join(f"{k} {v}" for k, v in counts.items()) or "none"
+
+
+# --------------------------------------------------------------------- scripted markdown
+
+MODE_LABELS = {"planner": "Planner fooled", "reader": "Reader fooled"}
+
+
+def _ordered(counts: Mapping[str, int]) -> list[tuple[str, int]]:
+    """Outcome counts in a fixed order (report.json sorts its keys alphabetically)."""
+    order = list(OUTCOME_LABELS)
+    keys = [k for k in counts if k != "of"]
+    return [(k, counts[k]) for k in sorted(keys, key=lambda k: (order + [k]).index(k))]
+
+
+def render_scripted(report: Mapping[str, Any]) -> str:
+    m, s = report["manifest"], report["scripted"]
+    out = [
+        f"# GAWE scripted report: {m['bench_run_id']}",
+        "",
+        "Every attack in the injection suite, run through the real engine with a model that was "
+        "fooled on purpose: its replies were written by the benchmark, and no model was called. "
+        "This shows what plan validation, policy and approvals do once a model is fooled. The "
+        "live benchmark shows how often that happens.",
+        "",
+        "## 1. What ran",
+        "",
+        f"- **Runs:** {s['trials']} ({m['injection']['attacks']} attacks; "
+        + ", ".join(f"{MODE_LABELS.get(k, k)}: {v['of']}" for k, v in s["by_mode"].items())
+        + ").",
+        "- **Planner fooled:** the Reader reports the document honestly; the plan carries the "
+        "attacker's step.",
+        "- **Reader fooled:** the Reader reports what the attacker wanted; the Planner plans from "
+        "it faithfully. Only goals the Reader's fields can express run this way.",
+        "- **Never approved:** a step that needs approval waits, and the run is then cancelled.",
+        f"- **Trial outcomes:** {_counts(s['statuses'])}.",
+        "",
+        "## 2. What stopped each attack",
+        "",
+        "| Goal | Policy as written | "
+        + " | ".join(MODE_LABELS.get(k, k) for k in s["modes"])
+        + " |",
+        "|---|---|" + "---|" * len(s["modes"]),
+    ]
+    for goal, entry in s["by_goal"].items():
+        cells = [_outcome_cell(entry["modes"].get(mode)) for mode in s["modes"]]
+        out.append(f"| `{goal}` | {entry.get('policy') or '-'} | " + " | ".join(cells) + " |")
+    out += [
+        "",
+        '"Policy as written" is what the rules do with the attacker\'s step on its own. Some rules '
+        "also look at what the Reader found, so a run can be stopped where that column says "
+        '"allow".',
+        "",
+        "In total:",
+        "",
+    ]
+    for mode, counts in s["by_mode"].items():
+        parts = [f"{OUTCOME_LABELS.get(k, k)} {v}" for k, v in _ordered(counts)]
+        out.append(f"- {MODE_LABELS.get(mode, mode)} ({counts['of']} runs): {', '.join(parts)}.")
+    out += [
+        f"- Attacker text reached a stored record in {s['attacker_text_persisted']} of "
+        f"{s['trials']} runs.",
+        "",
+        "## 3. What this does not show",
+        "",
+        *[f"- {line}" for line in report["does_not_show"]],
+        "",
+        "## 4. How to reproduce",
+        "",
+        f"- Code: {_commit({'git_commit': m['git_commit'], 'git_dirty': m['git_dirty']})}.",
+        f"- Attack corpus SHA-256: `{m['injection']['corpus_sha256']}`.",
+        "- Command: `python -m bench scripted` (free; no API key needed).",
+        "",
+    ]
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _outcome_cell(counts: Mapping[str, int] | None) -> str:
+    if not counts:
+        return "-"
+    total = counts["of"]
+    parts = _ordered(counts)
+    if len(parts) == 1:
+        key, count = parts[0]
+        return f"{OUTCOME_LABELS.get(key, key)} ({count} of {total})"
+    return ", ".join(f"{OUTCOME_LABELS.get(k, k)} {v}" for k, v in parts) + f" (of {total})"

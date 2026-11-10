@@ -1,12 +1,16 @@
 """Contract Review: read a contract, record a risk assessment, email counsel, send for signature.
 
+Policy sees two values derived per run (`review.*`, see `review_variables`), so a "low risk"
+assessment needs legal approval when the Reader's own findings contradict it, or when the deal is
+large. The deal value comes from the contract system, which a document cannot change.
+
 Run with `GAWE_APP=gawe.apps.contract_review:bundle`. Mock connectors write their effects to
 `$GAWE_DEMO_DIR/ledger.jsonl` (default `.demo-data/`), so you can see exactly what happened and
 that a retried call did not repeat it.
 """
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +24,7 @@ from gawe.connectors.mock_esign import MockESign
 from gawe.core.runs import RunRecord
 
 HERE = Path(__file__).parent
+LARGE_DEAL_THRESHOLD = 100_000  # the same line the signature rule draws for finance approval
 PROFILE_NAME = "contract_review"
 TENANT_VARIABLES: Mapping[str, Any] = {
     "tenant": {
@@ -39,10 +44,35 @@ def bundle(demo_dir: Path | None = None, *, email: MockEmail | None = None) -> A
         policy_rules=HERE / "policies.yaml",
         profiles=frozenset({PROFILE_NAME}),
         reader_profile=PROFILE,
-        variables=_variables,
+        variables=_variables_for(clm),
         postconditions=POSTCONDITIONS,
     )
 
 
-def _variables(run: RunRecord) -> Mapping[str, Any]:
-    return TENANT_VARIABLES
+def _variables_for(clm: MockCLM) -> Callable[[RunRecord | None], Mapping[str, Any]]:
+    def variables(run: RunRecord | None) -> Mapping[str, Any]:
+        findings = run.findings if run is not None else None
+        return {**TENANT_VARIABLES, "review": review_variables(findings, clm.deal_values())}
+
+    return variables
+
+
+def review_variables(
+    findings: Mapping[str, Any] | None, deal_values: Mapping[str, float]
+) -> dict[str, list[str]]:
+    """Values the downgrade rules compare a CRM assessment with.
+
+    - `unsupported_levels`: ["low"] when the Reader's findings hold a high-severity flagged clause
+      (text aimed at an AI reviewer is reported as one), so "low" contradicts them; else [].
+      Catches a Reader fooled partway, not one that reports "low" with nothing flagged.
+    - `large_deals`: contract ids whose deal value in the contract system is over the threshold.
+      Catches a fully fooled "low" on a large deal; a small deal is a policy choice to allow.
+    """
+    clauses = (findings or {}).get("flagged_clauses") or []
+    contradicted = any(isinstance(c, Mapping) and c.get("severity") == "high" for c in clauses)
+    return {
+        "unsupported_levels": ["low"] if contradicted else [],
+        "large_deals": sorted(
+            cid for cid, value in deal_values.items() if value > LARGE_DEAL_THRESHOLD
+        ),
+    }

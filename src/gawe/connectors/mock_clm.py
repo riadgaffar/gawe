@@ -26,6 +26,10 @@ class MockCLM:
         except KeyError:
             raise ConnectorError("contract_not_found") from None
 
+    def deal_values(self) -> dict[str, float]:
+        """Every contract's deal value, from the contract system (never from a document)."""
+        return {cid: float(c["deal_value"]) for cid, c in self._contracts.items()}
+
     def write_assessment(
         self, key: str, contract_id: str, risk_level: str, summary: str
     ) -> dict[str, Any]:

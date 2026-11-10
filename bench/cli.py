@@ -5,6 +5,10 @@
     python -m bench run --max-usd 25 [--yes] [--accept-ceiling-over-cap] [--estimate-from FILE]
     python -m bench run --max-usd 15 --resume bench-results/<run id> [--estimate-from FILE]
     python -m bench report bench-results/<run id>
+    python -m bench scripted
+
+`scripted` runs every attack with a model fooled on purpose (M13): no model is called, nothing is
+spent, so it takes no cap and no model. It writes a run directory and its report.
 
 Every command that may call a real model needs --max-usd: there is no default and no
 environment fallback, so a cap is always a deliberate choice. The model comes from --model or
@@ -40,6 +44,7 @@ from bench.harness import (
     Settings,
     run_benchmark,
     run_estimate,
+    run_scripted_suite,
 )
 from bench.report import write_report
 from gawe.llm.provider import ProviderConfigError
@@ -48,7 +53,7 @@ EXIT_OK, EXIT_STOPPED, EXIT_REFUSED = 0, 1, 2
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m bench", description="M12 benchmark harness")
+    parser = argparse.ArgumentParser(prog="python -m bench", description="GAWE benchmark harness")
     commands = parser.add_subparsers(dest="command", required=True)
 
     commands.add_parser("data", help="download CUAD, check its pinned hash, extract it")
@@ -72,6 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume",
         metavar="DIR",
         help="continue a stopped run in its directory; --max-usd then caps the new spend only",
+    )
+
+    commands.add_parser(
+        "scripted", help="run every attack with a model fooled on purpose (free, no model)"
     )
 
     report = commands.add_parser("report", help="write report.json and report.md for a run")
@@ -122,6 +131,9 @@ def main(
         return _data(out, err)
     if args.command == "report":
         return _report(Path(args.directory), out, err)
+    if args.command == "scripted":
+        directory = run_scripted_suite(deps or Deps(), out)
+        return _report(directory, out, err)
     settings = _settings(args, env, err)
     if settings is None:
         return EXIT_REFUSED

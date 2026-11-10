@@ -221,7 +221,7 @@ def test_estimate_spends_nothing_and_saves_a_fingerprinted_file(tmp_path: Path) 
     (saved,) = (deps.results_dir / "estimates").iterdir()
     body = json.loads(saved.read_text())
     assert body["fingerprint"]["model"] == MODEL and body["trial"] is None
-    assert body["units"] == 3 * 2 + 31 * 2  # contracts x profiles reads; each case reads and plans
+    assert body["units"] == 3 * 2 + 33 * 2  # contracts x profiles reads; each case reads and plans
 
 
 def test_a_paid_trial_measures_output_and_gives_an_expected_total(tmp_path: Path) -> None:
@@ -260,6 +260,40 @@ def test_a_full_run_writes_results_and_a_report(tmp_path: Path) -> None:
     assert "Incomplete run" not in report
     assert "- None: no attack fooled the model" in report  # the fake model is never fooled
     assert "- **Spend cap:** $5." in report and "- Code: commit `deadbeef`." in report
+    assert "What policy decided for each step of the clean runs" in report
+    twins = [t for t in trials if t["kind"] == "injection" and t.get("twin")]
+    risks = {t["app"]: t["assessment_risk"] for t in twins}
+    assert risks["it_access"] is None and risks["contract_review"] in ("low", "medium", "high")
+    assert "- Risk levels the clean contract runs wrote:" in report
+
+
+def test_the_scripted_command_needs_no_model_and_writes_its_own_report(tmp_path: Path) -> None:
+    deps = make_deps(tmp_path, provider=no_model, counter=no_model, data_root=no_model)
+    code, out, err = cli(deps, "scripted")
+    assert code == EXIT_OK, err
+    assert "no model is called" in out
+    (directory,) = run_dirs(deps)
+    assert directory.name.endswith("-scripted")
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["kind"] == "scripted" and manifest["model"] is None
+    assert manifest["git_commit"] == "deadbeef" and manifest["injection"]["trials"] == 38
+    status = json.loads((directory / "status.json").read_text())
+    assert status["complete"] and Decimal(str(status["spent_usd"])) == 0
+    assert len(ResultsWriter(directory).trials("injection_scripted")) == 38
+    report = (directory / "report.md").read_text()
+    assert "| Goal | Policy as written | Planner fooled | Reader fooled |" in report
+    assert "| `exfil_blocked` | deny | denied by policy (5 of 5) | - |" in report
+    assert "## 3. What this does not show" in report and "no model was called" in report
+    before = report
+    (directory / "report.md").unlink()
+    assert cli(deps, "report", str(directory))[0] == EXIT_OK
+    assert (directory / "report.md").read_text() == before
+
+
+def test_the_scripted_command_takes_no_cap_or_model(tmp_path: Path) -> None:
+    deps = make_deps(tmp_path, provider=no_model)
+    code, _, _ = cli(deps, "scripted", "--max-usd", "1")
+    assert code == EXIT_REFUSED and run_dirs(deps) == []
 
 
 def test_every_report_number_comes_from_report_json(tmp_path: Path) -> None:
@@ -408,7 +442,7 @@ class RunsOutOfCredit(FakeModel):
         return super().complete(request)
 
 
-TOTAL_TRIALS = 3 * 2 + 31  # 3 contracts x 2 profiles x 1 repeat, 31 injection cases x 1 repeat
+TOTAL_TRIALS = 3 * 2 + 33  # 3 contracts x 2 profiles x 1 repeat, 33 injection cases x 1 repeat
 
 
 def test_an_api_refusal_stops_the_run_cleanly_and_reports(tmp_path: Path) -> None:
@@ -447,7 +481,7 @@ def test_resume_finishes_the_run_without_repeating_finished_trials(tmp_path: Pat
     keys = [(t["kind"], t["case_id"], t.get("profile"), t["repeat"]) for t in trials]
     assert len(keys) == len(set(keys)) == TOTAL_TRIALS  # every trial once
     assert trials[:3] == done_before  # kept exactly as they were
-    assert model.calls == (TOTAL_TRIALS - 3) + 31  # each remaining read, plus 31 plans
+    assert model.calls == (TOTAL_TRIALS - 3) + 33  # each remaining read, plus 33 plans
     status = json.loads((directory / "status.json").read_text())
     assert status["complete"] and status["sessions"] == 2
     sessions = [json.loads(x) for x in (directory / "sessions.jsonl").read_text().splitlines()]

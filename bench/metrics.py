@@ -343,4 +343,82 @@ def summarize_injection(
             "completed": rate(twins, "completed"),
             "with_unexpected_effects": sum(1 for t in twins if t.get("unexpected_effects")),
         },
+        "clean_policy": summarize_clean_policy(twins),
     }
+
+
+def summarize_clean_policy(twins: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """What policy decided for each step of the clean runs, and the risk levels they wrote.
+
+    Shows how often each rule fires on honest work (for example, how many clean runs wrote a CRM
+    assessment with no person involved). Older runs have no `assessment_risk`; it is then omitted.
+    """
+    steps: dict[tuple[str, str, str], int] = defaultdict(int)
+    for twin in twins:
+        for tool, outcome in twin.get("policy_outcomes") or []:
+            steps[(str(twin.get("app")), str(tool), str(outcome))] += 1
+    runs: dict[str, int] = defaultdict(int)
+    for twin in twins:
+        runs[str(twin.get("app"))] += 1
+    risks: dict[str, int] = defaultdict(int)
+    for twin in twins:
+        if twin.get("assessment_risk") is not None:
+            risks[str(twin["assessment_risk"])] += 1
+    return {
+        "runs_by_app": dict(sorted(runs.items())),
+        "steps": [
+            {"app": app, "tool": tool, "outcome": outcome, "count": count}
+            for (app, tool, outcome), count in sorted(steps.items())
+        ],
+        "assessment_risk": dict(sorted(risks.items())),
+    }
+
+
+SCRIPTED_ORDER = ("none", "policy_deny", "approval_pending", "validator", "not_run")
+
+
+def summarize_scripted(
+    trials: Sequence[Mapping[str, Any]], *, policy_by_goal: Mapping[str, str]
+) -> dict[str, Any]:
+    """Scripted runs: counts per goal and mode of what stopped each attack (no rates: the runs
+    are deterministic, so an interval would mean nothing)."""
+    modes = sorted({str(t["mode"]) for t in trials}, key=("planner", "reader").index)
+    by_goal: dict[str, dict[str, Any]] = {}
+    for goal in sorted({str(t["goal"]) for t in trials}):
+        by_goal[goal] = {"policy": policy_by_goal.get(goal), "modes": {}}
+        for mode in modes:
+            group = [t for t in trials if t["goal"] == goal and t["mode"] == mode]
+            if group:
+                by_goal[goal]["modes"][mode] = _outcome_counts(group)
+    return {
+        "trials": len(trials),
+        "modes": modes,
+        "by_mode": {
+            mode: _outcome_counts([t for t in trials if t["mode"] == mode]) for mode in modes
+        },
+        "by_goal": by_goal,
+        "attacker_text_persisted": sum(1 for t in trials if t.get("attacker_text_persisted")),
+        "statuses": dict(sorted(_count(t["status"] for t in trials).items())),
+        "per_case": [
+            {
+                "case_id": t["case_id"],
+                "mode": t["mode"],
+                "goal": t["goal"],
+                "stopped_by": t["stopped_by"],
+            }
+            for t in trials
+        ],
+    }
+
+
+def _outcome_counts(trials: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    counts = _count(str(t["stopped_by"]) for t in trials)
+    ordered = sorted(counts, key=lambda k: (SCRIPTED_ORDER + (k,)).index(k))
+    return {"of": len(trials), **{k: counts[k] for k in ordered}}
+
+
+def _count(values: Iterable[str]) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for value in values:
+        counts[value] += 1
+    return dict(counts)

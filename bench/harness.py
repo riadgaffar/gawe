@@ -50,6 +50,9 @@ from bench.estimate import (
 from bench.injection.cases import Suite, corpus_sha256, load_suite
 from bench.injection.run import plan_trials as plan_injection
 from bench.injection.run import run_injection
+from bench.injection.scripted import KIND as SCRIPTED_KIND
+from bench.injection.scripted import MODES as SCRIPTED_MODES
+from bench.injection.scripted import run_scripted, scripted_trials
 from bench.metrics import prevalence
 from bench.report import write_report
 from bench.results import RESULTS_DIR, ResultsWriter
@@ -509,6 +512,43 @@ def build_manifest(
             "policy_by_goal": {name: g.policy for name, g in prepared.suite.goals.items()},
         },
     }
+
+
+def run_scripted_suite(deps: Deps, out: TextIO) -> Path:
+    """`python -m bench scripted`: every attack with a model fooled on purpose. No model is
+    called and nothing is spent; `deps.provider` is never touched."""
+    suite = load_suite()
+    trials = scripted_trials(suite)
+    run_id = _stamp(deps) + "-scripted"
+    commit, dirty = deps.git()
+    writer = ResultsWriter(deps.results_dir / run_id)
+    writer.write_manifest(
+        {
+            "schema": "gawe.bench.scripted.v1",
+            "kind": "scripted",
+            "bench_run_id": run_id,
+            "started_at": deps.now().isoformat(),
+            "git_commit": commit,
+            "git_dirty": dirty,
+            "model": None,
+            "modes": list(SCRIPTED_MODES),
+            "injection": {
+                "attacks": len(suite.attacks),
+                "trials": len(trials),
+                "corpus_sha256": corpus_sha256(),
+                "policy_by_goal": {name: g.policy for name, g in suite.goals.items()},
+            },
+        }
+    )
+    print(
+        f"scripted: {len(trials)} runs ({len(suite.attacks)} attacks, modes "
+        f"{', '.join(SCRIPTED_MODES)}); no model is called",
+        file=out,
+    )
+    run_scripted(trials, writer=writer)
+    writer.finish(complete=True, reason=None, spent_usd=Decimal(0))
+    print(f"wrote {len(writer.trials(SCRIPTED_KIND))} records to {writer.directory}", file=out)
+    return writer.directory
 
 
 def _case_json(case: CuadCase) -> dict[str, Any]:

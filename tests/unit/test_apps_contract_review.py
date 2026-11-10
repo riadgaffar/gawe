@@ -268,10 +268,72 @@ def test_policy_golden_cases(
     b = cr.bundle(Path("/nonexistent-never-written"))
     engine = RuleEngine(load_rules(b.policy_rules), signer())
     manifest = {m.name: m for m in b.manifests}[tool]
-    decision = engine.evaluate(
-        make_ctx(manifest, args, roles=roles, variables=dict(cr.TENANT_VARIABLES))
-    )
+    variables = b.variables(None)  # type: ignore[arg-type]  # no run: no findings yet
+    decision = engine.evaluate(make_ctx(manifest, args, roles=roles, variables=variables))
     assert (decision.outcome, decision.approver_role) == (outcome, approver)
+
+
+def assessment(contract: str, level: str) -> dict[str, Any]:
+    return {"contract_id": contract, "risk_level": level, "summary": "s"}
+
+
+@pytest.mark.parametrize(
+    ("findings", "args", "outcome", "rule"),
+    [
+        (CLEAN_READ, assessment("C-1001", "low"), "allow", None),  # small deal, nothing flagged
+        (RISKY_READ, assessment("C-1001", "low"), "needs_approval", "contradicted"),
+        (RISKY_READ, assessment("C-1001", "medium"), "allow", None),
+        (CLEAN_READ, assessment("C-1002", "low"), "needs_approval", "large-deal"),  # 250,000
+        (CLEAN_READ, assessment("C-1002", "medium"), "allow", None),
+        (CLEAN_READ, assessment("C-1004", "low"), "allow", None),  # 60,000: the accepted gap
+        (None, assessment("C-1002", "low"), "needs_approval", "large-deal"),
+        (CLEAN_READ, assessment("C-9999", "low"), "allow", None),  # unknown: fails at the tool
+    ],
+)
+def test_a_low_risk_rating_needs_legal_when_contradicted_or_large(
+    findings: dict[str, Any] | None, args: dict[str, Any], outcome: str, rule: str | None
+) -> None:
+    b = cr.bundle(Path("/nonexistent-never-written"))
+    engine = RuleEngine(load_rules(b.policy_rules), signer())
+    manifest = {m.name: m for m in b.manifests}["crm.write_assessment"]
+    variables = {
+        **cr.TENANT_VARIABLES,
+        "review": cr.review_variables(
+            findings, {"C-1001": 45000, "C-1002": 250000, "C-1004": 60000}
+        ),
+    }
+    decision = engine.evaluate(
+        make_ctx(manifest, args, roles=["case_manager"], variables=variables)
+    )
+    assert decision.outcome == outcome
+    if rule is None:
+        assert decision.approver_role is None
+    else:
+        assert decision.approver_role == "legal_reviewer"
+        assert any(rule in r for r in decision.rule_ids)
+
+
+def test_review_variables() -> None:
+    deals = {"C-1": 100000, "C-2": 100000.01, "C-3": 5}
+    assert cr.review_variables(None, deals) == {"unsupported_levels": [], "large_deals": ["C-2"]}
+    medium_only = {"flagged_clauses": [{"kind": "auto_renewal", "severity": "medium"}]}
+    assert cr.review_variables(medium_only, {})["unsupported_levels"] == []
+    ai_text = {"flagged_clauses": [{"kind": "other", "severity": "high"}]}
+    assert cr.review_variables(ai_text, {})["unsupported_levels"] == ["low"]
+
+
+def test_a_fooled_low_on_a_large_deal_waits_for_legal(tmp_path: Path) -> None:
+    w = World(tmp_path, [CLEAN_READ, {"steps": [get("C-1002"), assess("C-1002", "low")]}])
+    run_id = w.run()
+    assert w.status(run_id) == "paused_for_approval" and w.ledger("crm.assessment") == []
+    (item,) = w.service.inbox(BOB)
+    assert item.tool == "crm.write_assessment"
+
+
+def test_a_low_rating_against_the_readers_own_flags_waits_for_legal(tmp_path: Path) -> None:
+    w = World(tmp_path, [RISKY_READ, {"steps": [get("C-1001"), assess("C-1001", "low")]}])
+    run_id = w.run()
+    assert w.status(run_id) == "paused_for_approval" and w.ledger("crm.assessment") == []
 
 
 def test_reader_profile_is_valid_and_bounded() -> None:

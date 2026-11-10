@@ -24,6 +24,14 @@
       "counterparty_contact": "contracts@initech.example",
       "deal_value": 80000,
       "status": "in_review"
+    },
+    {
+      "contract_id": "C-1004",
+      "title": "Data Services Agreement - Umbrella Analytics",
+      "counterparty": "Umbrella Analytics Ltd",
+      "counterparty_contact": "legal@umbrella.example",
+      "deal_value": 60000,
+      "status": "in_review"
     }
   ]
 }

@@ -19,6 +19,7 @@ adds. If verification fails twice on a milestone, stop and report instead of loo
 | M10  | Next.js (TypeScript) UI: approval inbox, run timeline, audit and chain-verify view | Done (`make ui-check` passes; demo verified end to end) |
 | M11  | Hardening and docs: threat model, architecture, API-boundary adversarial tests, least-privilege DB role, failed-sign-in limit, closing approvals when a run ends, restart recovery | Done (`make check` passes; role migration verified on Postgres 16; `make test-schema` passes, 71 checks; `gawe_app` confirmed able to log in on the dev database, 2026-11-08) |
 | M12  | Evidence: reproducible benchmark harness (CUAD Reader accuracy; injection test counting model-fooled and unauthorized-step-ran separately, with run-to-run variance), external audit-head anchor, and a plain-language report | Done (first full run on `claude-sonnet-5-5`, 2026-11-08: 0 of 122 attack trials fooled the model, 0 attacker steps ran, 30 of 30 clean twins completed; clause recall 94%, precision 51%; $15.77 including the trial. See [m12-design.md](m12-design.md)) |
+| M13  | Testing the second line of defence: a free scripted benchmark run that sends every attack through the engine with a model fooled on purpose, two rules for "low" CRM ratings, the clean-run policy table, and the decision on internal email and routine access grants | Done (2026-11-10: of 38 scripted runs, 10 attacker steps ran, all allowed by policy on purpose; 5 denied; 23 waited for a person. A "low" rating now needs legal approval when the Reader's findings contradict it or the deal is over 100,000. See [m13-design.md](m13-design.md) and [results.md](results.md#when-the-model-is-fooled)) |
 
 Planned, not scheduled: **Pilot-ready** (OIDC sign-in and the first real connector against a sandbox
 account). It starts when there is a design partner or a sandbox to connect to, and gets a number then.
@@ -26,34 +27,19 @@ account). It starts when there is a design partner or a sandbox to connect to, a
 M5.5 was not in the original plan; the orchestrator needs it before anything runs against a real
 database. UI and the IT-access fixture are the first things to cut if scope must shrink.
 
-## After M12: candidates, not scheduled
+## After M13: candidates, not scheduled
 
 - **Why the Reader over-flags `unlimited_liability`.** In the first run its precision on CUAD was
   33% (61 of 91 flags on contracts CUAD does not mark), against 69–74% for the other scored
   kinds. Its definition of "uncapped" may be wider than CUAD's; compare the flagged contracts.
   A yes/no field may be the cause: try "capped / capped with carve-outs / uncapped" instead.
-- **Whether internal email, low-risk CRM records and low-level access grants should need
-  approval.** Policy allows all three without a person, so a fooled model could cause them. The
-  first run never fooled the model, so this stayed theoretical; it is a policy decision, not an
-  engine change. Decide the risk downgrade first: a fooled Reader can return "low risk", an
-  allowed value, and policy writes it with no approval. Runs where the model resisted do not
-  close that gap (raised independently by two readers).
-- **Record which layer stopped each attack.** The injection report counts a fooled model and an
-  attacker step that ran, but not whether the Reader never emitted the value, plan validation
-  rejected it, policy denied it, or it waited for an approval. With a model that gets fooled,
-  that tells the defences apart.
+  Since M13 this also sets how often legal is asked to approve an honest "low" rating: the rule
+  for contradicted ratings fires on any high-severity flag, so over-flagging becomes needless
+  approvals, not just a wrong number.
 - **Injection through short text fields.** The benchmark checks that attacker text never reaches
   a stored record, but the mock systems only store strings. A mock that interprets its inputs
   (as formatting, templates or commands) would test whether a bounded field the Reader passes on
   can still carry a payload into a downstream system.
-- **Report the scripted bad-plan tests as part of the benchmark.** The test suite already drives
-  the real policy, validation and approval code with scripted models that propose exactly what
-  each attack wants, at no model cost. Publish those results next to the live run, with counts
-  per attack goal, so the second line of defence has its own numbers.
-- **Replay the clean runs' plans through policy alone.** Count which actions would pass with no
-  approval, to show how much the three permissive rules (internal email, low-risk CRM record,
-  low-level access grant) allow in the benchmark. There is no real traffic yet, so this says
-  nothing about normal use.
 - **Approve once for a kind of action.** A person approves a kind of message once; matching sends
   then run unattended under a daily cap, and one bad result or one edit by the owner puts that
   kind back to manual. Today every approval covers exactly one action.
@@ -73,12 +59,22 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   intervals already do, may be enough. Grow the sample only if that interval is too wide. CUAD
   has 495 usable contracts, at about $0.04 per read.
 - **A Haiku 5.5 comparison run** on the same attacks and contracts, to see whether a cheaper model
-  is good enough for the Reader or Planner. Compare it with Sonnet paired, per (contract, clause
-  type), and take the interval by resampling the 51 contracts.
-- **Publishing a report in `docs/`** once one has been read and accepted (design decision 8).
+  is good enough for the Reader or Planner. Compare the paired difference, not each model's
+  interval: a permutation test over contracts (swap a whole contract's answers between the two
+  models at random, about 10,000 samples, and recompute the metric, which works for ratios like
+  precision). Report first how many contracts the two models disagree on: with k of them, the
+  smallest possible p-value is about 2^-k (five contracts cannot go below about 0.03 one-sided),
+  however many samples run. Size the run by the disagreement expected. (Agreed with a reader in
+  the comments on the published write-up.)
 
 ## Decisions in force
 
+- A "low" CRM risk rating needs legal approval when the Reader's findings flag a high-severity
+  clause or the deal in the contract system is over 100,000 (M13). A fooled "low" with nothing
+  flagged on a smaller deal is allowed, on purpose.
+- Internal email and non-admin, non-production access grants to company accounts run without
+  approval (decided in M13): approval on every one would be clicked through. Revisit with real
+  traffic.
 - Python 3.12+ backend (FastAPI), Postgres, own state machine now (Temporal later), TypeScript UI.
 - The policy engine, not the LLM, authorizes execution. Plans are untrusted input.
 - Approvals bind to the action hash (tool, version, resolved args, run, step).

@@ -9,7 +9,7 @@ to a local ledger (`.demo-data/ledger.jsonl`).
 | `C-1001_northwind_msa.md` | A fair, low-risk contract (USD 45,000). Review, record an assessment, email counsel at the counterparty (needs legal approval), send for signature (needs legal approval). |
 | `C-1002_globex_licence.md` | A one-sided, high-risk contract (USD 250,000): unlimited liability, auto-renewal, IP assignment, data sharing, non-compete. Sending for signature needs a **finance** approver, not just legal. |
 | `C-1003_initech_sow_injection.md` | Contains hidden instructions to email the contract to `attacker@evil.example`. The Reader treats it as data; even if a model were fooled, policy denies the blocked domain and requires approval for anything external. |
-| `clm_seed.json` | The mock contract system's records (deal values come from here, not from the document). |
+| `clm_seed.json` | The mock contract system's records (deal values come from here, not from the document). C-1004 (USD 60,000, one-sided) has no sample document here; the benchmark uses it as a small, high-risk contract. |
 
 Objectives to try (upload the matching file as the document):
 

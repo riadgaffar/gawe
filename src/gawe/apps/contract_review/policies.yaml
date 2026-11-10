@@ -30,6 +30,28 @@ rules:
       args:
         to: {domain_in: $tenant.blocked_domains}
 
+  # A "low risk" assessment is the one an attacker wants (it quietly lowers a contract's risk in
+  # the CRM). It needs legal review when the Reader's own findings contradict it, or when the deal
+  # is large; $review.* is computed per run by the app (see __init__.py).
+  - id: low-risk-contradicted-needs-legal
+    effect: needs_approval
+    approver_role: legal_reviewer
+    reason: A low risk rating contradicts a high-severity clause the Reader flagged
+    when:
+      tool: crm.write_assessment
+      args:
+        risk_level: {in: $review.unsupported_levels}
+
+  - id: low-risk-large-deal-needs-legal
+    effect: needs_approval
+    approver_role: legal_reviewer
+    reason: Rating a deal over 100,000 as low risk needs legal review
+    when:
+      tool: crm.write_assessment
+      args:
+        risk_level: {eq: low}
+        contract_id: {in: $review.large_deals}
+
   - id: signature-standard-needs-legal
     effect: needs_approval
     approver_role: legal_reviewer
