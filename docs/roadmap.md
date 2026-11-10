@@ -73,6 +73,22 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   whatever the Reader reports. Use it as one more signal for the "low" rules, not as a judge:
   paraphrase defeats keywords, and a counterparty who wrote the whole contract controls the
   wording. (Suggested by a reader.)
+- **Check state, not just the tool's reply.** Post-conditions today compare a tool's own reply
+  with what was asked ("the assessment I wrote says low for C-1002"). For writes, read the record
+  back from the system with a separate call and check that instead. Run status already never
+  comes from a model's prose; the executor decides it. (Raised by a reader.)
+- **Injection through tool outputs.** No model reads tool outputs today: the Planner plans once
+  from the Reader's findings, and later steps receive earlier outputs as arguments (`$ref`),
+  which policy checks on their final values. Two gaps: no attack yet puts poisoned data in a
+  connector's output (say, a contract record's contact address) to see it become an argument;
+  and automatic replanning, deferred since M7, must route tool outputs through the quarantined
+  Reader, never to the Planner, if it is ever added. (Raised by a reader.)
+- **How often policy steps in on honest work.** "30 of 30 clean runs finished" measures utility,
+  not how often policy denied, held for approval, or changed an action a person would have
+  allowed. Report interventions on clean runs, with an interval, in every live report. The 30
+  runs are 6 documents repeated 5 times, so the honest unit is the document and 0 of 6 still
+  allows a high rate; add more clean documents rather than more repeats. The first run had no
+  interventions on clean runs, but that predates the M13 rules. (Raised by a reader.)
 - **Injection through short text fields.** The benchmark checks that attacker text never reaches
   a stored record, but the mock systems only store strings. A mock that interprets its inputs
   (as formatting, templates or commands) would test whether a bounded field the Reader passes on
@@ -85,7 +101,11 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   about 5%, of "low" ratings that went through with nothing flagged, for a person to check: the
   one case the downgrade rules let through, and the only way to measure how often the Reader
   misses a real risk. Choose the sample from the action's hash rather than at random, so it is
-  reproducible and auditable like the rest of the policy. (Suggested by a reader.)
+  reproducible and auditable like the rest of the policy. (Suggested by a reader.) Size the rate
+  from the claim it has to support: zero misses in about 32 samples only shows a miss rate under
+  roughly 9%; under 1% needs about 300. Decide the hash key deliberately: a stable key (contract,
+  clause, model version) keeps the sample from reshuffling when a record changes, but then the
+  same contracts stay in or out until the model changes.
 - **More distinct attacks, not more repeats.** The 125 injection runs are 25 attacks repeated 5
   times, so the honest sample is closer to 25 (a 95% upper bound of about 13%). Bringing that down
   needs a few hundred attacks that genuinely differ. Model spend is small (about $0.015 a run);
