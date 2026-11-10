@@ -61,10 +61,19 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   a rule may read it to add an approval, never to remove one, so the worst an attacker gets is
   more reviews. Read that history from the audit trail, which the engine writes and no tool can,
   not from records the agent's own tools wrote. (Suggested by a reader.)
+  How: each tool declares a subject key (say, the contract or deal id); the engine records it at
+  the tool boundary and policy joins on it, so two workflows need not know about each other.
+  Conditions: the audit trail stores no arguments by design, so record a keyed hash of the key,
+  not the key (ids like C-1001 are guessable, so a plain hash could be reversed; the secret is one
+  more key to manage). And a cross-workflow rule needs a key both tools carry, taken from a system
+  of record: an access grant names a person, system and level but no deal, and a key the Reader
+  extracts or the agent supplies can be left out or changed, so the join misses. Because history
+  only escalates, a missed join means no extra review, never a weaker gate.
 - **Automatic grants expire.** Access granted without a person's approval should carry an end
   date, tied to the request (for example, when the ticket or review closes), so the risk accepted
-  by allowing routine grants is time-boxed. `iam.grant_access` has no expiry today; approved
-  grants could last longer. (Suggested by a reader.)
+  by allowing routine grants is time-boxed. Make it a default on every automatic grant, with
+  renewal going back through policy like a new request. `iam.grant_access` has no expiry today;
+  approved grants could last longer. (Suggested by a reader.)
 - **Revisit allowing internal email without approval.** It was allowed on fatigue grounds, but
   none of the 30 clean runs sent any email, so requiring approval would have added no reviews in
   the measured workflows, while the 3 internal-email attacks ran. Real workflows that send internal
