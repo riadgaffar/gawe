@@ -108,13 +108,23 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   runs are 6 documents repeated 5 times, so the honest unit is the document and 0 of 6 still
   allows a high rate; add more clean documents rather than more repeats. The first run had no
   interventions on clean runs, but that predates the M13 rules. (Raised by a reader.)
-- **Fuzz arguments against the rules.** An attacker who knows the rule file aims at its broad
-  allows, which is where all 10 scripted attacker steps that ran landed. Generate argument
-  variants aimed at the rules themselves (lookalike domains, subdomains, case and encoding
-  tricks, recipient lists and display names) and check that every near-miss ends in approval or
-  deny, never allow. Some edge cases are tested already (a comma-joined recipient list is not
-  judged by its first address); a domain that is not exactly internal should fall into the
-  outside-email rule, but that is reasoned, not fuzzed. (Raised by a reader.)
+- **Fuzz arguments against the rules, property-based.** An attacker who knows the rule file aims
+  at its broad allows, which is where all 10 scripted attacker steps that ran landed. Some edge
+  cases are tested already (a comma-joined recipient list is not judged by its first address);
+  others are only reasoned about (a domain that is not exactly internal should fall into the
+  outside-email rule; a trailing dot does, but only because the address does not parse). Make it
+  property-based rather than one case at a time: write each rule's boundary in one sentence
+  ("an address is internal when ..."), generate boundary cases (recipient lists, display names,
+  subdomains, Unicode look-alikes, trailing dots, case changes), tag each with its expected
+  outcome (allow, needs approval, deny), and fail `make check` on any miss: the engine is
+  deterministic, so the target is zero, not a rate. Conditions: the expected outcome must come
+  from a separate, deliberately simple check or a label per kind of case, never the policy's own
+  parser, or the test can only agree with it; include legitimate tricky addresses that must stay
+  allowed (plus-addressing, uppercase, international domains), since every stricter fix can push
+  real mail into review; and use fixed seeds in `make check`, with a deeper randomised run kept
+  separate, so results repeat. Expect it to force decisions not yet made (is a Cyrillic look-alike
+  of an internal domain a deny or a review?). Likely needs Hypothesis as a test dependency.
+  (Raised by readers.)
 - **Injection through short text fields.** The benchmark checks that attacker text never reaches
   a stored record, but the mock systems only store strings. A mock that interprets its inputs
   (as formatting, templates or commands) would test whether a bounded field the Reader passes on
