@@ -247,3 +247,7 @@ SHA-256 is `88b694d99007d39777fa44cd72daf8297773d285dc3eab0091ba32078888d18e`.
 
 The full generated report, with every table and interval, is in
 [`results-report-20261108.md`](results-report-20261108.md).
+
+The commit hashes in the generated reports refer to the development repository the runs were made
+in. This public repository starts from a single snapshot of it, so those commits are not in its
+history; the commands above reproduce the results from this repository.
