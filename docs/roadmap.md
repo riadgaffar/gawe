@@ -55,6 +55,16 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   plus sequence fuzzing as a tripwire (run random sequences of allowed actions, then check that
   every attacker goal still ends as expected). The fuzzing passes trivially today and fails the
   day a rule starts reading writable state.
+  Exception worth having: rules on combinations, which is where an attacker's sequence shows
+  (a second downgrade on a contract that has already been lowered; a downgrade plus a grant on
+  the same deal, once workflows share a deal). Allow history only to escalate, never to relax:
+  a rule may read it to add an approval, never to remove one, so the worst an attacker gets is
+  more reviews. Read that history from the audit trail, which the engine writes and no tool can,
+  not from records the agent's own tools wrote. (Suggested by a reader.)
+- **Automatic grants expire.** Access granted without a person's approval should carry an end
+  date, tied to the request (for example, when the ticket or review closes), so the risk accepted
+  by allowing routine grants is time-boxed. `iam.grant_access` has no expiry today; approved
+  grants could last longer. (Suggested by a reader.)
 - **Revisit allowing internal email without approval.** It was allowed on fatigue grounds, but
   none of the 30 clean runs sent any email, so requiring approval would have added no reviews in
   the measured workflows, while the 3 internal-email attacks ran. Real workflows that send internal
