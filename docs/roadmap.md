@@ -36,6 +36,15 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   Since M13 this also sets how often legal is asked to approve an honest "low" rating: the rule
   for contradicted ratings fires on any high-severity flag, so over-flagging becomes needless
   approvals, not just a wrong number.
+- **Approval by what an action changes, not by deal size.** A reader's principle: any action that
+  changes what anyone can do later (access, risk ratings, approval thresholds, the policy itself)
+  always goes to a person, however small, because lowering the bar is usually an attacker's first
+  step. Thresholds and policy are already out of reach (no tool changes them). Taken literally, the
+  rest means a person on every review and every access request: risk writes and grants happened
+  in 15 of 15 clean runs each. One option to weigh against it: classify each tool action by
+  whether it lowers the bar (a lower risk rating, wider access) and require approval for those
+  only, perhaps per tenant, replacing the 100,000 deal-size line with a principle. Decide with
+  the approval volume from the next live run in hand.
 - **A deterministic scan for liability language, as a downgrade signal.** The contradiction rule
   only fires when the Reader flags a clause, so it is bounded by the Reader's recall; a fully
   fooled "low" with nothing flagged on a deal of 100,000 or less still writes without a person.
