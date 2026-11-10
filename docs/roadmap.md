@@ -99,6 +99,13 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   runs are 6 documents repeated 5 times, so the honest unit is the document and 0 of 6 still
   allows a high rate; add more clean documents rather than more repeats. The first run had no
   interventions on clean runs, but that predates the M13 rules. (Raised by a reader.)
+- **Fuzz arguments against the rules.** An attacker who knows the rule file aims at its broad
+  allows, which is where all 10 scripted attacker steps that ran landed. Generate argument
+  variants aimed at the rules themselves (lookalike domains, subdomains, case and encoding
+  tricks, recipient lists and display names) and check that every near-miss ends in approval or
+  deny, never allow. Some edge cases are tested already (a comma-joined recipient list is not
+  judged by its first address); a domain that is not exactly internal should fall into the
+  outside-email rule, but that is reasoned, not fuzzed. (Raised by a reader.)
 - **Injection through short text fields.** The benchmark checks that attacker text never reaches
   a stored record, but the mock systems only store strings. A mock that interprets its inputs
   (as formatting, templates or commands) would test whether a bounded field the Reader passes on
