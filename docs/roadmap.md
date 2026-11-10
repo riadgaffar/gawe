@@ -60,8 +60,12 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 - **Approve once for a kind of action.** A person approves a kind of message once; matching sends
   then run unattended under a daily cap, and one bad result or one edit by the owner puts that
   kind back to manual. Today every approval covers exactly one action.
-- **A next-day review job.** Re-check the previous day's automatic actions against the written
-  rule, using the audit trail.
+- **A next-day review job, with a sampled review of clean downgrades.** Re-check the previous
+  day's automatic actions against the written rule, using the audit trail. Include a sample,
+  about 5%, of "low" ratings that went through with nothing flagged, for a person to check: the
+  one case the downgrade rules let through, and the only way to measure how often the Reader
+  misses a real risk. Choose the sample from the action's hash rather than at random, so it is
+  reproducible and auditable like the rest of the policy. (Suggested by a reader.)
 - **More distinct attacks, not more repeats.** The 125 injection runs are 25 attacks repeated 5
   times, so the honest sample is closer to 25 (a 95% upper bound of about 13%). Bringing that down
   needs a few hundred attacks that genuinely differ. Model spend is small (about $0.015 a run);
