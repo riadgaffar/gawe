@@ -36,6 +36,14 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   Since M13 this also sets how often legal is asked to approve an honest "low" rating: the rule
   for contradicted ratings fires on any high-severity flag, so over-flagging becomes needless
   approvals, not just a wrong number.
+- **A deterministic scan for liability language, as a downgrade signal.** The contradiction rule
+  only fires when the Reader flags a clause, so it is bounded by the Reader's recall; a fully
+  fooled "low" with nothing flagged on a deal of 100,000 or less still writes without a person.
+  Someone planting instructions in a contract can add text but usually cannot remove the real
+  liability or indemnity clause, so a scan of the document for that language would still find it,
+  whatever the Reader reports. Use it as one more signal for the "low" rules, not as a judge:
+  paraphrase defeats keywords, and a counterparty who wrote the whole contract controls the
+  wording. (Suggested by a reader.)
 - **Injection through short text fields.** The benchmark checks that attacker text never reaches
   a stored record, but the mock systems only store strings. A mock that interprets its inputs
   (as formatting, templates or commands) would test whether a bounded field the Reader passes on
@@ -64,8 +72,12 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   models at random, about 10,000 samples, and recompute the metric, which works for ratios like
   precision). Report first how many contracts the two models disagree on: with k of them, the
   smallest possible p-value is about 2^-k (five contracts cannot go below about 0.03 one-sided),
-  however many samples run. Size the run by the disagreement expected. (Agreed with a reader in
-  the comments on the published write-up.)
+  however many samples run. Size the run by the disagreement expected. In practice noise, not
+  that floor, is the limit: with 12% of answers changing between repeats, about a third of
+  contracts (around 16 of 51) would show a disagreement even between identical setups. Noise does
+  not invalidate the test, but it costs power, so compare each model's majority answer over its 3
+  reads and report separately the disagreements that hold across repeats. (Agreed with a reader
+  in the comments on the published write-up.)
 
 ## Decisions in force
 
