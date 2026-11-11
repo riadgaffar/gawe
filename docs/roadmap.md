@@ -29,6 +29,15 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 
 ## After M13: candidates, not scheduled
 
+- **Check rules against tool schemas at load time.** Policy is written per tool, so it can drift
+  from the tools. Two cases already fail safe: a tool with no rule is denied by default, and a
+  proposed step that does not match the tool's current schema is denied before any rule runs
+  (`engine.invalid_args`). The gap is a renamed field the rules do not follow: a rule that adds
+  an approval or a deny on the old name quietly stops matching, because a missing value makes
+  its check false. Rename `risk_level` and both downgrade rules stop firing, so a "low" rating
+  is allowed. Fix: when policy loads, require every tool a rule names to be registered and every
+  argument path it uses to exist in that tool's input schema, and refuse to start otherwise.
+  Small, and the first candidate for the next milestone. (Raised by a reader.)
 - **Why the Reader over-flags `unlimited_liability`.** In the first run its precision on CUAD was
   33% (61 of 91 flags on contracts CUAD does not mark), against 69–74% for the other scored
   kinds. Its definition of "uncapped" may be wider than CUAD's; compare the flagged contracts.
