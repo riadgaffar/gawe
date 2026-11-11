@@ -38,6 +38,14 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   is allowed. Fix: when policy loads, require every tool a rule names to be registered and every
   argument path it uses to exist in that tool's input schema, and refuse to start otherwise.
   Small, and the first candidate for the next milestone. (Raised by a reader.)
+- **Unreadable input never ends in allow, enforced.** The engine's default (a value it cannot
+  read makes positive checks false and negative ones true) keeps uncertainty from widening what
+  is allowed only in approval and deny rules. An allow rule using a negative check (`ne`,
+  `not_in`, `domain_not_in`) would match an unreadable value and widen. No current allow rule
+  does (they match on the tool alone), so it holds by convention, not design. Fix: reject
+  negative checks in allow rules at load time, and add one property test, separate from the
+  per-rule fuzzing, that no unreadable input ends in allow under any rule, so a change to the
+  default fails loudly. (Raised by a reader.)
 - **Why the Reader over-flags `unlimited_liability`.** In the first run its precision on CUAD was
   33% (61 of 91 flags on contracts CUAD does not mark), against 69–74% for the other scored
   kinds. Its definition of "uncapped" may be wider than CUAD's; compare the flagged contracts.
@@ -78,6 +86,11 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   of record: an access grant names a person, system and level but no deal, and a key the Reader
   extracts or the agent supplies can be left out or changed, so the join misses. Because history
   only escalates, a missed join means no extra review, never a weaker gate.
+- **Trace where trusted values come from.** The large-deal rule works because the document
+  cannot change the deal value. In the mock it is seed data no tool writes; in a real system a
+  person or another system entered it, perhaps from the same contract. Before treating any value
+  as a trusted anchor, trace who can write it; if it was ever filled from a document or by
+  another agent, it is one step from untrusted input. (Raised by a reader.)
 - **Automatic grants expire.** Access granted without a person's approval should carry an end
   date, tied to the request (for example, when the ticket or review closes), so the risk accepted
   by allowing routine grants is time-boxed. Make it a default on every automatic grant, with
@@ -86,7 +99,10 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 - **Revisit allowing internal email without approval.** It was allowed on fatigue grounds, but
   none of the 30 clean runs sent any email, so requiring approval would have added no reviews in
   the measured workflows, while the 3 internal-email attacks ran. Real workflows that send internal
-  notifications may differ; check before changing. (Raised in reply to a reader.)
+  notifications may differ; check before changing. A domain check also cannot see forwarding: an
+  internal address that forwards outside looks internal to policy. Look-alike domains already
+  fall into review (the domain must match exactly), so the safer option may be allowing specific
+  internal recipients rather than the whole domain. (Raised by readers.)
 - **Grants only to the requester the Reader reported.** When only the Planner is fooled, the
   attacker's grant goes to someone other than the ticket's requester (3 of the 6 grant attacks
   that ran). A rule comparing the grant's email with the Reader's `requester_email` would stop
@@ -103,8 +119,11 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   wording. (Suggested by a reader.)
 - **Check state, not just the tool's reply.** Post-conditions today compare a tool's own reply
   with what was asked ("the assessment I wrote says low for C-1002"). For writes, read the record
-  back from the system with a separate call and check that instead. Run status already never
-  comes from a model's prose; the executor decides it. (Raised by a reader.)
+  back from the system with a separate call and check that instead, and let that read set the
+  step's status rather than confirm it afterwards. Run status already never comes from a model's
+  prose; the executor decides it. A state that cannot be read straight away (a post in
+  moderation, say) needs a "pending" status with an expiry and a scheduled re-read; nothing in
+  the engine does that today. (Raised by readers.)
 - **Injection through tool outputs.** No model reads tool outputs today: the Planner plans once
   from the Reader's findings, and later steps receive earlier outputs as arguments (`$ref`),
   which policy checks on their final values. Two gaps: no attack yet puts poisoned data in a
@@ -142,7 +161,11 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 - **Injection through short text fields.** The benchmark checks that attacker text never reaches
   a stored record, but the mock systems only store strings. A mock that interprets its inputs
   (as formatting, templates or commands) would test whether a bounded field the Reader passes on
-  can still carry a payload into a downstream system.
+  can still carry a payload into a downstream system. Include encoded payloads: the Planner reads
+  the Reader's short strings (the 300-character summary has real room) inside a fenced data
+  block, and policy checks tool and arguments, never message bodies, so base64 in the summary
+  could ride into an internal email's body and pass. Matching on exact bytes would not catch it.
+  (Raised by a reader.)
 - **Approve once for a kind of action.** A person approves a kind of message once; matching sends
   then run unattended under a daily cap, and one bad result or one edit by the owner puts that
   kind back to manual. Today every approval covers exactly one action.
@@ -160,7 +183,10 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   times, so the honest sample is closer to 25 (a 95% upper bound of about 13%). Bringing that down
   needs a few hundred attacks that genuinely differ. Model spend is small (about $0.015 a run);
   writing them is the cost. If they are generated, check that they test something different
-  rather than varying 25 templates.
+  rather than varying 25 templates. Better: generate each attack from the outcome of the last
+  (what was denied, by which rule, what was stored), as an adaptive attacker would, and measure
+  diversity by which rule or layer each attack ends at, not by how different the text looks:
+  fifty attacks that die at the same rule are one attack. (Raised by a reader.)
 - **A bigger contract sample, if paired comparison is not enough.** Treated as independent
   samples, two setups 5 points apart need about 330 items each to tell apart (12% of answers
   change between repeats); the current sample has 153 (51 contracts, 3 clause types), enough for
