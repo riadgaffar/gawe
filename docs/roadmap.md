@@ -112,12 +112,17 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   at its broad allows, which is where all 10 scripted attacker steps that ran landed. Some edge
   cases are tested already (a comma-joined recipient list is not judged by its first address);
   others are only reasoned about (a domain that is not exactly internal should fall into the
-  outside-email rule; a trailing dot does, but only because the address does not parse). Make it
+  outside-email rule). An address that does not parse (a trailing dot, say) lands in review by
+  design: a value the engine cannot read makes positive checks false and negative checks true,
+  so "not an internal domain" holds and uncertainty never widens what is allowed. Make it
   property-based rather than one case at a time: write each rule's boundary in one sentence
   ("an address is internal when ..."), generate boundary cases (recipient lists, display names,
   subdomains, Unicode look-alikes, trailing dots, case changes), tag each with its expected
-  outcome (allow, needs approval, deny), and fail `make check` on any miss: the engine is
-  deterministic, so the target is zero, not a rate. Conditions: the expected outcome must come
+  outcome (allow, needs approval, deny), the rule it should hit (decisions record `rule_ids`) and
+  whether it is meant to parse, and fail `make check` on any miss: the engine is deterministic,
+  so the target is zero, not a rate. Checking the rule and the parse status, not just the
+  outcome, stops a case passing for the wrong reason, so the parser cannot become a hidden
+  second rule. Conditions: the expected outcome must come
   from a separate, deliberately simple check or a label per kind of case, never the policy's own
   parser, or the test can only agree with it; include legitimate tricky addresses that must stay
   allowed (plus-addressing, uppercase, international domains), since every stricter fix can push
