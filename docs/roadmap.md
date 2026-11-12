@@ -21,6 +21,10 @@ adds. If verification fails twice on a milestone, stop and report instead of loo
 | M12  | Evidence: reproducible benchmark harness (CUAD Reader accuracy; injection test counting model-fooled and unauthorized-step-ran separately, with run-to-run variance), external audit-head anchor, and a plain-language report | Done (first full run on `claude-sonnet-5-5`, 2026-11-08: 0 of 122 attack trials fooled the model, 0 attacker steps ran, 30 of 30 clean twins completed; clause recall 94%, precision 51%; $15.77 including the trial. See [m12-design.md](m12-design.md)) |
 | M13  | Testing the second line of defence: a free scripted benchmark run that sends every attack through the engine with a model fooled on purpose, two rules for "low" CRM ratings, the clean-run policy table, and the decision on internal email and routine access grants | Done (2026-11-10: of 38 scripted runs, 10 attacker steps ran, all allowed by policy on purpose; 5 denied; 23 waited for a person. A "low" rating now needs legal approval when the Reader's findings contradict it or the deal is over 100,000. See [m13-design.md](m13-design.md) and [results.md](results.md#when-the-model-is-fooled)) |
 
+Next: **M14**, policy that cannot drift silently: the two load-time checks at the top of the list
+below (rules must match the tool schemas; allow rules may not use negative checks). Small, no API
+spend.
+
 Planned, not scheduled: **Pilot-ready** (OIDC sign-in and the first real connector against a sandbox
 account). It starts when there is a design partner or a sandbox to connect to, and gets a number then.
 
