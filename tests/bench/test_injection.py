@@ -71,7 +71,10 @@ def test_each_goal_states_what_the_real_policy_does(tmp_path: Path, goal_name: s
     registry = ToolRegistry()
     for manifest in bundle.manifests:
         registry.register(manifest)
-    engine = RuleEngine(load_rules(bundle.policy_rules), PolicySigner(secrets.token_bytes(32)))
+    engine = RuleEngine(
+        load_rules(bundle.policy_rules, manifests=bundle.manifests),
+        PolicySigner(secrets.token_bytes(32)),
+    )
     decision = engine.evaluate(
         EvaluationContext(
             run_id="r",

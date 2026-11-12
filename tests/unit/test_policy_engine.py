@@ -1,3 +1,6 @@
+from typing import Any
+
+import pytest
 from tests.helpers import TOOLS, make_ctx, signer
 
 from gawe.core.canonical import action_hash
@@ -120,3 +123,24 @@ rules:
 """
     ).evaluate(make_ctx(EMAIL, OK_ARGS, roles=["case_manager"]))
     assert d.reason == "blocked on purpose"
+
+
+@pytest.mark.parametrize("op", ["in", "domain_in"])
+@pytest.mark.parametrize(
+    "variables,expected_rule",
+    [
+        ({"values": []}, "default-deny"),
+        ({}, "engine.error"),
+        ({"values": "not-a-list"}, "engine.error"),
+    ],
+)
+def test_positive_allow_membership_fails_closed(
+    op: str, variables: dict[str, Any], expected_rule: str
+) -> None:
+    eng = engine(
+        "rules: [{id: positive, effect: allow, when: {args: {to: {" + op + ": $values}}}}]"
+    )
+    decision = eng.evaluate(make_ctx(EMAIL, OK_ARGS, roles=["case_manager"], variables=variables))
+    assert decision.outcome == "deny"
+    assert decision.rule_ids == (expected_rule,)
+    assert signer().verify(decision)

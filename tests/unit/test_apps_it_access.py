@@ -125,7 +125,7 @@ def test_missing_role_is_denied_before_policy_rules(tmp_path: Path) -> None:
 )
 def test_policy_golden_cases(system: str, level: str, outcome: str) -> None:
     b = ia.bundle(Path("/nonexistent-never-written"))
-    engine = RuleEngine(load_rules(b.policy_rules), signer())
+    engine = RuleEngine(load_rules(b.policy_rules, manifests=b.manifests), signer())
     manifest = {m.name: m for m in b.manifests}["iam.grant_access"]
     args = {"email": "dana.ortiz@acme.example", "system": system, "level": level}
     decision = engine.evaluate(

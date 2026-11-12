@@ -10,7 +10,9 @@ from gawe.core.policy.rules import load_rules
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 CASES = yaml.safe_load((FIXTURES / "example_policy_cases.yaml").read_text())["cases"]
-ENGINE = RuleEngine(load_rules(FIXTURES / "example_policies.yaml"), signer())
+ENGINE = RuleEngine(
+    load_rules(FIXTURES / "example_policies.yaml", manifests=tuple(TOOLS.values())), signer()
+)
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])

@@ -37,7 +37,9 @@ SCHEMA: dict[str, Any] = {
 }
 PROFILE = ReaderProfile("contract_v1", "Rate the overall risk.", SCHEMA)
 BENIGN = {"risk": "high", "summary": "Unlimited liability"}
-ENGINE = RuleEngine(load_rules(FIXTURES / "example_policies.yaml"), signer())
+ENGINE = RuleEngine(
+    load_rules(FIXTURES / "example_policies.yaml", manifests=tuple(TOOLS.values())), signer()
+)
 
 
 @pytest.fixture

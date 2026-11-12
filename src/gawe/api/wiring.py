@@ -131,7 +131,7 @@ def assemble(
         steps=stores.steps,
         executions=stores.executions,
         registry=registry,
-        policy=RuleEngine(load_rules(bundle.policy_rules), signer),
+        policy=RuleEngine(load_rules(bundle.policy_rules, manifests=bundle.manifests), signer),
         executor=executor,
         approvals=approvals,
         planner=Planner(provider, registry),

@@ -1,8 +1,11 @@
 from typing import Any
 
 import pytest
+import yaml
+from pydantic import ValidationError
 from tests.helpers import TOOLS, make_ctx
 
+from gawe.core.policy import rules as rules_module
 from gawe.core.policy.rules import (
     MISSING,
     PolicyEvaluationError,
@@ -22,7 +25,7 @@ def matches(
     op: str, operand: Any, args: dict[str, Any], variables: dict[str, Any] | None = None
 ) -> bool:
     rule = Rule.model_validate(
-        {"id": "t", "effect": "allow", "when": {"args": {"x": {op: operand}}}}
+        {"id": "t", "effect": "deny", "when": {"args": {"x": {op: operand}}}}
     )
     return rule_matches(rule, make_ctx(GENERIC, args, variables=variables))
 
@@ -235,3 +238,75 @@ def test_apply_operator_matches_like_a_rule_and_checks_its_operand() -> None:
         apply_operator("near", 1, 2)
     with pytest.raises(ValueError):
         apply_operator("in", "a", "not a list")
+
+
+UNSAFE_ALLOW_CHECKS = [
+    ("ne", "x"),
+    ("ne", "$v"),
+    ("not_in", []),
+    ("not_in", ["x"]),
+    ("not_in", "$v"),
+    ("domain_not_in", []),
+    ("domain_not_in", ["acme.com"]),
+    ("domain_not_in", "$v"),
+    ("exists", False),
+    ("exists", "$v"),
+]
+
+
+@pytest.mark.parametrize("op,operand", UNSAFE_ALLOW_CHECKS)
+@pytest.mark.parametrize("from_yaml", [False, True])
+def test_unsafe_allow_checks_are_rejected(op: str, operand: Any, from_yaml: bool) -> None:
+    raw = {"id": "unsafe", "effect": "allow", "when": {"args": {"nested.value": {op: operand}}}}
+    with pytest.raises(RuleConfigError if from_yaml else ValidationError) as error:
+        if from_yaml:
+            parse_rules(yaml.safe_dump({"rules": [raw]}))
+        else:
+            Rule.model_validate(raw)
+    assert "rule 'unsafe' arg 'nested.value'" in str(error.value)
+    assert f"'{op}' is unsafe" in str(error.value)
+
+
+def test_guarded_negative_allow_check_is_still_rejected() -> None:
+    with pytest.raises(RuleConfigError, match="'ne' is unsafe"):
+        parse_rules(
+            "rules: [{id: guarded, effect: allow, when: {args: {x: {exists: true, ne: 1}}}}]"
+        )
+
+
+@pytest.mark.parametrize(
+    "op,operand",
+    [
+        ("eq", "a"),
+        ("in", ["a"]),
+        ("in", []),
+        ("gt", 1),
+        ("gte", 1),
+        ("lt", 1),
+        ("lte", 1),
+        ("domain_in", ["acme.com"]),
+        ("domain_in", []),
+        ("exists", True),
+        *[(op, "$v") for op in ("eq", "in", "gt", "gte", "lt", "lte", "domain_in")],
+    ],
+)
+def test_safe_allow_checks_load(op: str, operand: Any) -> None:
+    raw = {"id": "safe", "effect": "allow", "when": {"args": {"x": {op: operand}}}}
+    assert parse_rules(yaml.safe_dump({"rules": [raw]}))[0].effect == "allow"
+
+
+@pytest.mark.parametrize("effect", ["deny", "needs_approval"])
+@pytest.mark.parametrize("op,operand", UNSAFE_ALLOW_CHECKS)
+def test_restrictive_rules_keep_missing_value_checks(effect: str, op: str, operand: Any) -> None:
+    raw = {"id": "restrict", "effect": effect, "when": {"args": {"x": {op: operand}}}}
+    if effect == "needs_approval":
+        raw["approver_role"] = "reviewer"
+    (rule,) = parse_rules(yaml.safe_dump({"rules": [raw]}))
+    value = False if op == "exists" else ([] if op in {"not_in", "domain_not_in"} else "x")
+    assert rule_matches(rule, make_ctx(GENERIC, {}, variables={"v": value}))
+
+
+def test_new_operator_is_not_implicitly_allow_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(rules_module._OPS, "new_operator", lambda value, operand: True)
+    with pytest.raises(RuleConfigError, match="'new_operator' is unsafe"):
+        parse_rules("rules: [{id: new, effect: allow, when: {args: {x: {new_operator: 1}}}}]")

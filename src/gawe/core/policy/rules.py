@@ -6,7 +6,8 @@ Semantics worth knowing before writing a rule:
 
 * A rule matches when *all* of its `when` predicates hold.
 * Missing or ill-typed values make positive operators (eq, in, gt, ...) false and negative
-  operators (ne, not_in, domain_not_in) true, so uncertainty never widens what is allowed.
+  operators (ne, not_in, domain_not_in) true. Allow rules reject such negative checks
+  and existence checks that can match absence; the engine also rejects schema-invalid args.
 * An operand written as "$a.b" is resolved from the evaluation context's variables (for example
   "$tenant.internal_domains"). An unresolvable variable is an evaluation error, which the engine
   turns into a deny.
@@ -14,7 +15,7 @@ Semantics worth knowing before writing a rule:
 
 import fnmatch
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -134,6 +135,10 @@ _OPS: Final[dict[str, Callable[[Any, Any], bool]]] = {
 }
 
 
+# New operators must be explicitly reviewed before they may authorize an action.
+_ALLOW_SAFE_OPS: Final = frozenset({"eq", "in", "gt", "gte", "lt", "lte", "domain_in", "exists"})
+
+
 def apply_operator(op: str, value: Any, operand: Any) -> bool:
     """Apply one rule operator to a value, exactly as policy does (for tools that match like it)."""
     problem = check_operand(op, operand)
@@ -213,6 +218,14 @@ class Rule(FrozenModel):
             raise ValueError("needs_approval rules must set approver_role")
         if self.effect != "needs_approval" and self.approver_role is not None:
             raise ValueError("approver_role is only valid on needs_approval rules")
+        if self.effect == "allow":
+            for path, conditions in self.when.args.items():
+                for op, operand in conditions.items():
+                    if op not in _ALLOW_SAFE_OPS or (op == "exists" and operand is not True):
+                        raise ValueError(
+                            f"rule '{self.id}' arg '{path}': '{op}' is unsafe in an allow rule; "
+                            "allow checks must not match unreadable or missing values"
+                        )
         return self
 
 
@@ -220,6 +233,7 @@ class Rule(FrozenModel):
 
 
 def parse_rules(text: str) -> tuple[Rule, ...]:
+    """Validate rule grammar only; use load_rules to also check application tool references."""
     try:
         document = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -249,8 +263,87 @@ def parse_rules(text: str) -> tuple[Rule, ...]:
     return tuple(rules)
 
 
-def load_rules(path: str | Path) -> tuple[Rule, ...]:
-    return parse_rules(Path(path).read_text(encoding="utf-8"))
+# These can change object structure; interpreting them requires a schema resolver.
+_INDIRECT_STRUCTURE: Final = frozenset(
+    {
+        "$ref",
+        "$dynamicRef",
+        "$recursiveRef",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "not",
+        "if",
+        "then",
+        "else",
+        "dependentSchemas",
+        "dependencies",
+    }
+)
+
+
+def _path_problem(schema: Mapping[str, Any], path: str) -> str | None:
+    parts = path.split(".")
+    if any(not part for part in parts):
+        return "empty path component"
+    current: Any = schema
+    for part in parts:
+        if not isinstance(current, Mapping):
+            return "path traverses a non-object schema"
+        indirect = sorted(_INDIRECT_STRUCTURE.intersection(current))
+        if indirect:
+            return f"unsupported path schema structure: {', '.join(indirect)}"
+        if current.get("type") != "object":
+            return "path traversal requires explicit type 'object'"
+        properties = current.get("properties", {})
+        if not isinstance(properties, Mapping) or part not in properties:
+            return f"property '{part}' is not declared"
+        current = properties[part]
+    return None
+
+
+def validate_rule_references(rules: Sequence[Rule], manifests: Sequence[ToolManifest]) -> None:
+    """Prove every policy path exists on every selected tool; never resolve runtime operands.
+
+    Manifests must include every version the caller can execute, including versions pinned
+    by resumed steps. Schema syntax is checked by the registry, not by this path validator.
+    """
+    for rule in rules:
+        when = rule.when
+        candidates = [
+            m for m in manifests if when.tool is None or fnmatch.fnmatchcase(m.name, when.tool)
+        ]
+        if when.tool is not None and not candidates:
+            raise RuleConfigError(
+                f"rule '{rule.id}': tool selector '{when.tool}' matches no registered tools"
+            )
+        candidates = [
+            m
+            for m in candidates
+            if (when.side_effect_class is None or m.side_effect_class == when.side_effect_class)
+            and (when.risk_tier is None or m.risk_tier == when.risk_tier)
+        ]
+        if not candidates:
+            raise RuleConfigError(
+                f"rule '{rule.id}': no tools match selectors "
+                f"tool={when.tool!r}, side_effect_class={when.side_effect_class!r}, "
+                f"risk_tier={when.risk_tier!r}"
+            )
+        for manifest in candidates:
+            for path in when.args:
+                problem = _path_problem(manifest.input_schema, path)
+                if problem:
+                    raise RuleConfigError(
+                        f"rule '{rule.id}', tool '{manifest.name}@{manifest.version}', "
+                        f"arg '{path}': {problem}"
+                    )
+
+
+def load_rules(path: str | Path, *, manifests: Sequence[ToolManifest]) -> tuple[Rule, ...]:
+    """Load application policy, refusing stale tool names and argument paths."""
+    rules = parse_rules(Path(path).read_text(encoding="utf-8"))
+    validate_rule_references(rules, manifests)
+    return rules
 
 
 # --- matching ----------------------------------------------------------------------------------

@@ -67,7 +67,10 @@ def main(app: str) -> int:
         registry.register(manifest)
     provider = AnthropicProvider()
     reader, planner = Reader(provider, bundle.reader_profile), Planner(provider, registry)
-    engine = RuleEngine(load_rules(bundle.policy_rules), PolicySigner(secrets.token_bytes(32)))
+    engine = RuleEngine(
+        load_rules(bundle.policy_rules, manifests=bundle.manifests),
+        PolicySigner(secrets.token_bytes(32)),
+    )
     samples = Path(module.__file__).parent / "samples"
 
     for filename, objective in CASES[app]:

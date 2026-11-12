@@ -91,7 +91,10 @@ class Flow:
         self.registry = ToolRegistry()
         for manifest in manifests().values():
             self.registry.register(manifest)
-        self.engine = RuleEngine(load_rules(FIXTURES / "example_policies.yaml"), signer())
+        self.engine = RuleEngine(
+            load_rules(FIXTURES / "example_policies.yaml", manifests=tuple(TOOLS.values())),
+            signer(),
+        )
         self.approval_store = InMemoryApprovalStore()
         self.approvals = ApprovalService(
             self.approval_store,

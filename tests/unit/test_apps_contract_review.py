@@ -266,7 +266,7 @@ def test_policy_golden_cases(
     tool: str, args: dict[str, Any], roles: list[str], outcome: str, approver: str | None
 ) -> None:
     b = cr.bundle(Path("/nonexistent-never-written"))
-    engine = RuleEngine(load_rules(b.policy_rules), signer())
+    engine = RuleEngine(load_rules(b.policy_rules, manifests=b.manifests), signer())
     manifest = {m.name: m for m in b.manifests}[tool]
     variables = b.variables(None)  # type: ignore[arg-type]  # no run: no findings yet
     decision = engine.evaluate(make_ctx(manifest, args, roles=roles, variables=variables))
@@ -294,7 +294,7 @@ def test_a_low_risk_rating_needs_legal_when_contradicted_or_large(
     findings: dict[str, Any] | None, args: dict[str, Any], outcome: str, rule: str | None
 ) -> None:
     b = cr.bundle(Path("/nonexistent-never-written"))
-    engine = RuleEngine(load_rules(b.policy_rules), signer())
+    engine = RuleEngine(load_rules(b.policy_rules, manifests=b.manifests), signer())
     manifest = {m.name: m for m in b.manifests}["crm.write_assessment"]
     variables = {
         **cr.TENANT_VARIABLES,

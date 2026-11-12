@@ -20,10 +20,11 @@ adds. If verification fails twice on a milestone, stop and report instead of loo
 | M11  | Hardening and docs: threat model, architecture, API-boundary adversarial tests, least-privilege DB role, failed-sign-in limit, closing approvals when a run ends, restart recovery | Done (`make check` passes; role migration verified on Postgres 16; `make test-schema` passes, 71 checks; `gawe_app` confirmed able to log in on the dev database, 2026-11-08) |
 | M12  | Evidence: reproducible benchmark harness (CUAD Reader accuracy; injection test counting model-fooled and unauthorized-step-ran separately, with run-to-run variance), external audit-head anchor, and a plain-language report | Done (first full run on `claude-sonnet-5-5`, 2026-11-08: 0 of 122 attack trials fooled the model, 0 attacker steps ran, 30 of 30 clean twins completed; clause recall 94%, precision 51%; $15.77 including the trial. See [m12-design.md](m12-design.md)) |
 | M13  | Testing the second line of defence: a free scripted benchmark run that sends every attack through the engine with a model fooled on purpose, two rules for "low" CRM ratings, the clean-run policy table, and the decision on internal email and routine access grants | Done (2026-11-10: of 38 scripted runs, 10 attacker steps ran, all allowed by policy on purpose; 5 denied; 23 waited for a person. A "low" rating now needs legal approval when the Reader's findings contradict it or the deal is over 100,000. See [m13-design.md](m13-design.md) and [results.md](results.md#when-the-model-is-fooled)) |
+| M14  | Policy that cannot drift silently: rules checked at load against the input schema of every registered tool version, allow rules that cannot match a missing or unreadable value, and a property test that unreadable input never ends in allow | Done (2026-11-12: both shipped policies load cleanly; renaming `risk_level` now stops startup. The property test covers every shipped tool field, malformed addresses and policy variables, and every operator with the schema check removed. The per-check "unreadable" audit marker is deferred to a later milestone. See [m14-design.md](m14-design.md)) |
 
-Next: **M14**, policy that cannot drift silently: the two load-time checks at the top of the list
-below (rules must match the tool schemas; allow rules may not use negative checks). Small, no API
-spend.
+Next: **M15**, policy edge cases: property-based rule fuzzing with an independent oracle, a check
+that policy never reads agent-writable state, within-app combination rules that only escalate, and
+grants only to the reported requester. No API spend.
 
 Planned, not scheduled: **Pilot-ready** (OIDC sign-in and the first real connector against a sandbox
 account). It starts when there is a design partner or a sandbox to connect to, and gets a number then.
@@ -33,23 +34,6 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 
 ## After M13: candidates, not scheduled
 
-- **Check rules against tool schemas at load time.** Policy is written per tool, so it can drift
-  from the tools. Two cases already fail safe: a tool with no rule is denied by default, and a
-  proposed step that does not match the tool's current schema is denied before any rule runs
-  (`engine.invalid_args`). The gap is a renamed field the rules do not follow: a rule that adds
-  an approval or a deny on the old name quietly stops matching, because a missing value makes
-  its check false. Rename `risk_level` and both downgrade rules stop firing, so a "low" rating
-  is allowed. Fix: when policy loads, require every tool a rule names to be registered and every
-  argument path it uses to exist in that tool's input schema, and refuse to start otherwise.
-  Small, and the first candidate for the next milestone. (Raised by a reader.)
-- **Unreadable input never ends in allow, enforced.** The engine's default (a value it cannot
-  read makes positive checks false and negative ones true) keeps uncertainty from widening what
-  is allowed only in approval and deny rules. An allow rule using a negative check (`ne`,
-  `not_in`, `domain_not_in`) would match an unreadable value and widen. No current allow rule
-  does (they match on the tool alone), so it holds by convention, not design. Fix: reject
-  negative checks in allow rules at load time, and add one property test, separate from the
-  per-rule fuzzing, that no unreadable input ends in allow under any rule, so a change to the
-  default fails loudly. (Raised by a reader.)
 - **Why the Reader over-flags `unlimited_liability`.** In the first run its precision on CUAD was
   33% (61 of 91 flags on contracts CUAD does not mark), against 69–74% for the other scored
   kinds. Its definition of "uncapped" may be wider than CUAD's; compare the flagged contracts.
@@ -107,6 +91,17 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   internal address that forwards outside looks internal to policy. Look-alike domains already
   fall into review (the domain must match exactly), so the safer option may be allowing specific
   internal recipients rather than the whole domain. (Raised by readers.)
+  Judge the mailboxes, not the label: a group or alias address passes as internal and then fans
+  out to whoever is behind it, possibly outside the company. Have the connector expand the
+  recipient through the directory before the approval hash is computed, so policy checks every
+  resulting mailbox and the approval binds the expanded set, plus the directory's own version or
+  change marker if it has one. Re-expand at send time and compare the actual set with the
+  approved one; if membership changed, the send fails and needs a fresh approval. Record the
+  lookup time alongside for audit, not inside the hash (with the time in the hash every
+  re-expansion would differ even when nothing changed), and let approval expiry stop a stale
+  expansion being sent days later. Block, not warn, on any mismatch between
+  the approved set and what is sent. A mock directory with groups and aliases makes this testable
+  now; expansion against a real mail system waits for a real connector.
 - **Grants only to the requester the Reader reported.** When only the Planner is fooled, the
   attacker's grant goes to someone other than the ticket's requester (3 of the 6 grant attacks
   that ran). A rule comparing the grant's email with the Reader's `requester_email` would stop
@@ -124,10 +119,36 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 - **Check state, not just the tool's reply.** Post-conditions today compare a tool's own reply
   with what was asked ("the assessment I wrote says low for C-1002"). For writes, read the record
   back from the system with a separate call and check that instead, and let that read set the
-  step's status rather than confirm it afterwards. Run status already never comes from a model's
+  step's status rather than confirm it afterwards. For email, read the sent message's actual
+  recipients back, which also catches one approved recipient becoming three on the message. Read
+  them from the mail server's own record of what it accepted (the RCPT TO entries in its trace, or
+  the delivered headers), never from the app's log of what it meant to send, which can only ever
+  agree. Run status already never comes from a model's
   prose; the executor decides it. A state that cannot be read straight away (a post in
-  moderation, say) needs a "pending" status with an expiry and a scheduled re-read; nothing in
-  the engine does that today. (Raised by readers.)
+  moderation, say) needs a pending status with a deadline and three outcomes: done (a fresh read
+  agrees), blocked (the read disagrees; keep the difference) or unknown (the deadline passed with
+  no read), so "pending" cannot become where failures quietly rest. Resolve them with a scheduled
+  sweep, not the next run, which may never start; the sweep emits a heartbeat with resolved and
+  still-unknown counts, and the alarm is the unknown count growing while heartbeats continue.
+  Nothing in the engine does this today. (Raised by readers.)
+- **Approvals bind the version of every record they refer to.** The action hash covers the tool,
+  its version and the resolved arguments, so an approved signature is tied to a contract id, not
+  to that contract's content. The deal value is rechecked at execution (the send fails with
+  `deal_value_mismatch` if it changed), but replacing the contract's text under the same id would
+  not be caught. Have the contract system return a version or content hash, carry it in the
+  arguments so it is inside the approval hash, and have the connector recheck it before executing;
+  a replaced record then fails and needs a new approval. Apply the same to any tool that acts on a
+  referenced record. (Raised by a reader.)
+- **No model-written prose on the approval screen.** The approval card shows the policy's reason
+  (from the YAML, trusted) and every resolved argument as raw JSON, so free-text arguments written
+  by the model from the document (an email's subject and body, an assessment's summary) sit next to
+  the Approve button. Once broad allows are tightened, a rule-aware attacker aims for steps that
+  need approval and spends that text on persuasion ("counsel already confirmed this; approve
+  before the deadline"). Show typed arguments first (recipient, amount, the action's hash, and the
+  difference from the last approved call); collapse free-text arguments and label them as written
+  by the model from an untrusted document. A UI test can check the labelling now. Whether
+  approvals change with the wording (vary only the summary between identical requests) needs real
+  approvers, so that measurement waits. (Raised by readers.)
 - **Injection through tool outputs.** No model reads tool outputs today: the Planner plans once
   from the Reader's findings, and later steps receive earlier outputs as arguments (`$ref`),
   which policy checks on their final values. Two gaps: no attack yet puts poisoned data in a
@@ -209,8 +230,30 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   that floor, is the limit: with 12% of answers changing between repeats, about a third of
   contracts (around 16 of 51) would show a disagreement even between identical setups. Noise does
   not invalidate the test, but it costs power, so compare each model's majority answer over its 3
-  reads and report separately the disagreements that hold across repeats. (Agreed with a reader
+  reads and report separately the disagreements that hold across repeats. For accuracy, use all
+  six reads rather than the majority: score each contract as (correct reads for A) minus (correct
+  reads for B), from -3 to +3, and permute that across contracts; keep the whole-contract swap for
+  precision and recall, which are ratios. (Agreed with a reader
   in the comments on the published write-up.)
+
+## Considered and declined
+
+Reader suggestions weighed and not adopted, with the reason:
+
+- **A confidence score from the Reader to prioritise reviews.** The confidence comes from the model
+  an attacker is trying to fool, so "low risk, high confidence" costs the attacker nothing. Reviews
+  are prioritised on values the document cannot change instead.
+- **Approval on every zero-flag "low" rating.** An honest low-risk contract also arrives with no
+  flags, so this means approval on almost every honest low. The gap is measured instead (the
+  sampled review) and narrowed by the deal-value rule.
+- **Approval on every risk write and access grant.** Both happen in every clean run, so this puts a
+  person on every review and request. The narrower version (approval when an action lowers the bar)
+  stays on the list.
+- **Per-contract Fisher exact tests for the model comparison.** With 3 reads per setup the most
+  extreme split gives p = 0.05 one-sided and 0.10 two-sided, so no contract can pass, and the
+  p-values are too coarse to combine. The suggester agreed; the paired permutation test is used.
+- **A richer, context-aware policy language.** Kept static on purpose, for auditability. Context
+  comes in as values the app computes from trusted sources (the deal value), not as rule logic.
 
 ## Decisions in force
 
@@ -220,6 +263,11 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 - Internal email and non-admin, non-production access grants to company accounts run without
   approval (decided in M13): approval on every one would be clicked through. Revisit with real
   traffic. Internal email is under review (see "After M13"): no clean run sent any email.
+- Policy refuses to start when a rule names a tool that is not registered, or an argument path
+  missing from any matching tool version (M14).
+- Allow rules may not use a check that matches a missing or unreadable value (`ne`, `not_in`,
+  `domain_not_in`, `exists: false` or a variable): such checks belong in approval and deny rules,
+  where widening only adds reviews (M14).
 - Python 3.12+ backend (FastAPI), Postgres, own state machine now (Temporal later), TypeScript UI.
 - The policy engine, not the LLM, authorizes execution. Plans are untrusted input.
 - Approvals bind to the action hash (tool, version, resolved args, run, step).
@@ -247,6 +295,8 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 - Uploads accept text and Markdown only; PDF/DOCX extraction is a separate parsing risk and comes later.
 - Failed-sign-in limiting is per address; behind the UI all users share one address. See docs/threat-model.md.
 - Dependencies are not scanned automatically; `npm audit` reported no issues in the UI on a fresh install (2026-11-09).
+- Policy argument paths must be declared object properties. A tool schema that uses `$ref`,
+  `anyOf` and the like along a rule's path stops startup until the load check supports it (M14).
 - Reader free-text fields are still attacker-influenced. Keep them to a minimum in each app's
   Reader schema and prefer enums, numbers and booleans.
 
