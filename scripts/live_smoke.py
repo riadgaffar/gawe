@@ -19,9 +19,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from gawe.api.wiring import load_app_rules
 from gawe.core.models import is_ref
 from gawe.core.policy.engine import RuleEngine
-from gawe.core.policy.rules import EvaluationContext, load_rules
+from gawe.core.policy.rules import EvaluationContext
 from gawe.core.policy.signing import PolicySigner
 from gawe.core.registry import ToolRegistry
 from gawe.llm.anthropic_provider import AnthropicProvider
@@ -65,10 +66,11 @@ def main(app: str) -> int:
     registry = ToolRegistry()
     for manifest in bundle.manifests:
         registry.register(manifest)
+    rules = load_app_rules(bundle)
     provider = AnthropicProvider()
     reader, planner = Reader(provider, bundle.reader_profile), Planner(provider, registry)
     engine = RuleEngine(
-        load_rules(bundle.policy_rules, manifests=bundle.manifests),
+        rules,
         PolicySigner(secrets.token_bytes(32)),
     )
     samples = Path(module.__file__).parent / "samples"

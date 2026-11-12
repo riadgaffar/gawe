@@ -26,7 +26,8 @@ from bench.injection.matchers import matches, step_matches
 from bench.results import STATUS_BUDGET_STOPPED, ResultsWriter, run_trials
 from gawe.api.auth import Identity
 from gawe.api.background import InlineBackground
-from gawe.api.wiring import AppBundle, assemble, memory_stores
+from gawe.api.service import ApiService
+from gawe.api.wiring import AppBundle, Stores, assemble, memory_stores
 from gawe.apps import contract_review, it_access
 from gawe.connectors.base import Ledger
 from gawe.core.policy.signing import PolicySigner
@@ -115,39 +116,90 @@ def _ids(trial: Trial) -> dict[str, Any]:
     }
 
 
-def drive(case: Case, provider: CountingProvider, sleep: Callable[[float], None]) -> dict[str, Any]:
-    """One run of `case` through the real engine. A budget or API refusal is raised, even though
-    the service swallows errors while advancing a run."""
-    with tempfile.TemporaryDirectory(prefix="gawe-bench-") as tmp:
-        directory = Path(tmp)
-        bundle = BUNDLES[case.app](directory)
-        recorder = Recorder(provider)
-        stores = memory_stores()
-        service = assemble(
-            bundle,
-            stores=stores,
-            signer=PolicySigner(secrets.token_bytes(32)),
-            provider=recorder,
+@dataclass(frozen=True)
+class TrialEnvironment:
+    """Reusable app closures (including mocks), stores, signer and ledger location.
+
+    Construct once per sequence, never between its prefix and attack. Ledger reads reload the
+    file because the app owns the writer instance. Default drive/CLI calls still create fresh state.
+    """
+
+    app: str
+    bundle: AppBundle
+    stores: Stores
+    signer: PolicySigner
+    ledger_path: Path
+
+    @classmethod
+    def create(cls, app: str, directory: Path) -> "TrialEnvironment":
+        return cls(
+            app,
+            BUNDLES[app](directory),
+            memory_stores(),
+            PolicySigner(secrets.token_bytes(32)),
+            directory / "ledger.jsonl",
+        )
+
+    def effects(self) -> list[dict[str, Any]]:
+        return Ledger(self.ledger_path).records()
+
+    def service(self, provider: LLMProvider) -> ApiService:
+        return assemble(
+            self.bundle,
+            stores=self.stores,
+            signer=self.signer,
+            provider=provider,
             background=InlineBackground(),
         )
-        who = Identity(TENANT, "requester", ROLES[case.app])
-        profile = next(iter(sorted(bundle.profiles)))
-        run_id = service.start_run(
-            who, objective=case.objective, profile=profile, document=document_for(case)
-        ).run_id
+
+
+def drive(
+    case: Case,
+    provider: CountingProvider,
+    sleep: Callable[[float], None],
+    *,
+    environment: TrialEnvironment | None = None,
+) -> dict[str, Any]:
+    """Run a case, classifying only new effects while retaining supplied environment state.
+
+    A budget or API refusal is raised even though the service swallows advancing-run errors.
+    """
+    if environment is not None:
+        if environment.app != case.app:
+            raise ValueError("trial environment belongs to a different app")
+        return _drive(case, provider, sleep, environment)
+    with tempfile.TemporaryDirectory(prefix="gawe-bench-") as tmp:
+        return _drive(case, provider, sleep, TrialEnvironment.create(case.app, Path(tmp)))
+
+
+def _drive(
+    case: Case,
+    provider: CountingProvider,
+    sleep: Callable[[float], None],
+    environment: TrialEnvironment,
+) -> dict[str, Any]:
+    effect_start = len(environment.effects())
+    recorder = Recorder(provider)
+    service = environment.service(recorder)
+    stores = environment.stores
+    who = Identity(TENANT, "requester", ROLES[case.app])
+    profile = next(iter(sorted(environment.bundle.profiles)))
+    run_id = service.start_run(
+        who, objective=case.objective, profile=profile, document=document_for(case)
+    ).run_id
+    provider.raise_if_stopped()
+    for attempt in range(UNAVAILABLE_RETRIES):
+        if stores.runs.get(run_id).status not in _STILL_PLANNING:
+            break
+        sleep(2.0 * 2**attempt)  # the model was unavailable; planning was deferred
+        service.resume_run(who, run_id)
         provider.raise_if_stopped()
-        for attempt in range(UNAVAILABLE_RETRIES):
-            if stores.runs.get(run_id).status not in _STILL_PLANNING:
-                break
-            sleep(2.0 * 2**attempt)  # the model was unavailable; planning was deferred
-            service.resume_run(who, run_id)
-            provider.raise_if_stopped()
-        paused = stores.runs.get(run_id).status is RunStatus.PAUSED_FOR_APPROVAL
-        if paused:
-            service.cancel_run(who, run_id)  # never approve
-        run = stores.runs.get(run_id)
-        effects = Ledger(directory / "ledger.jsonl").records()
-        return classify(case, run, recorder.replies, effects, paused=paused)
+    paused = stores.runs.get(run_id).status is RunStatus.PAUSED_FOR_APPROVAL
+    if paused:
+        service.cancel_run(who, run_id)  # never approve
+    run = stores.runs.get(run_id)
+    effects = environment.effects()[effect_start:]
+    return classify(case, run, recorder.replies, effects, paused=paused)
 
 
 def classify(

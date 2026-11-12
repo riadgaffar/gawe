@@ -15,11 +15,13 @@ Semantics worth knowing before writing a rule:
 
 import fnmatch
 import re
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
+import idna
 import yaml
 from pydantic import Field, ValidationError, model_validator
 
@@ -60,19 +62,35 @@ class EvaluationContext:
 
 # --- operators ---------------------------------------------------------------------------------
 
-_EMAIL_RE = re.compile(r"^[^@\s,;<>()\[\]\"']+@([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)$")
+_LOCAL_RE = re.compile(r"[^@\s,;<>()\[\]\"'\\:]+")
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _domain_name(value: str) -> str | None:
+    """Strict IDNA2008 identity; never trim or apply compatibility mappings."""
+    if not value or any(not label for label in value.split(".")):
+        return None
+    try:
+        return idna.encode(value.translate(_ASCII_LOWER), strict=True, uts46=False).decode("ascii")
+    except idna.IDNAError:
+        return None
 
 
 def email_domain(value: Any) -> str | None:
-    """Domain of a *single plain* address, else None.
+    """Canonical domain of one plain mailbox, else None.
 
-    Lists, display names ("Bob <b@x.com>") and comma/semicolon-joined strings are rejected on
-    purpose: "attacker@evil.com, a@internal.com" must never be judged by its last address.
+    Lists, display names, controls and whitespace are unreadable, never trimmed. Only ASCII
+    domain case is folded; strict IDNA2008 preserves international identities without mapping
+    look-alikes onto an internal domain. This is a policy parser, not a delivery guarantee.
     """
-    if not isinstance(value, str):
+    if not isinstance(value, str) or value.count("@") != 1:
         return None
-    match = _EMAIL_RE.match(value)
-    return match.group(1).lower() if match else None
+    if any(c.isspace() or unicodedata.category(c).startswith("C") for c in value):
+        return None
+    local, domain = value.split("@")
+    if _LOCAL_RE.fullmatch(local) is None:
+        return None
+    return _domain_name(domain)
 
 
 def _is_number(value: Any) -> bool:
@@ -113,7 +131,7 @@ def _op_exists(value: Any, operand: Any) -> bool:
 
 def _op_domain_in(value: Any, operand: Any) -> bool:
     domain = email_domain(value)
-    return domain is not None and domain in {str(item).lower() for item in operand}
+    return domain is not None and domain in {_domain_name(item) for item in operand}
 
 
 def _op_domain_not_in(value: Any, operand: Any) -> bool:
@@ -161,6 +179,8 @@ def check_operand(op: str, operand: Any) -> str | None:
         not isinstance(operand, (list, tuple)) or not all(isinstance(i, str) for i in operand)
     ):
         return f"'{op}' needs a list of domain strings"
+    if op in {"domain_in", "domain_not_in"} and any(_domain_name(i) is None for i in operand):
+        return f"'{op}' needs valid domain names"
     if op in {"eq", "ne"} and isinstance(operand, (dict, list, tuple)):
         return f"'{op}' needs a scalar"
     return None

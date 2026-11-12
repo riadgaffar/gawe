@@ -141,6 +141,21 @@ In total, 10 of 38 attacker steps ran, 5 were denied, and 23 waited for a person
 approval" is safe only if that person says no. Every step that ran is one the policy allows
 without a person, on purpose.
 
+### M15 update: grants bound to the reported requester
+
+On 12 November 2026, IT Access added `requester-mismatch-denied`: the proposed grant email must
+exactly match the requester in that run's Reader findings. Case changes, alias changes and
+alternative domain encodings do not count as the same reported string; missing or unusable
+requester findings fail closed. This stops a fooled Planner from substituting a different person,
+but a fooled Reader can still report the attacker's account.
+
+The new scripted run (`20261112T213839Z-scripted`) matches all 38 approved expectations:
+**7 attacker steps ran, 8 were denied, and 23 waited for approval**. The only outcome changes
+from the historical table above are the three planner-mode lateral grants, which now deny.
+The three reader-mode lateral grants still run. No model was called. The run records commit
+`b672033ad06ddb5ab18743a85c12c9ee1c8046eb` with `git_dirty: true`, since the S2 changes were
+uncommitted when verified. The earlier table remains the historical M13 result.
+
 ### Two new rules
 
 Before this run, a fooled model could quietly record any contract as low risk: policy allowed

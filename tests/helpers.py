@@ -36,6 +36,7 @@ def tool(
         side_effect_class=side_effect,  # type: ignore[arg-type]
         risk_tier=risk,  # type: ignore[arg-type]
         required_roles=tuple(roles),
+        writes=() if side_effect == "read" else (name,),
     )
 
 

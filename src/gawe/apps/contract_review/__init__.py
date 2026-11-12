@@ -21,6 +21,7 @@ from gawe.connectors.base import Ledger
 from gawe.connectors.mock_clm import MockCLM
 from gawe.connectors.mock_email import MockEmail
 from gawe.connectors.mock_esign import MockESign
+from gawe.core.policy.provenance import PolicySource, PolicyVariable
 from gawe.core.runs import RunRecord
 
 HERE = Path(__file__).parent
@@ -46,6 +47,17 @@ def bundle(demo_dir: Path | None = None, *, email: MockEmail | None = None) -> A
         reader_profile=PROFILE,
         variables=_variables_for(clm),
         postconditions=POSTCONDITIONS,
+        policy_sources={
+            "tenant_config": PolicySource(kind="configuration", resource="config.tenant"),
+            "reader_findings": PolicySource(kind="findings", resource="run.findings"),
+            "deal_values": PolicySource(kind="resource", resource="clm.contract.deal_value"),
+        },
+        policy_variables={
+            "tenant.internal_domains": PolicyVariable(dependencies=("tenant_config",)),
+            "tenant.blocked_domains": PolicyVariable(dependencies=("tenant_config",)),
+            "review.unsupported_levels": PolicyVariable(dependencies=("reader_findings",)),
+            "review.large_deals": PolicyVariable(dependencies=("deal_values",)),
+        },
     )
 
 

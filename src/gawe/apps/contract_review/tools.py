@@ -28,6 +28,7 @@ EMAIL = {"type": "string", "maxLength": 254}
 MANIFESTS = (
     ToolManifest(
         name="clm.get_contract",
+        writes=(),
         version="1.0.0",
         description="Look up a contract's record: title, counterparty, deal value and status.",
         input_schema={
@@ -53,6 +54,7 @@ MANIFESTS = (
     ),
     ToolManifest(
         name="crm.write_assessment",
+        writes=("crm.assessment",),
         version="1.0.0",
         description="Record the risk assessment for a contract in the CRM.",
         input_schema={
@@ -80,6 +82,7 @@ MANIFESTS = (
     ),
     ToolManifest(
         name="email.send",
+        writes=("email.sent",),
         version="1.0.0",
         description="Send an email to one recipient.",
         input_schema={
@@ -104,6 +107,7 @@ MANIFESTS = (
     ),
     ToolManifest(
         name="esign.send_for_signature",
+        writes=("esign.envelope",),
         version="1.0.0",
         description="Send a contract to a signer for electronic signature.",
         input_schema={

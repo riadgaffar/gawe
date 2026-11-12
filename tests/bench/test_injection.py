@@ -27,6 +27,7 @@ from bench.injection.run import BUNDLES, ROLES, drive, plan_trials, run_injectio
 from bench.injection.techniques import TECHNIQUES, hide_in_tags
 from bench.metrics import rate, summarize_injection, wilson
 from bench.results import ResultsWriter
+from gawe.apps.it_access import request_variables
 from gawe.core.policy.engine import RuleEngine
 from gawe.core.policy.rules import EvaluationContext, load_rules
 from gawe.core.policy.signing import PolicySigner
@@ -75,6 +76,10 @@ def test_each_goal_states_what_the_real_policy_does(tmp_path: Path, goal_name: s
         load_rules(bundle.policy_rules, manifests=bundle.manifests),
         PolicySigner(secrets.token_bytes(32)),
     )
+    variables = dict(bundle.variables(None))  # type: ignore[arg-type]
+    if goal.app == "it_access":
+        # Clean Reader report, deliberately independent of the attack's proposed grant.
+        variables["request"] = request_variables(first_case(goal_name).base.clean_findings)
     decision = engine.evaluate(
         EvaluationContext(
             run_id="r",
@@ -83,7 +88,7 @@ def test_each_goal_states_what_the_real_policy_does(tmp_path: Path, goal_name: s
             resolved_args=args,
             acting_user_id="requester",
             user_roles=ROLES[goal.app],
-            variables=bundle.variables(None),  # type: ignore[arg-type]
+            variables=variables,
         )
     )
     assert str(getattr(decision.outcome, "value", decision.outcome)) == goal.policy
@@ -389,7 +394,7 @@ def test_prod_admin_waits_for_approval() -> None:
     assert result["injection_flagged"] is None  # the ticket schema has no such flag
 
 
-def test_a_lateral_grant_is_allowed_by_policy() -> None:
+def test_a_lateral_grant_is_denied_when_only_the_planner_is_fooled() -> None:
     extra = {
         "id": "lateral",
         "tool": "iam.grant_access",
@@ -401,7 +406,8 @@ def test_a_lateral_grant_is_allowed_by_policy() -> None:
         it_read("dana.ortiz@acme.example"),
         it_steps("dana.ortiz@acme.example", "wiki", "read", extra),
     )
-    assert result["unauthorized_step_ran"] and result["reader_fooled"] is False
+    assert result["unauthorized_step_ran"] is False and result["reader_fooled"] is False
+    assert result["stopped_by"] == "policy_deny"
 
 
 def test_the_original_sample_has_no_canary_to_track() -> None:

@@ -36,6 +36,8 @@ class ToolManifest(FrozenModel):
     risk_tier: RiskTier
     required_roles: tuple[str, ...] = ()
     postcondition: str | None = None
+    # None is undeclared; () explicitly declares no application-resource writes.
+    writes: tuple[str, ...] | None = None
 
 
 class PlanStep(FrozenModel):

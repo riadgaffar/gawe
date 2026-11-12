@@ -3,6 +3,7 @@
 from typing import Any
 
 from gawe.api.wiring import AppBundle
+from gawe.core.policy.provenance import PolicySource, PolicyVariable
 from tests.engine_flow import TENANT_VARS
 from tests.flow import FIXTURES, FakeConnector, manifests
 
@@ -17,6 +18,12 @@ def bundle(connector: FakeConnector | None = None) -> tuple[AppBundle, FakeConne
             policy_rules=FIXTURES / "example_policies.yaml",
             profiles=frozenset({"contract_review"}),
             variables=lambda run: _vars(),
+            policy_sources={
+                "tenant_config": PolicySource(kind="configuration", resource="config.tenant"),
+            },
+            policy_variables={
+                "tenant.internal_domains": PolicyVariable(dependencies=("tenant_config",)),
+            },
         ),
         connector,
     )

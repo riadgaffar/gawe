@@ -13,6 +13,7 @@ EMAIL = {"type": "string", "maxLength": 254}
 MANIFESTS = (
     ToolManifest(
         name="iam.lookup_user",
+        writes=(),
         version="1.0.0",
         description="Look up a company user by email: name, department and manager.",
         input_schema={
@@ -35,6 +36,7 @@ MANIFESTS = (
     ),
     ToolManifest(
         name="iam.grant_access",
+        writes=("iam.grant",),
         version="1.0.0",
         description="Grant a user access to a system at a given level.",
         input_schema={

@@ -19,7 +19,8 @@ from gawe.core.audit import AuditLog, AuditStore, InMemoryAuditStore
 from gawe.core.executor import Executor, RetryPolicy, ToolImplementation
 from gawe.core.models import ToolManifest
 from gawe.core.policy.engine import RuleEngine
-from gawe.core.policy.rules import load_rules
+from gawe.core.policy.provenance import PolicySource, PolicyVariable, validate_provenance
+from gawe.core.policy.rules import Rule, load_rules
 from gawe.core.policy.signing import PolicySigner
 from gawe.core.records import (
     ExecutionStore,
@@ -48,6 +49,15 @@ class AppBundle:
     reader_profile: ReaderProfile | None = None
     variables: Callable[[RunRecord], Mapping[str, Any]] = lambda run: {}
     postconditions: Mapping[str, PostCondition] = field(default_factory=dict)
+    policy_sources: Mapping[str, PolicySource] = field(default_factory=dict)
+    policy_variables: Mapping[str, PolicyVariable] = field(default_factory=dict)
+
+
+def load_app_rules(bundle: AppBundle) -> tuple[Rule, ...]:
+    """Application entry points must validate schemas and provenance before serving runs."""
+    rules = load_rules(bundle.policy_rules, manifests=bundle.manifests)
+    validate_provenance(rules, bundle.manifests, bundle.policy_sources, bundle.policy_variables)
+    return rules
 
 
 @dataclass(frozen=True)
@@ -111,6 +121,7 @@ def assemble(
     if missing:
         raise ValueError(f"no implementation for tools: {sorted(missing)}")
 
+    rules = load_app_rules(bundle)
     audit = AuditLog(stores.audit, clock=clock)
     anchorer = Anchorer(audit, anchor_sinks, telemetry=telemetry, clock=clock)
     approvals = ApprovalService(stores.approvals, signer, audit, clock=clock)
@@ -131,7 +142,7 @@ def assemble(
         steps=stores.steps,
         executions=stores.executions,
         registry=registry,
-        policy=RuleEngine(load_rules(bundle.policy_rules, manifests=bundle.manifests), signer),
+        policy=RuleEngine(rules, signer),
         executor=executor,
         approvals=approvals,
         planner=Planner(provider, registry),

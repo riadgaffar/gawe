@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 from tests.api_bundle import bundle
 from tests.api_flow import ALICE, BOB
@@ -29,14 +31,7 @@ def test_assembled_service_runs_an_approval_flow() -> None:
 
 def test_reader_profile_enables_documents() -> None:
     b, _ = bundle()
-    with_reader = type(b)(
-        manifests=b.manifests,
-        tools=b.tools,
-        policy_rules=b.policy_rules,
-        profiles=b.profiles,
-        reader_profile=PROFILE,
-        variables=b.variables,
-    )
+    with_reader = replace(b, reader_profile=PROFILE)
     service = assemble(
         with_reader,
         stores=memory_stores(),
@@ -50,12 +45,7 @@ def test_reader_profile_enables_documents() -> None:
 
 def test_missing_tool_implementation_is_refused() -> None:
     b, _ = bundle()
-    broken = type(b)(
-        manifests=b.manifests,
-        tools={},
-        policy_rules=b.policy_rules,
-        profiles=b.profiles,
-    )
+    broken = replace(b, tools={})
     with pytest.raises(ValueError, match="no implementation"):
         assemble(
             broken,

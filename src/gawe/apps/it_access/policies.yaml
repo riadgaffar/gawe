@@ -33,3 +33,12 @@ rules:
       tool: iam.grant_access
       args:
         email: {domain_not_in: $tenant.internal_domains}
+
+  # Bind the Planner to this run's Reader report; a fooled Reader can still name the wrong person.
+  - id: requester-mismatch-denied
+    effect: deny
+    reason: Access can only be granted to the requester reported for this run
+    when:
+      tool: iam.grant_access
+      args:
+        email: {ne: $request.requester_email}

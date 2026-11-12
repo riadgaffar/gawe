@@ -10,6 +10,7 @@ dependencies = [
     "pydantic>=2.7",
     "jsonschema>=4.22",
     "pyyaml>=6.0",
+    "idna>=3.20,<4",
 ]
 
 [project.optional-dependencies]
