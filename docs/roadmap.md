@@ -22,9 +22,10 @@ adds. If verification fails twice on a milestone, stop and report instead of loo
 | M13  | Testing the second line of defence: a free scripted benchmark run that sends every attack through the engine with a model fooled on purpose, two rules for "low" CRM ratings, the clean-run policy table, and the decision on internal email and routine access grants | Done (2026-11-10: of 38 scripted runs, 10 attacker steps ran, all allowed by policy on purpose; 5 denied; 23 waited for a person. A "low" rating now needs legal approval when the Reader's findings contradict it or the deal is over 100,000. See [m13-design.md](m13-design.md) and [results.md](results.md#when-the-model-is-fooled)) |
 | M14  | Policy that cannot drift silently: rules checked at load against the input schema of every registered tool version, allow rules that cannot match a missing or unreadable value, and a property test that unreadable input never ends in allow | Done (2026-11-12: both shipped policies load cleanly; renaming `risk_level` now stops startup. The property test covers every shipped tool field, malformed addresses and policy variables, and every operator with the schema check removed. The per-check "unreadable" audit marker is deferred to a later milestone. See [m14-design.md](m14-design.md)) |
 | M15  | Policy edge cases: explicit address and rule boundary tests, grants only to the reported requester, variable sources checked against declared tool writes at startup, and sequence tests for policy drift after allowed actions | Done (2026-11-12: 1681 passed, 39 skipped; the scripted run matched all 38 expectations, 7 executed, 8 denied, 23 waiting for a person. Grants to a different requester are now denied. Within-app combination rules from the audit trail are split into their own milestone; cross-workflow combinations wait for a shared subject key from a system of record. See [m15-design.md](m15-design.md)) |
+| M16  | Execution integrity: email sent only to directory-expanded mailboxes and every write read back from the target's own record, with pending states and a scheduled sweep; approvals bound to the version of each referenced record; signed per-check "unreadable" markers on policy decisions; an approval screen with typed fields first and model-written text collapsed; automatic grants that expire; a next-day review with a keyed sample | Done (2026-11-16: 2145 passed, 74 skipped; the scripted run matched all 38 expectations, 7 executed, 8 denied, 23 waiting for a person, unchanged; the integrity suite matched 23 of 23. Encoded text in a message body sent to an allowed internal recipient is a documented gap, not blocked: policy judges recipients, not bodies. Revision checks, revocation and read-back are properties of the mock systems. Approve-once is split into its own milestone. See [m16a-design.md](m16a-design.md), [m16b-design.md](m16b-design.md) and [results.md](results.md#m16b-update-approvals-bound-to-records-grants-that-expire-a-next-day-review)) |
 
-Next: execution integrity: approvals bound to record versions, recipients expanded and read back,
-pending states with a scheduled sweep, and grants that expire.
+Next: the low-risk decision: the liability over-flagging fix, a liability-language scan and
+approval volume on honest contracts.
 
 Planned, not scheduled: **Pilot-ready** (OIDC sign-in and the first real connector against a sandbox
 account). It starts when there is a design partner or a sandbox to connect to, and gets a number then.
@@ -100,7 +101,12 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   lookup time alongside for audit, not inside the hash (with the time in the hash every
   re-expansion would differ even when nothing changed), and let approval expiry stop a stale
   expansion being sent days later. Block, not warn, on any mismatch between
-  the approved set and what is sent. A mock directory with groups and aliases makes this testable
+  the approved set and what is sent. Send to the expanded mailboxes, never the group address:
+  otherwise the mail server expands the group after the check and its record shows only the
+  group. The To: header may still name the group for readers. If membership cannot be read
+  (hidden or unresolvable nested groups), block the send; never fall back to the group address.
+  An external list cannot be expanded and need not be: policy already treats it as one
+  external recipient. A mock directory with groups and aliases makes this testable
   now; expansion against a real mail system waits for a real connector.
 - **Grants only to the requester the Reader reported.** When only the Planner is fooled, the
   attacker's grant goes to someone other than the ticket's requester (3 of the 6 grant attacks
@@ -121,9 +127,9 @@ database. UI and the IT-access fixture are the first things to cut if scope must
   back from the system with a separate call and check that instead, and let that read set the
   step's status rather than confirm it afterwards. For email, read the sent message's actual
   recipients back, which also catches one approved recipient becoming three on the message. Read
-  them from the mail server's own record of what it accepted (the RCPT TO entries in its trace, or
-  the delivered headers), never from the app's log of what it meant to send, which can only ever
-  agree. Run status already never comes from a model's
+  them from the mail server's own record of what it accepted (the RCPT TO entries in its trace),
+  never from the app's log of what it meant to send, which can only ever agree, and never from
+  the headers, which the sender writes and which omit Bcc. Run status already never comes from a model's
   prose; the executor decides it. A state that cannot be read straight away (a post in
   moderation, say) needs a pending status with a deadline and three outcomes: done (a fresh read
   agrees), blocked (the read disagrees; keep the difference) or unknown (the deadline passed with
@@ -299,6 +305,14 @@ Reader suggestions weighed and not adopted, with the reason:
   `anyOf` and the like along a rule's path stops startup until the load check supports it (M14).
 - Reader free-text fields are still attacker-influenced. Keep them to a minimum in each app's
   Reader schema and prefer enums, numbers and booleans.
+- Encoded text in a message body sent to an allowed internal recipient passes policy and is
+  delivered: a documented gap (M16), because policy judges recipients, not bodies.
+- Record revision checks, grant revocation and the active-grant rule are properties of the mock
+  systems (M16). A real connector must supply an `If-Match`-style precondition, a revoke call and
+  a read that reflects it.
+- Grants made before M16 have no end date and never expire; review them by hand.
+- The next-day review covers the last seven days and needs `GAWE_REVIEW_SAMPLE_KEY` for its
+  sample; without the key the sample is off.
 
 ## Per-milestone testing
 

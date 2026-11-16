@@ -132,6 +132,13 @@ class PostgresRunStore:
             rows = conn.execute(_LIST, {"tenant_id": tenant_id, "limit": limit}).mappings().all()
         return [_to_record(row) for row in rows]
 
+    def tenant_ids(self) -> list[str]:
+        with connection_for(self._bind) as conn:
+            rows = conn.execute(
+                text("SELECT DISTINCT CAST(tenant_id AS text) FROM runs ORDER BY 1")
+            ).all()
+        return [row[0] for row in rows]
+
     def list_by_status(
         self, statuses: Collection[RunStatus], *, limit: int = 200
     ) -> list[RunRecord]:

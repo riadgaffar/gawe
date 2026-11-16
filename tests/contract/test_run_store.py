@@ -6,11 +6,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from gawe.core.models import Plan, PlanStep
+from gawe.core.models import Plan, PlanStep, PolicyDecision
 from gawe.core.runs import InMemoryRunStore, RunNotFoundError, RunRecord, RunStore, StaleRunError
 from gawe.core.statemachine import IllegalTransitionError, RunStatus
 from tests.contract.conftest import ALICE, BOB, TENANT
-from tests.helpers import signer
+from tests.helpers import GOLDEN_V1, signer
 
 T0 = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 PLAN = Plan(
@@ -99,13 +99,18 @@ def test_plan_findings_and_decisions_survive_a_reload(store: RunStore) -> None:
     store.update(run.run_id, findings={"risk": "high"}, findings_schema_id="s1", document=None)
     store.update(run.run_id, plan=PLAN, plan_version=1, planner_model="m-1")
     d = decision()
-    store.update(run.run_id, decisions={"b": d})
+    # A decision recorded before M16b (format 1) next to a current one (format 2, with checks).
+    old = PolicyDecision.model_validate_json(GOLDEN_V1[0])
+    store.update(run.run_id, decisions={"b": d, "a": old})
     got = store.get(run.run_id)
     assert got.plan == PLAN and got.plan_version == 1 and got.planner_model == "m-1"
     assert got.findings == {"risk": "high"} and got.findings_schema_id == "s1"
     assert got.document is None
-    assert got.decisions == {"b": d}
-    assert signer().verify(got.decisions["b"])  # the stored decision is still validly signed
+    assert got.decisions == {"b": d, "a": old}
+    assert got.decisions["b"].format == 2 and got.decisions["b"].checks
+    assert got.decisions["a"].format == 1
+    # the stored decisions are still validly signed
+    assert signer().verify(got.decisions["b"]) and signer().verify(got.decisions["a"])
 
 
 def test_new_plan_needs_a_higher_version(store: RunStore) -> None:

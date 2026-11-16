@@ -1,20 +1,70 @@
-"""IT-access tools: look up a user, grant access."""
+"""IT-access tools: look up a user, grant access.
+
+`iam.grant_access@2.0.0` carries the user account's revision, an end date (`expires_at`) and the
+lifetime it was computed from, all added by trusted preparation. The IAM system accepts the
+grant only while the account still has that revision. Version 1.0.0 stays registered (retired)
+only to verify grants dispatched before this existed; those grants have no end date.
+"""
 
 from collections.abc import Mapping
 from typing import Any
 
+from gawe.apps.it_access.grant_preparation import MAX_LIFETIME_HOURS, MIN_LIFETIME_HOURS
+from gawe.apps.record_binding import bound
 from gawe.connectors.mock_iam import MockIAM
 from gawe.core.executor import ToolCall, ToolImplementation
+from gawe.core.fields import FieldClass
 from gawe.core.models import ToolManifest
 from gawe.core.verifier import PostCondition
 
 EMAIL = {"type": "string", "maxLength": 254}
+GRANT_PROPOSAL: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "email": EMAIL,
+        "system": {"enum": ["wiki", "crm", "billing", "prod_db"]},
+        "level": {"enum": ["read", "write", "admin"]},
+    },
+    "required": ["email", "system", "level"],
+    "additionalProperties": False,
+}
+GRANT_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "grant_id": {"type": "string"},
+        "email": {"type": "string"},
+        "system": {"type": "string"},
+        "level": {"type": "string"},
+    },
+    "required": ["grant_id", "email", "system", "level"],
+}
+_BOUND_GRANT = bound(GRANT_PROPOSAL, "user_version")
+GRANT_INPUT: dict[str, Any] = {
+    **_BOUND_GRANT,
+    "properties": {
+        **_BOUND_GRANT["properties"],
+        "expires_at": {
+            "type": "string",
+            "pattern": r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+        },
+        # Schema bounds match preparation; policy also denies over the tenant maximum.
+        "lifetime_hours": {
+            "type": "integer",
+            "minimum": MIN_LIFETIME_HOURS,
+            "maximum": MAX_LIFETIME_HOURS,
+        },
+    },
+    "required": [*_BOUND_GRANT["required"], "expires_at", "lifetime_hours"],
+}
+
+GRANT_FIELDS: dict[str, FieldClass] = {"email": "typed", "system": "typed", "level": "typed"}
 
 MANIFESTS = (
     ToolManifest(
         name="iam.lookup_user",
         writes=(),
         version="1.0.0",
+        field_classes={"email": "typed"},
         description="Look up a company user by email: name, department and manager.",
         input_schema={
             "type": "object",
@@ -39,26 +89,31 @@ MANIFESTS = (
         writes=("iam.grant",),
         version="1.0.0",
         description="Grant a user access to a system at a given level.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "email": EMAIL,
-                "system": {"enum": ["wiki", "crm", "billing", "prod_db"]},
-                "level": {"enum": ["read", "write", "admin"]},
-            },
-            "required": ["email", "system", "level"],
-            "additionalProperties": False,
+        input_schema=GRANT_PROPOSAL,
+        field_classes=GRANT_FIELDS,
+        output_schema=GRANT_OUTPUT,
+        side_effect_class="write",
+        risk_tier="high",
+        required_roles=("it_agent",),
+        postcondition="iam.grant_matches",
+        retired=True,
+    ),
+    ToolManifest(
+        name="iam.grant_access",
+        writes=("iam.grant",),
+        version="2.0.0",
+        description="Grant a user access to a system at a given level.",
+        preparation_required=True,
+        record_binding="iam.user",
+        proposal_schema=GRANT_PROPOSAL,
+        input_schema=GRANT_INPUT,
+        field_classes={
+            **GRANT_FIELDS,
+            "record.user_version": "typed",
+            "expires_at": "typed",
+            "lifetime_hours": "typed",
         },
-        output_schema={
-            "type": "object",
-            "properties": {
-                "grant_id": {"type": "string"},
-                "email": {"type": "string"},
-                "system": {"type": "string"},
-                "level": {"type": "string"},
-            },
-            "required": ["grant_id", "email", "system", "level"],
-        },
+        output_schema=GRANT_OUTPUT,
         side_effect_class="write",
         risk_tier="high",
         required_roles=("it_agent",),
@@ -80,6 +135,15 @@ def implementations(iam: MockIAM) -> dict[str, ToolImplementation]:
         return iam.lookup_user(args["email"])
 
     def grant(args: Mapping[str, Any], call: ToolCall) -> Mapping[str, Any]:
-        return iam.grant_access(call.idempotency_key, args["email"], args["system"], args["level"])
+        return iam.grant_access(
+            call.idempotency_key,
+            args["email"],
+            args["system"],
+            args["level"],
+            user_version=args["record"]["user_version"],
+            expires_at=args["expires_at"],
+            lifetime_hours=args["lifetime_hours"],
+            run_id=call.run_id,
+        )
 
     return {"iam.lookup_user": lookup, "iam.grant_access": grant}

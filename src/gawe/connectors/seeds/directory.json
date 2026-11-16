@@ -1,0 +1,74 @@
+{
+  "entries": {
+    "legal@acme.example": {
+      "kind": "mailbox"
+    },
+    "ops@acme.example": {
+      "kind": "mailbox"
+    },
+    "counsel@acme.example": {
+      "kind": "mailbox"
+    },
+    "all-staff@acme.example": {
+      "kind": "group",
+      "members": [
+        "legal@acme.example",
+        "ops@acme.example"
+      ]
+    },
+    "reviewers@acme.example": {
+      "kind": "alias",
+      "members": [
+        "all-staff@acme.example"
+      ]
+    },
+    "nested@acme.example": {
+      "kind": "group",
+      "members": [
+        "reviewers@acme.example",
+        "legal@acme.example"
+      ]
+    },
+    "mixed@acme.example": {
+      "kind": "group",
+      "members": [
+        "legal@acme.example",
+        "vendor@outside.example"
+      ]
+    },
+    "blocked-members@acme.example": {
+      "kind": "group",
+      "members": [
+        "legal@acme.example",
+        "attacker@evil.example"
+      ]
+    },
+    "private@acme.example": {
+      "kind": "unreadable_group"
+    },
+    "list@outside.example": {
+      "kind": "external_list"
+    },
+    "alias@outside.example": {
+      "kind": "alias",
+      "members": [
+        "legal@acme.example"
+      ]
+    },
+    "a@acme.example": {
+      "kind": "mailbox"
+    },
+    "pat@acme.example": {
+      "kind": "mailbox"
+    },
+    "bob@acme.example": {
+      "kind": "mailbox"
+    },
+    "alice@acme.example": {
+      "kind": "mailbox"
+    },
+    "reviewer@acme.example": {
+      "kind": "mailbox"
+    }
+  }
+}

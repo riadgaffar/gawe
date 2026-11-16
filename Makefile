@@ -1,4 +1,4 @@
-.PHONY: install lint type test check env up down migrate test-schema test-integration env-fill seed dev-tokens api smoke demo anchor-backfill bench-data bench-estimate bench
+.PHONY: install lint type test check env up down migrate test-schema test-integration env-fill seed dev-tokens api sweep smoke demo anchor-backfill bench-data bench-estimate bench
 
 install:
 	pip install -e ".[dev]"
@@ -20,6 +20,7 @@ env:
 	  cp .env.example .env && \
 	  sed -i.bak "s|^GAWE_DB_PASSWORD=.*|GAWE_DB_PASSWORD=$$(python3 -c 'import secrets; print(secrets.token_hex(16))')|" .env && \
 	  sed -i.bak "s|^GAWE_POLICY_SIGNING_KEY=.*|GAWE_POLICY_SIGNING_KEY=$$(python3 -c 'import secrets; print(secrets.token_hex(32))')|" .env && \
+	  sed -i.bak "s|^GAWE_REVIEW_SAMPLE_KEY=.*|GAWE_REVIEW_SAMPLE_KEY=$$(python3 -c 'import secrets; print(secrets.token_hex(32))')|" .env && \
 	  rm -f .env.bak && echo "created .env with generated secrets"; fi
 
 up: env
@@ -49,6 +50,7 @@ env-fill:
 	@test -f .env || { echo ".env missing: run 'make env' first"; exit 1; }
 	@add() { grep -q "^$$1=" .env || { echo "$$1=$$2" >> .env; echo "added $$1"; }; }; \
 	add GAWE_POLICY_SIGNING_KEY "$$(python3 -c 'import secrets; print(secrets.token_hex(32))')"; \
+	add GAWE_REVIEW_SAMPLE_KEY "$$(python3 -c 'import secrets; print(secrets.token_hex(32))')"; \
 	add GAWE_APP "gawe.apps.contract_review:bundle"; \
 	add GAWE_API_TOKENS_FILE ".dev-tokens.json"; \
 	add GAWE_STORE "postgres"; \
@@ -68,6 +70,10 @@ dev-tokens:
 api:
 	@set -a; . ./.env; set +a; \
 	uvicorn --factory gawe.api.main:create_app_from_env --host 127.0.0.1 --port 8000
+
+# One verification sweep against the configured Postgres stores (the API also sweeps every 30s).
+sweep:
+	@set -a; . ./.env; set +a; python -m gawe.maintenance sweep --once
 
 # Tries the real model on the sample documents with no side effects: make smoke APP=contract_review
 APP ?= contract_review

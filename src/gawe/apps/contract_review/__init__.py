@@ -15,13 +15,20 @@ from pathlib import Path
 from typing import Any
 
 from gawe.api.wiring import AppBundle
+from gawe.apps.contract_review.email_preparation import EmailPreparer
 from gawe.apps.contract_review.reader_schema import PROFILE
+from gawe.apps.contract_review.record_preparation import ContractRecordPreparer
 from gawe.apps.contract_review.tools import MANIFESTS, POSTCONDITIONS, implementations
+from gawe.apps.readback import email_adapter, operation_adapter
 from gawe.connectors.base import Ledger
 from gawe.connectors.mock_clm import MockCLM
+from gawe.connectors.mock_directory import MockDirectory
 from gawe.connectors.mock_email import MockEmail
 from gawe.connectors.mock_esign import MockESign
 from gawe.core.policy.provenance import PolicySource, PolicyVariable
+from gawe.core.preparation import Preparer
+from gawe.core.readback import ReadbackAdapter
+from gawe.core.records import StepRecord
 from gawe.core.runs import RunRecord
 
 HERE = Path(__file__).parent
@@ -35,13 +42,26 @@ TENANT_VARIABLES: Mapping[str, Any] = {
 }
 
 
-def bundle(demo_dir: Path | None = None, *, email: MockEmail | None = None) -> AppBundle:
+def bundle(
+    demo_dir: Path | None = None, *, email: MockEmail | None = None, clm: MockCLM | None = None
+) -> AppBundle:
     directory = demo_dir or Path(os.environ.get("GAWE_DEMO_DIR", ".demo-data"))
     ledger = Ledger(directory / "ledger.jsonl")
-    clm = MockCLM.from_seed(HERE / "samples" / "clm_seed.json", ledger)
+    clm = clm or MockCLM.from_seed(HERE / "samples" / "clm_seed.json", ledger)
+    mail_directory = MockDirectory.from_seed(
+        directory, Path(__file__).parents[2] / "connectors/seeds/directory.json"
+    )
+    mail = email or MockEmail(ledger)
+    mail.configure(mail_directory)
+    esign = MockESign(ledger, clm)
+    assert mail.server is not None
     return AppBundle(
         manifests=MANIFESTS,
-        tools=implementations(clm, email or MockEmail(ledger), MockESign(ledger)),
+        tools=implementations(clm, mail, esign),
+        readbacks=readbacks(clm, esign, mail),
+        preparers=preparers(clm, mail_directory),
+        conditional_writes=clm.CONDITIONAL_WRITES | esign.CONDITIONAL_WRITES,
+        review_sample=review_sample,
         policy_rules=HERE / "policies.yaml",
         profiles=frozenset({PROFILE_NAME}),
         reader_profile=PROFILE,
@@ -59,6 +79,61 @@ def bundle(demo_dir: Path | None = None, *, email: MockEmail | None = None) -> A
             "review.large_deals": PolicyVariable(dependencies=("deal_values",)),
         },
     )
+
+
+def review_sample(run: RunRecord, step: StepRecord) -> bool:
+    """Next-day review candidates: a "low" rating the CRM accepted with no clause flagged.
+
+    Nothing in policy questions these, so a person checks a keyed sample of them. The review
+    calls this only for automatic actions that executed.
+    """
+    clauses = (run.findings or {}).get("flagged_clauses")
+    return (
+        step.tool == "crm.write_assessment"
+        and step.resolved_args.get("risk_level") == "low"
+        and not clauses
+    )
+
+
+def readbacks(
+    clm: MockCLM, esign: MockESign, mail: MockEmail
+) -> dict[tuple[str, str], ReadbackAdapter]:
+    """Version-specific read-back. 1.0.0 reads the older stores, for earlier dispatches only."""
+    assert mail.server is not None
+    return {
+        ("crm.write_assessment", "1.0.0"): operation_adapter(
+            clm.legacy_operations,
+            ("contract_id", "risk_level"),
+            ("assessment_id", "contract_id", "risk_level"),
+            text_fields=("summary",),
+        ),
+        ("crm.write_assessment", "2.0.0"): operation_adapter(
+            clm.operations,
+            ("contract_id", "risk_level", "record"),
+            ("assessment_id", "contract_id", "risk_level"),
+            text_fields=("summary",),
+        ),
+        ("esign.send_for_signature", "1.0.0"): operation_adapter(
+            esign.legacy_operations,
+            ("contract_id", "signer_email", "deal_value"),
+            ("envelope_id", "contract_id"),
+        ),
+        ("esign.send_for_signature", "2.0.0"): operation_adapter(
+            esign.operations,
+            ("contract_id", "signer_email", "deal_value", "record"),
+            ("envelope_id", "contract_id"),
+        ),
+        ("email.send", "2.0.0"): email_adapter(mail.server),
+    }
+
+
+def preparers(clm: MockCLM, directory: MockDirectory) -> dict[tuple[str, str], Preparer]:
+    contract = ContractRecordPreparer(clm)
+    return {
+        ("crm.write_assessment", "2.0.0"): contract,
+        ("esign.send_for_signature", "2.0.0"): contract,
+        ("email.send", "2.0.0"): EmailPreparer(directory),
+    }
 
 
 def _variables_for(clm: MockCLM) -> Callable[[RunRecord | None], Mapping[str, Any]]:

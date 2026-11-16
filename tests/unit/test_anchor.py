@@ -368,3 +368,25 @@ def test_blank_lines_in_the_anchor_file_are_ignored(tmp_path: Path) -> None:
     record = make_record()
     path.write_text("\n" + json.dumps(record.to_json()) + "\n\n")
     assert FileAnchorSink(path).get("run1") == record
+
+
+def test_anchor_refresh_requires_original_prefix_and_retains_linked_history(tmp_path: Path) -> None:
+    log, store = make_log()
+    run = finished_run(log)
+    path = tmp_path / "a.jsonl"
+    sink = FileAnchorSink(path)
+    anchorer = Anchorer(log, [sink])
+    (original,) = anchorer.anchor_run(run)
+    log.record("run1", "verification.readback", "gawe.verifier")
+    (latest,) = anchorer.anchor_run(run)
+    assert latest.point.seq > original.point.seq
+    lines = path.read_text().splitlines()
+    assert len(lines) == 2 and FileAnchorSink(path).get("run1") == latest
+    path.write_text(lines[1] + "\n")
+    with pytest.raises(AnchorConflictError, match="predecessor"):
+        FileAnchorSink(path).get("run1")
+    path.write_text("\n".join(lines) + "\n")
+    store._events["run1"][0] = store._events["run1"][0].model_copy(update={"actor": "changed"})
+    log.record("run1", "verification.readback", "gawe.verifier")
+    assert anchorer.anchor_run(run) == []  # cannot bless an edited protected prefix
+    assert path.read_text().splitlines() == lines

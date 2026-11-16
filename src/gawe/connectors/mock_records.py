@@ -1,0 +1,126 @@
+"""Versioned records in a mock system of record.
+
+Each record carries an opaque revision that changes on every mutation, even one that restores
+earlier content, so an approval bound to a revision can never be satisfied by a record that was
+edited in between. Seed data is inserted once; later starts keep what is stored.
+"""
+
+import json
+import re
+import sqlite3
+from collections.abc import Callable, Iterable, Mapping
+from typing import Any, TypeVar
+from uuid import uuid4
+
+from gawe.connectors.base import ConnectorError
+from gawe.connectors.mock_operations import Guard, MockDatabase
+
+T = TypeVar("T")
+_TABLE = re.compile(r"[a-z][a-z0-9_]*")
+
+
+def records_table(table: str) -> str:
+    if not _TABLE.fullmatch(table):
+        raise ValueError(f"invalid table name {table!r}")
+    return (
+        f"CREATE TABLE IF NOT EXISTS {table} (record_id TEXT PRIMARY KEY, "
+        "record TEXT NOT NULL, revision TEXT NOT NULL)"
+    )
+
+
+def _revision() -> str:
+    return uuid4().hex
+
+
+class VersionedRecords:
+    def __init__(
+        self, database: MockDatabase, table: str, *, missing: str, normalize: Callable[[str], str]
+    ) -> None:
+        records_table(table)  # validates the name
+        self.database = database
+        self._table = table
+        self._missing = missing
+        self._normalize = normalize
+        self._seed_rows: list[tuple[str, str, str]] = []
+
+    def seed(self, records: Iterable[tuple[str, Mapping[str, Any]]]) -> None:
+        """Insert missing seed records lazily, in the first transaction that reads them, so
+        building a connector writes nothing to disk."""
+        self._seed_rows = [
+            (self._normalize(rid), json.dumps(dict(r), sort_keys=True), _revision())
+            for rid, r in records
+        ]
+
+    def _ensure_seeded(self, conn: sqlite3.Connection) -> None:
+        if self._seed_rows:
+            conn.executemany(
+                f"INSERT OR IGNORE INTO {self._table} VALUES (?, ?, ?)", self._seed_rows
+            )
+
+    def _run(self, action: Callable[[sqlite3.Connection], T]) -> T:
+        def seeded(conn: sqlite3.Connection) -> T:
+            self._ensure_seeded(conn)
+            return action(conn)
+
+        return self.database.transaction(seeded)
+
+    def get(self, record_id: str) -> tuple[dict[str, Any], str]:
+        """(record, revision); ConnectorError(missing) when absent."""
+
+        def read(conn: sqlite3.Connection) -> tuple[str, str] | None:
+            row = conn.execute(
+                f"SELECT record, revision FROM {self._table} WHERE record_id=?",
+                (self._normalize(record_id),),
+            ).fetchone()
+            return None if row is None else (row[0], row[1])
+
+        row = self._run(read)
+        if row is None:
+            raise ConnectorError(self._missing)
+        return dict(json.loads(row[0])), row[1]
+
+    def all(self) -> dict[str, dict[str, Any]]:
+        def read(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+            return list(conn.execute(f"SELECT record_id, record FROM {self._table}"))
+
+        return {rid: dict(json.loads(r)) for rid, r in self._run(read)}
+
+    def replace(self, record_id: str, fields: Mapping[str, Any]) -> str:
+        """Test hook for another actor's change: merge fields, issue a new revision."""
+        revision = _revision()
+
+        def write(conn: sqlite3.Connection) -> None:
+            key = self._normalize(record_id)
+            row = conn.execute(
+                f"SELECT record FROM {self._table} WHERE record_id=?", (key,)
+            ).fetchone()
+            if row is None:
+                raise ConnectorError(self._missing)
+            merged = {**json.loads(row[0]), **fields}
+            conn.execute(
+                f"UPDATE {self._table} SET record=?, revision=? WHERE record_id=?",
+                (json.dumps(merged, sort_keys=True), revision, key),
+            )
+
+        self._run(write)
+        return revision
+
+    def guard(
+        self, record_id: str, revision: str, check: Callable[[dict[str, Any]], None] | None = None
+    ) -> Guard:
+        """A precondition for a guarded write: the record still has the bound revision."""
+
+        def run(conn: sqlite3.Connection) -> None:
+            self._ensure_seeded(conn)
+            row = conn.execute(
+                f"SELECT record, revision FROM {self._table} WHERE record_id=?",
+                (self._normalize(record_id),),
+            ).fetchone()
+            if row is None:
+                raise ConnectorError(self._missing)
+            if row[1] != revision:
+                raise ConnectorError("record_changed")
+            if check is not None:
+                check(dict(json.loads(row[0])))
+
+        return run

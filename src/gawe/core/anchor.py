@@ -236,7 +236,26 @@ class Anchorer:
         written: list[AnchorRecord] = []
         for sink in sinks:
             try:
-                written.append(sink.put(replace(base, sink=sink.name)))
+                record = replace(base, sink=sink.name)
+                existing = sink.get(run.run_id)
+                if existing is not None and existing.digest != record.digest:
+                    prefix = _against(
+                        self._audit.events(run.run_id), existing.point, source="stored"
+                    )
+                    if (
+                        existing.tenant_id != run.tenant_id
+                        or not existing.digest_ok()
+                        or not sink.check(existing).ok
+                        or not prefix.ok
+                        or point.seq <= existing.point.seq
+                    ):
+                        raise AnchorConflictError("new head does not extend the protected prefix")
+                    extend = getattr(sink, "extend", None)
+                    if not callable(extend):
+                        raise AnchorConflictError("sink does not support anchor continuation")
+                    written.append(extend(record, previous=existing))
+                else:
+                    written.append(sink.put(record))
             except Exception as exc:  # a sink must never break a run
                 self._failed(sink, run.run_id, exc)
             else:

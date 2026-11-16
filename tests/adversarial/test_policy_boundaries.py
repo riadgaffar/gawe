@@ -15,7 +15,7 @@ from hypothesis import strategies as st
 from gawe.apps.contract_review import review_variables
 from gawe.core.policy.rules import RuleConfigError, email_domain, parse_rules
 from tests.adversarial.test_policy_unreadable import CASES, ENGINES, MANIFESTS, RULES, VARIABLES
-from tests.helpers import make_ctx, signer
+from tests.helpers import bound_args, make_ctx, prepared_email, signer
 
 # One sentence for each rule, grouped by the generator that exercises it.
 BOUNDARIES = {
@@ -26,6 +26,10 @@ BOUNDARIES = {
         "external-email-needs-legal": (
             "address",
             "Noninternal or unreadable recipients need legal.",
+        ),
+        "changed-recipients-need-legal": (
+            "refresh",
+            "Changed directory snapshots require legal approval.",
         ),
         "blocked-domain-email-denied": ("address", "A blocked recipient domain denies."),
         "low-risk-contradicted-needs-legal": ("assessment", "Unsupported levels need legal."),
@@ -43,6 +47,7 @@ BOUNDARIES = {
         "elevated-access-needs-security": ("grant", "Admin access needs security."),
         "production-database-needs-security": ("grant", "Production DB access needs security."),
         "external-user-denied": ("address", "Noninternal or unreadable grant recipients deny."),
+        "grant-lifetime-over-maximum-denied": ("grant", "Lifetimes over the maximum deny."),
     },
     "example": {
         "read-tools-allowed": ("baseline", "Read tools have baseline permission."),
@@ -76,11 +81,13 @@ def assert_decision(
     if parse is not None:
         value, expected_parse = parse
         assert (email_domain(value) is not None) is expected_parse
+    if app == "contract_review" and tool == "email.send":
+        args = prepared_email(args)
     manifest = MANIFESTS[app][tool]
     decision = ENGINES[app].evaluate(
         make_ctx(
             manifest,
-            args,
+            bound_args(manifest, args),
             roles=manifest.required_roles if roles is None else roles,
             variables=variables,
         )
@@ -191,6 +198,8 @@ def test_address_boundaries(app: str, kind: str, token: str) -> None:
         if category in {"blocked", "blocked_internal"}:
             expected = "deny"
             ids.add("deny-competitor-email" if app == "example" else "blocked-domain-email-denied")
+    if app == "contract_review" and not parses:
+        expected, ids = "deny", {"engine.error"}
     if app == "it_access" and not parses:
         ids.add("requester-mismatch-denied")
     assert_decision(app, tool, args, variables, expected, ids, parse=(args[field], parses))
@@ -373,9 +382,51 @@ def test_large_deal_source_threshold(delta: int) -> None:
     assert review_variables(None, values)["large_deals"] == ["above"]
 
 
+@pytest.mark.parametrize(
+    "hours,maximum,outcome",
+    [
+        (719, 720, "allow"),
+        (720, 720, "allow"),
+        (720, 719, "deny"),
+        (168, 167, "deny"),
+        (168, 168, "allow"),
+    ],
+)
+def test_grant_lifetime_boundary(hours: int, maximum: int, outcome: str) -> None:
+    args = deepcopy(CASES["it_access"]["iam.grant_access"][0])
+    args["lifetime_hours"] = hours
+    variables = deepcopy(VARIABLES["it_access"])
+    variables["tenant"]["max_grant_lifetime_hours"] = maximum
+    ids = {"grant-baseline-allowed"}
+    if outcome == "deny":
+        ids.add("grant-lifetime-over-maximum-denied")
+    assert_decision("it_access", "iam.grant_access", args, variables, outcome, ids)
+
+
+@pytest.mark.parametrize("hours", [0, 721])
+def test_a_lifetime_outside_the_schema_is_denied_before_rules(hours: int) -> None:
+    args = deepcopy(CASES["it_access"]["iam.grant_access"][0])
+    args["lifetime_hours"] = hours
+    variables = deepcopy(VARIABLES["it_access"])
+    assert_decision(
+        "it_access", "iam.grant_access", args, variables, "deny", {"engine.invalid_args"}
+    )
+
+
+@pytest.mark.parametrize("maximum", ["missing", None, "720", True, [720]])
+def test_an_unreadable_grant_maximum_denies(maximum: Any) -> None:
+    args = deepcopy(CASES["it_access"]["iam.grant_access"][0])
+    variables = deepcopy(VARIABLES["it_access"])
+    if maximum == "missing":
+        del variables["tenant"]["max_grant_lifetime_hours"]
+    else:
+        variables["tenant"]["max_grant_lifetime_hours"] = maximum
+    assert_decision("it_access", "iam.grant_access", args, variables, "deny", {"engine.error"})
+
+
 def test_every_shipped_rule_has_an_independent_boundary() -> None:
     assert set(BOUNDARIES) == set(RULES)
-    families = {"baseline", "address", "signature", "assessment", "grant", "requester"}
+    families = {"baseline", "address", "signature", "assessment", "grant", "requester", "refresh"}
     for app, rules in RULES.items():
         assert set(BOUNDARIES[app]) == {r.id for r in rules}
         assert all(family in families and sentence for family, sentence in BOUNDARIES[app].values())
@@ -488,3 +539,16 @@ def test_requester_identity_boundary(kind: str, token: str) -> None:
         ids,
         parse=(proposed, True),
     )
+
+
+def test_changed_recipients_require_legal_even_when_internal() -> None:
+    args = prepared_email({"to": "a@acme.example", "subject": "s", "body": "b"})
+    args["delivery"]["reapproval_required"] = True
+    manifest = MANIFESTS["contract_review"]["email.send"]
+    decision = ENGINES["contract_review"].evaluate(
+        make_ctx(
+            manifest, args, roles=manifest.required_roles, variables=VARIABLES["contract_review"]
+        )
+    )
+    assert decision.outcome == "needs_approval"
+    assert set(decision.rule_ids) == {"email-baseline-allowed", "changed-recipients-need-legal"}

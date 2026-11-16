@@ -3,6 +3,7 @@
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
+from gawe.core.fields import classification_problem
 from gawe.core.models import ToolManifest
 
 
@@ -43,6 +44,11 @@ class ToolRegistry:
     def register(self, manifest: ToolManifest) -> None:
         _check_schema(f"{manifest.name} input_schema", manifest.input_schema)
         _check_schema(f"{manifest.name} output_schema", manifest.output_schema)
+        if manifest.proposal_schema is not None:
+            _check_schema(f"{manifest.name} proposal_schema", manifest.proposal_schema)
+        problem = classification_problem(manifest.input_schema, manifest.field_classes)
+        if problem:
+            raise InvalidManifestError(f"{manifest.name}@{manifest.version} {problem}")
         versions = self._tools.setdefault(manifest.name, {})
         if manifest.version in versions:
             raise DuplicateToolError(f"{manifest.name}@{manifest.version} already registered")

@@ -9,6 +9,11 @@ const TONES: Record<string, Tone> = {
   allow: "good",
   approved: "good",
   failed: "bad",
+  unknown: "bad",
+  verification_unknown: "bad",
+  verification_blocked: "bad",
+  waiting_verification: "wait",
+  awaiting_readback: "wait",
   denied: "bad",
   rejected: "bad",
   cancelled: "bad",
@@ -52,7 +57,7 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
 }
 
 export function isFinished(status: string): boolean {
-  return ["completed", "failed", "denied", "cancelled"].includes(status);
+  return ["completed", "failed", "denied", "cancelled", "unknown"].includes(status);
 }
 
 /** The verify route's anchor report (see docs/api.md). */

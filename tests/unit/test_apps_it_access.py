@@ -2,15 +2,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.helpers import make_ctx, signer
+from tests.helpers import bound_args, current_manifest, make_ctx, signer
 
 from gawe.api.auth import Identity
 from gawe.api.background import InlineBackground
-from gawe.api.wiring import assemble, memory_stores
+from gawe.api.wiring import assemble, load_app_rules, memory_stores
 from gawe.apps import it_access as ia
 from gawe.connectors.base import Ledger
 from gawe.core.policy.engine import RuleEngine
-from gawe.core.policy.rules import load_rules
 from gawe.llm.fake import FakeProvider
 
 T = "t1"
@@ -83,7 +82,7 @@ def test_prod_admin_waits_for_security(tmp_path: Path) -> None:
     assert svc.get_run(AGENT, run_id).status == "completed" and len(grants(tmp_path)) == 1
 
 
-def test_external_account_is_denied(tmp_path: Path) -> None:
+def test_unknown_external_account_fails_in_preparation(tmp_path: Path) -> None:
     svc = service(
         tmp_path,
         [
@@ -104,7 +103,25 @@ def test_external_account_is_denied(tmp_path: Path) -> None:
             },
         ],
     )
-    assert svc.get_run(AGENT, start(svc)).status == "denied" and grants(tmp_path) == []
+    # The account is not in the IAM system, so trusted preparation cannot bind its revision and
+    # the step fails before policy. Policy's own external-account rule is tested below.
+    view = svc.get_run(AGENT, start(svc))
+    assert view.status == "failed" and grants(tmp_path) == []
+    assert view.steps[-1].error == "user_not_found"
+
+
+def test_policy_still_denies_an_external_account() -> None:
+    b = ia.bundle(Path("/nonexistent-never-written"))
+    manifest = current_manifest(b.manifests, "iam.grant_access")
+    decision = RuleEngine(load_app_rules(b), signer()).evaluate(
+        make_ctx(
+            manifest,
+            bound_args(manifest, {"email": "a@outside.example", "system": "wiki", "level": "read"}),
+            roles=["it_agent"],
+            variables={**ia.TENANT_VARIABLES, "request": {"requester_email": "a@outside.example"}},
+        )
+    )
+    assert decision.outcome == "deny" and "external-user-denied" in decision.rule_ids
 
 
 def test_missing_role_is_denied_before_policy_rules(tmp_path: Path) -> None:
@@ -125,9 +142,11 @@ def test_missing_role_is_denied_before_policy_rules(tmp_path: Path) -> None:
 )
 def test_policy_golden_cases(system: str, level: str, outcome: str) -> None:
     b = ia.bundle(Path("/nonexistent-never-written"))
-    engine = RuleEngine(load_rules(b.policy_rules, manifests=b.manifests), signer())
-    manifest = {m.name: m for m in b.manifests}["iam.grant_access"]
-    args = {"email": "dana.ortiz@acme.example", "system": system, "level": level}
+    engine = RuleEngine(load_app_rules(b), signer())
+    manifest = current_manifest(b.manifests, "iam.grant_access")
+    args = bound_args(
+        manifest, {"email": "dana.ortiz@acme.example", "system": system, "level": level}
+    )
     decision = engine.evaluate(
         make_ctx(
             manifest,
@@ -155,11 +174,14 @@ def test_policy_golden_cases(system: str, level: str, outcome: str) -> None:
 def test_unusable_reported_requester_cannot_authorize_a_grant(reported: Any) -> None:
     assert ia.request_variables(reported) == {}
     b = ia.bundle(Path("/nonexistent-never-written"))
-    engine = RuleEngine(load_rules(b.policy_rules, manifests=b.manifests), signer())
+    engine = RuleEngine(load_app_rules(b), signer())
     decision = engine.evaluate(
         make_ctx(
-            next(m for m in b.manifests if m.name == "iam.grant_access"),
-            {"email": "dana.ortiz@acme.example", "system": "wiki", "level": "read"},
+            current_manifest(b.manifests, "iam.grant_access"),
+            bound_args(
+                current_manifest(b.manifests, "iam.grant_access"),
+                {"email": "dana.ortiz@acme.example", "system": "wiki", "level": "read"},
+            ),
             roles=["it_agent"],
             variables={**ia.TENANT_VARIABLES, "request": ia.request_variables(reported)},
         )
@@ -187,12 +209,18 @@ def test_grant_matches_reported_requester_exactly(
     b = ia.bundle(Path("/nonexistent-never-written"))
     request = ia.request_variables({"requester_email": reported})
     assert request == {"requester_email": reported}  # do not normalize the identity
-    decision = RuleEngine(load_rules(b.policy_rules, manifests=b.manifests), signer()).evaluate(
+    decision = RuleEngine(load_app_rules(b), signer()).evaluate(
         make_ctx(
-            next(m for m in b.manifests if m.name == "iam.grant_access"),
-            {"email": proposed, "system": "wiki", "level": "read"},
+            current_manifest(b.manifests, "iam.grant_access"),
+            bound_args(
+                current_manifest(b.manifests, "iam.grant_access"),
+                {"email": proposed, "system": "wiki", "level": "read"},
+            ),
             roles=["it_agent"],
-            variables={"tenant": {"internal_domains": [internal]}, "request": request},
+            variables={
+                "tenant": {"internal_domains": [internal], "max_grant_lifetime_hours": 720},
+                "request": request,
+            },
         )
     )
     assert decision.outcome == outcome

@@ -24,6 +24,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, Query, Request
@@ -40,13 +41,16 @@ from gawe.api.schemas import (
     AuditEventView,
     AuditVerificationView,
     MeView,
+    ReviewItemView,
     RunView,
     ToolView,
+    VerificationView,
 )
 from gawe.api.service import ApiService
 from gawe.api.throttle import FailureThrottle
 from gawe.core.audit import AnchorPoint
 from gawe.llm.planner import MAX_OBJECTIVE_CHARS
+from gawe.maintenance.schedule import PeriodicTicker
 
 DEFAULT_MAX_BODY_BYTES = 1_500_000
 _SHA256 = r"^[0-9a-f]{64}$"
@@ -68,6 +72,12 @@ class DecisionBody(BaseModel):
     comment: str | None = Field(default=None, max_length=2000)
 
 
+class VerdictBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: Literal["confirmed", "missed_risk"]
+
+
 def create_app(
     *,
     service: ApiService,
@@ -78,9 +88,29 @@ def create_app(
     heartbeat_interval: float = 15.0,
     max_stream_seconds: float = 3600.0,
     throttle: FailureThrottle | None = None,
+    maintenance_interval: float | None = None,
 ) -> FastAPI:
+    """With `maintenance_interval`, the service's maintenance runner ticks on that schedule
+    for the app's lifetime (first tick at startup), independent of requests."""
     failures = throttle if throttle is not None else FailureThrottle()
-    app = FastAPI(title="GAWE", version="0.1.0")
+    runner = service.maintenance_runner
+    if maintenance_interval is not None and runner is None:
+        raise ValueError("a maintenance interval needs a service with a maintenance runner")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        ticker = None
+        if maintenance_interval is not None and runner is not None:
+            ticker = PeriodicTicker(runner.tick, interval=maintenance_interval)
+            ticker.start()
+        app.state.maintenance_ticker = ticker
+        try:
+            yield
+        finally:
+            if ticker is not None:
+                await ticker.stop()
+
+    app = FastAPI(title="GAWE", version="0.1.0", lifespan=lifespan)
 
     if cors_origins:
         app.add_middleware(
@@ -160,6 +190,12 @@ def create_app(
     def get_run(run_id: str, who: Identity = Depends(identity)) -> RunView:
         return service.get_run(who, run_id)
 
+    @app.get("/v1/runs/{run_id}/verification")
+    def verification_evidence(
+        run_id: str, who: Identity = Depends(identity)
+    ) -> list[VerificationView]:
+        return service.verification_evidence(who, run_id)
+
     @app.post("/v1/runs/{run_id}/cancel")
     def cancel_run(run_id: str, who: Identity = Depends(identity)) -> RunView:
         return service.cancel_run(who, run_id)
@@ -203,6 +239,19 @@ def create_app(
             action_hash=body.action_hash,
             comment=body.comment,
         )
+
+    @app.get("/v1/review-items")
+    def review_items(
+        status: Literal["open", "confirmed", "missed_risk", "all"] = Query(default="open"),
+        who: Identity = Depends(identity),
+    ) -> list[ReviewItemView]:
+        return service.review_items(who, status=None if status == "all" else status)
+
+    @app.post("/v1/review-items/{item_id}/verdict")
+    def review_verdict(
+        item_id: str, body: VerdictBody, who: Identity = Depends(identity)
+    ) -> ReviewItemView:
+        return service.review_verdict(who, item_id, verdict=body.verdict)
 
     @app.get("/v1/runs/{run_id}/events")
     async def events(

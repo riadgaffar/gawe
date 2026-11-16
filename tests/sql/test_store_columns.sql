@@ -89,3 +89,12 @@ SELECT pg_temp.expect_error(
     $$INSERT INTO step_outputs (step_id, output, output_hash)
       VALUES ('00000000-0000-0000-0000-000000000c99', '{}', repeat('c', 64))$$,
     '23503', 'output must belong to a real step');
+
+SELECT pg_temp.expect_error($$UPDATE steps SET preparation = '[]'::jsonb$$,
+    '23514', 'preparation must be an object');
+SELECT pg_temp.expect_error($$UPDATE steps SET policy_decision = '[]'::jsonb$$,
+    '23514', 'policy decision must be an object');
+SELECT pg_temp.expect_error($$UPDATE approvals SET preparation = '[]'::jsonb$$,
+    '23514', 'approval preparation must be an object');
+SELECT pg_temp.expect_error($$UPDATE approvals SET resolved_args = '[]'::jsonb$$,
+    '23514', 'approval snapshot must be an object');

@@ -14,12 +14,15 @@ from typing import Any, Literal, Protocol
 
 from pydantic import Field, model_validator
 
-from gawe.core.models import FrozenModel
+from gawe.core.models import FrozenModel, PolicyDecision
 from gawe.core.statemachine import StepStatus, check_step_transition
+
+# Empty string is not a valid action hash; None means compare against an unset hash.
+UNCHECKED_ACTION_HASH = ""
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _HASH_OPTIONAL = frozenset({StepStatus.PENDING, StepStatus.READY, StepStatus.FAILED})
-_UPDATABLE = frozenset({"action_hash", "error", "resolved_args"})
+_UPDATABLE = frozenset({"action_hash", "error", "resolved_args", "preparation", "policy_decision"})
 
 
 class StepNotFoundError(KeyError):
@@ -45,6 +48,8 @@ class StepRecord(FrozenModel):
     action_hash: str | None = Field(default=None, pattern=SHA256_PATTERN)
     status: StepStatus = StepStatus.PENDING
     error: str | None = None
+    preparation: dict[str, Any] = Field(default_factory=dict)
+    policy_decision: PolicyDecision | None = None
 
     @model_validator(mode="after")
     def _hash_required_past_policy(self) -> "StepRecord":
@@ -80,7 +85,14 @@ class StepStore(Protocol):
     def get(self, run_id: str, step_id: str) -> StepRecord: ...
 
     def transition(
-        self, run_id: str, step_id: str, *, expected: StepStatus, to: StepStatus, **updates: Any
+        self,
+        run_id: str,
+        step_id: str,
+        *,
+        expected: StepStatus,
+        to: StepStatus,
+        expected_action_hash: str | None = UNCHECKED_ACTION_HASH,
+        **updates: Any,
     ) -> StepRecord:
         """Atomically move a step from `expected` to `to` (raises StaleStateError otherwise)."""
         ...
@@ -136,7 +148,14 @@ class InMemoryStepStore:
                 raise StepNotFoundError(f"no step {step_id} in run {run_id}") from None
 
     def transition(
-        self, run_id: str, step_id: str, *, expected: StepStatus, to: StepStatus, **updates: Any
+        self,
+        run_id: str,
+        step_id: str,
+        *,
+        expected: StepStatus,
+        to: StepStatus,
+        expected_action_hash: str | None = UNCHECKED_ACTION_HASH,
+        **updates: Any,
     ) -> StepRecord:
         unknown = set(updates) - _UPDATABLE
         if unknown:
@@ -147,6 +166,11 @@ class InMemoryStepStore:
                 current = self._steps[(run_id, step_id)]
             except KeyError:
                 raise StepNotFoundError(f"no step {step_id} in run {run_id}") from None
+            if (
+                expected_action_hash != UNCHECKED_ACTION_HASH
+                and current.action_hash != expected_action_hash
+            ):
+                raise StaleStateError("step action changed")
             if current.status is not expected:
                 raise StaleStateError(
                     f"step {step_id} is {current.status.value}, expected {expected.value}"

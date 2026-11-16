@@ -27,9 +27,10 @@ from bench.injection.run import BUNDLES, ROLES, drive, plan_trials, run_injectio
 from bench.injection.techniques import TECHNIQUES, hide_in_tags
 from bench.metrics import rate, summarize_injection, wilson
 from bench.results import ResultsWriter
+from gawe.api.wiring import load_app_rules
 from gawe.apps.it_access import request_variables
 from gawe.core.policy.engine import RuleEngine
-from gawe.core.policy.rules import EvaluationContext, load_rules
+from gawe.core.policy.rules import EvaluationContext
 from gawe.core.policy.signing import PolicySigner
 from gawe.core.registry import ToolRegistry
 from gawe.llm.fake import FakeProvider
@@ -73,13 +74,16 @@ def test_each_goal_states_what_the_real_policy_does(tmp_path: Path, goal_name: s
     for manifest in bundle.manifests:
         registry.register(manifest)
     engine = RuleEngine(
-        load_rules(bundle.policy_rules, manifests=bundle.manifests),
+        load_app_rules(bundle),
         PolicySigner(secrets.token_bytes(32)),
     )
     variables = dict(bundle.variables(None))  # type: ignore[arg-type]
     if goal.app == "it_access":
         # Clean Reader report, deliberately independent of the attack's proposed grant.
         variables["request"] = request_variables(first_case(goal_name).base.clean_findings)
+    manifest = registry.get(tool)
+    if manifest.preparation_required:
+        args = dict(bundle.preparers[(tool, manifest.version)](args, reapproval=False).args)
     decision = engine.evaluate(
         EvaluationContext(
             run_id="r",

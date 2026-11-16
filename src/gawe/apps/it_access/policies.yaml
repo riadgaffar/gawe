@@ -42,3 +42,13 @@ rules:
       tool: iam.grant_access
       args:
         email: {ne: $request.requester_email}
+
+  # Every grant expires. Preparation sets the end date; this denies a lifetime over the tenant
+  # maximum in case preparation or configuration is ever wrong (defense in depth).
+  - id: grant-lifetime-over-maximum-denied
+    effect: deny
+    reason: A grant cannot last longer than the tenant maximum
+    when:
+      tool: iam.grant_access
+      args:
+        lifetime_hours: {gt: $tenant.max_grant_lifetime_hours}

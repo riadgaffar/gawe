@@ -18,13 +18,14 @@ refused self-approval is exactly the sort of event an audit reader wants to see.
 
 import hmac
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 from uuid import uuid4
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from gawe.core.audit import AuditLog
 from gawe.core.canonical import canonical_json, sha256_hex
@@ -91,6 +92,8 @@ class ApprovalRecord(FrozenModel):
     requested_by: str
     requested_at: datetime
     expires_at: datetime
+    preparation: dict[str, Any] = Field(default_factory=dict)
+    resolved_args: dict[str, Any] = Field(default_factory=dict)
     decided_by: str | None = None
     decision: Decision | None = None
     comment: str | None = None
@@ -112,6 +115,18 @@ class ApprovalRecord(FrozenModel):
         return self.decision is None
 
 
+@dataclass(frozen=True)
+class ApprovedCall:
+    """An approved approval with the tool version its step ran under."""
+
+    record: ApprovalRecord
+    tool_version: str
+
+
+# (tenant id, tool name, tool version) of an approval's run and step, or None when unknown.
+Describe = Callable[[ApprovalRecord], tuple[str, str, str] | None]
+
+
 class ApprovalStore(Protocol):
     def add(self, record: ApprovalRecord) -> None:
         """Raises ApprovalAlreadyOpenError if the step already has an open approval."""
@@ -122,6 +137,18 @@ class ApprovalStore(Protocol):
     def for_step(self, run_id: str, step_id: str) -> list[ApprovalRecord]: ...
 
     def open_approvals(self) -> list[ApprovalRecord]: ...
+
+    def latest_approved(
+        self,
+        *,
+        tenant_id: str,
+        tool: str,
+        exclude_id: str,
+        decided_before: datetime | None,
+    ) -> ApprovedCall | None:
+        """The most recently decided approved approval for `tool` in the tenant, other than
+        `exclude_id` and decided before `decided_before` (when given)."""
+        ...
 
     def record_decision(
         self,
@@ -139,9 +166,11 @@ class ApprovalStore(Protocol):
 class InMemoryApprovalStore:
     """Atomic, like the database: one open approval per step, each decided once."""
 
-    def __init__(self) -> None:
+    def __init__(self, describe: Describe | None = None) -> None:
         self._records: dict[str, ApprovalRecord] = {}
         self._lock = threading.Lock()
+        # Runs and steps live in other stores; without them no earlier call can be found.
+        self._describe = describe
 
     def add(self, record: ApprovalRecord) -> None:
         with self._lock:
@@ -167,6 +196,32 @@ class InMemoryApprovalStore:
     def open_approvals(self) -> list[ApprovalRecord]:
         with self._lock:
             return [r for r in self._records.values() if r.is_open]
+
+    def latest_approved(
+        self,
+        *,
+        tenant_id: str,
+        tool: str,
+        exclude_id: str,
+        decided_before: datetime | None,
+    ) -> ApprovedCall | None:
+        if self._describe is None:
+            return None
+        with self._lock:
+            approved = [
+                r
+                for r in self._records.values()
+                if r.decision == "approved"
+                and r.approval_id != exclude_id
+                and r.decided_at is not None
+                and (decided_before is None or r.decided_at < decided_before)
+            ]
+        best: ApprovedCall | None = None
+        for record in sorted(approved, key=lambda r: r.decided_at or r.requested_at):
+            described = self._describe(record)
+            if described is not None and described[:2] == (tenant_id, tool):
+                best = ApprovedCall(record, described[2])
+        return best
 
     def record_decision(
         self,
@@ -239,6 +294,8 @@ class ApprovalService:
         decision: PolicyDecision,
         requested_by: str,
         ttl: timedelta | None = None,
+        preparation: Mapping[str, Any] | None = None,
+        resolved_args: Mapping[str, Any] | None = None,
     ) -> ApprovalRecord:
         """Open an approval for a signed needs_approval decision."""
         if not self._signer.verify(decision):
@@ -259,6 +316,8 @@ class ApprovalService:
             requested_by=requested_by,
             requested_at=now,
             expires_at=now + lifetime,
+            preparation=deepcopy(dict(preparation or {})),
+            resolved_args=deepcopy(dict(resolved_args or {})),
         )
         self._store.add(record)
         self._audit.record(
@@ -389,6 +448,32 @@ class ApprovalService:
         """Open approvals past their deadline; the orchestrator fails the waiting steps."""
         now = self._clock()
         return [r for r in self._store.open_approvals() if now >= r.expires_at]
+
+    def close_stale_for_step(self, run_id: str, step_id: str, action_hash: str) -> None:
+        """Close obsolete pending snapshots before opening a refreshed approval."""
+        for record in self._store.for_step(run_id, step_id):
+            if not record.is_open or _same(record.action_hash, action_hash):
+                continue
+            try:
+                self._store.record_decision(
+                    record.approval_id,
+                    decided_by=SYSTEM_ACTOR,
+                    decision="rejected",
+                    comment="recipient_snapshot_superseded",
+                    decided_at=self._clock(),
+                )
+            except ApprovalAlreadyDecidedError:
+                continue
+            self._audit.record(
+                run_id,
+                "approval.closed",
+                SYSTEM_ACTOR,
+                {
+                    "approval_id": record.approval_id,
+                    "step_id": step_id,
+                    "reason": "recipient_snapshot_superseded",
+                },
+            )
 
     def close_for_run(self, run_id: str, *, reason: str) -> int:
         """Reject every open approval of a run that has ended, so none can be approved later.

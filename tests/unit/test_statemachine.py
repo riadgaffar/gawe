@@ -15,13 +15,15 @@ from gawe.core.statemachine import (
     check_step_transition,
 )
 
-SQL = (Path(__file__).parent.parent.parent / "migrations" / "sql" / "0001_init.sql").read_text()
+SQL = (Path(__file__).parent.parent.parent / "migrations" / "sql" / "0006_readback.sql").read_text()
 
 
 def check_list(table_marker: str) -> set[str]:
     """Status values in the first `status ... CHECK (status IN (...))` after the table header."""
-    section = SQL[SQL.index(f"CREATE TABLE {table_marker}") :]
-    match = re.search(r"status\s+text[^,]*?CHECK \(status IN \((.*?)\)\)", section, re.S)
+    section = SQL[
+        SQL.index(f"ALTER TABLE {table_marker} ADD CONSTRAINT {table_marker}_status_check") :
+    ]
+    match = re.search(r"CHECK \(status IN \((.*?)\)\)", section, re.S)
     assert match, table_marker
     return set(re.findall(r"'([a-z_]+)'", match.group(1)))
 
@@ -39,11 +41,14 @@ def test_every_status_has_a_transition_entry() -> None:
 def test_terminal_states_are_final() -> None:
     assert {
         StepStatus.REJECTED,
+        StepStatus.VERIFICATION_BLOCKED,
+        StepStatus.VERIFICATION_UNKNOWN,
         StepStatus.DENIED,
         StepStatus.SUCCEEDED,
         StepStatus.FAILED,
     } == STEP_TERMINAL
     assert {
+        RunStatus.UNKNOWN,
         RunStatus.COMPLETED,
         RunStatus.FAILED,
         RunStatus.CANCELLED,

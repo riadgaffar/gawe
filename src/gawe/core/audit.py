@@ -39,6 +39,10 @@ class AuditStore(Protocol):
 
     def events(self, run_id: str) -> list[AuditEvent]: ...
 
+    def run_ids_with(self, type: str, start: datetime, end: datetime) -> list[str]:
+        """Runs with at least one event of `type` stamped in [start, end), across tenants."""
+        ...
+
 
 def _timestamp(ts: datetime) -> str:
     if ts.tzinfo is None:
@@ -182,6 +186,14 @@ class InMemoryAuditStore:
     def events(self, run_id: str) -> list[AuditEvent]:
         with self._lock:
             return list(self._events.get(run_id, []))
+
+    def run_ids_with(self, type: str, start: datetime, end: datetime) -> list[str]:
+        with self._lock:
+            return sorted(
+                run_id
+                for run_id, chain in self._events.items()
+                if any(e.type == type and start <= e.ts < end for e in chain)
+            )
 
 
 def _utc_now() -> datetime:

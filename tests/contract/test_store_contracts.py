@@ -12,6 +12,7 @@ from gawe.core.approvals import (
     ApprovalNotFoundError,
     ApprovalRecord,
 )
+from gawe.core.models import DecisionCheck
 from gawe.core.records import (
     AttemptConflictError,
     StaleStateError,
@@ -20,6 +21,7 @@ from gawe.core.records import (
 )
 from gawe.core.statemachine import IllegalTransitionError, StepStatus
 from tests.contract.conftest import ALICE, BOB, Backend
+from tests.helpers import DIGEST, signer
 
 H = "a" * 64
 H2 = "b" * 64
@@ -61,6 +63,19 @@ def test_step_round_trips_every_field(backend: Backend) -> None:
         backend,
         args_template={"to": {"$ref": "s0.output.address"}, "body": "hi"},
         depends_on=("s0",),
+        preparation={"recipient_lookup_at": T0.isoformat()},
+        policy_decision=signer().seal(
+            policy_digest=DIGEST,
+            step_id="s1",
+            action_hash=H,
+            outcome="allow",
+            rule_ids=["test"],
+            reason="allowed",
+            checks=[
+                DecisionCheck(rule_id="test", path="to", op="domain_in", unreadable=False),
+                DecisionCheck(rule_id="test", path="body", op="exists", unreadable=False),
+            ],
+        ),
         resolved_args={"to": "a@b.com", "body": "hi"},
     )
     assert backend.steps.get(backend.run_id, "s1") == record
@@ -138,7 +153,11 @@ def test_failure_records_a_short_error(backend: Backend) -> None:
 
 def test_approval_round_trips_and_is_listed(backend: Backend) -> None:
     add_step(backend)
-    record = approval(backend)
+    record = approval(
+        backend,
+        preparation={"recipient_lookup_at": T0.isoformat()},
+        resolved_args={"delivery": {"mailboxes": ["a@b.example"]}},
+    )
     backend.approvals.add(record)
     assert backend.approvals.get(record.approval_id) == record
     assert backend.approvals.for_step(backend.run_id, "s1") == [record]
@@ -252,3 +271,31 @@ def test_output_is_write_once_and_round_trips(backend: Backend) -> None:
 def test_attempts_for_a_step_without_history_is_empty(backend: Backend) -> None:
     add_step(backend)
     assert backend.executions.attempts(backend.run_id, "s1") == []
+
+
+def test_stale_action_cannot_claim_refreshed_step(backend: Backend) -> None:
+    add_step(backend, status=StepStatus.POLICY_CHECKED, action_hash=H2)
+    with pytest.raises(StaleStateError):
+        backend.steps.transition(
+            backend.run_id,
+            "s1",
+            expected=StepStatus.POLICY_CHECKED,
+            to=StepStatus.EXECUTING,
+            expected_action_hash=H,
+        )
+    assert backend.steps.get(backend.run_id, "s1").action_hash == H2
+
+
+def test_unset_hash_cas_cannot_overwrite_refresh(backend: Backend) -> None:
+    add_step(backend, action_hash=H, preparation={"reapproval_required": True})
+    with pytest.raises(StaleStateError):
+        backend.steps.transition(
+            backend.run_id,
+            "s1",
+            expected=StepStatus.READY,
+            to=StepStatus.POLICY_CHECKED,
+            expected_action_hash=None,
+            action_hash=H2,
+            preparation={"reapproval_required": False},
+        )
+    assert backend.steps.get(backend.run_id, "s1").preparation["reapproval_required"] is True

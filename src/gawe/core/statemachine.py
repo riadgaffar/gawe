@@ -4,7 +4,7 @@ These tables are the only definition of which status changes are legal. Stores c
 `check_*_transition` before writing, so no code path can, for example, move a step from
 `awaiting_approval` straight to `executing`.
 
-Status values match the CHECK constraints in migrations/sql/0001_init.sql; a unit test fails if
+Status values match the CHECK constraints installed by migration 0006; a unit test fails if
 they drift apart.
 """
 
@@ -17,6 +17,8 @@ class RunStatus(StrEnum):
     PLANNING = "planning"
     RUNNING = "running"
     PAUSED_FOR_APPROVAL = "paused_for_approval"
+    WAITING_VERIFICATION = "waiting_verification"
+    UNKNOWN = "unknown"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -33,6 +35,9 @@ class StepStatus(StrEnum):
     DENIED = "denied"
     EXECUTING = "executing"
     VERIFYING = "verifying"
+    AWAITING_READBACK = "awaiting_readback"
+    VERIFICATION_BLOCKED = "verification_blocked"
+    VERIFICATION_UNKNOWN = "verification_unknown"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
 
@@ -50,9 +55,22 @@ RUN_TRANSITIONS: Final[dict[RunStatus, frozenset[RunStatus]]] = {
     # running -> planning is a replan after a failed step; it is a new plan version that goes
     # through the same validation and policy path as the first one.
     _R.RUNNING: frozenset(
-        {_R.PLANNING, _R.PAUSED_FOR_APPROVAL, _R.COMPLETED, _R.FAILED, _R.CANCELLED, _R.DENIED}
+        {
+            _R.PLANNING,
+            _R.PAUSED_FOR_APPROVAL,
+            _R.COMPLETED,
+            _R.FAILED,
+            _R.CANCELLED,
+            _R.DENIED,
+            _R.WAITING_VERIFICATION,
+            _R.UNKNOWN,
+        }
     ),
     _R.PAUSED_FOR_APPROVAL: frozenset({_R.RUNNING, _R.CANCELLED, _R.FAILED, _R.DENIED}),
+    _R.WAITING_VERIFICATION: frozenset(
+        {_R.RUNNING, _R.CANCELLED, _R.FAILED, _R.UNKNOWN, _R.COMPLETED, _R.DENIED}
+    ),
+    _R.UNKNOWN: frozenset(),
     _R.COMPLETED: frozenset(),
     _R.FAILED: frozenset(),
     _R.CANCELLED: frozenset(),
@@ -67,8 +85,21 @@ STEP_TRANSITIONS: Final[dict[StepStatus, frozenset[StepStatus]]] = {
     _S.AWAITING_APPROVAL: frozenset({_S.APPROVED, _S.REJECTED, _S.FAILED}),
     _S.APPROVED: frozenset({_S.EXECUTING, _S.FAILED}),
     # Retries happen inside `executing` (tracked per attempt in the executions table).
-    _S.EXECUTING: frozenset({_S.VERIFYING, _S.FAILED}),
-    _S.VERIFYING: frozenset({_S.SUCCEEDED, _S.FAILED}),
+    _S.EXECUTING: frozenset({_S.VERIFYING, _S.FAILED, _S.READY}),
+    _S.VERIFYING: frozenset(
+        {
+            _S.SUCCEEDED,
+            _S.FAILED,
+            _S.AWAITING_READBACK,
+            _S.VERIFICATION_BLOCKED,
+            _S.VERIFICATION_UNKNOWN,
+        }
+    ),
+    _S.AWAITING_READBACK: frozenset(
+        {_S.SUCCEEDED, _S.FAILED, _S.VERIFICATION_BLOCKED, _S.VERIFICATION_UNKNOWN}
+    ),
+    _S.VERIFICATION_BLOCKED: frozenset(),
+    _S.VERIFICATION_UNKNOWN: frozenset(),
     _S.REJECTED: frozenset(),
     _S.DENIED: frozenset(),
     _S.SUCCEEDED: frozenset(),

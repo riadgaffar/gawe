@@ -26,6 +26,7 @@ import yaml
 from pydantic import Field, ValidationError, model_validator
 
 from gawe.core.models import (
+    DecisionCheck,
     FrozenModel,
     PolicyOutcome,
     RiskTier,
@@ -138,6 +139,25 @@ def _op_domain_not_in(value: Any, operand: Any) -> bool:
     return not _op_domain_in(value, operand)
 
 
+def _list_domains(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)) or not value or len(value) > 100:
+        raise PolicyEvaluationError("invalid recipient list")
+    domains = [email_domain(item) for item in value]
+    if any(domain is None for domain in domains):
+        raise PolicyEvaluationError("invalid recipient mailbox")
+    return [domain for domain in domains if domain is not None]
+
+
+def _op_any_domain_in(value: Any, operand: Any) -> bool:
+    domains = _list_domains(value)
+    return any(domain in {_domain_name(item) for item in operand} for domain in domains)
+
+
+def _op_any_domain_not_in(value: Any, operand: Any) -> bool:
+    domains = _list_domains(value)
+    return any(domain not in {_domain_name(item) for item in operand} for domain in domains)
+
+
 _OPS: Final[dict[str, Callable[[Any, Any], bool]]] = {
     "eq": _op_eq,
     "ne": _op_ne,
@@ -150,6 +170,8 @@ _OPS: Final[dict[str, Callable[[Any, Any], bool]]] = {
     "exists": _op_exists,
     "domain_in": _op_domain_in,
     "domain_not_in": _op_domain_not_in,
+    "any_domain_in": _op_any_domain_in,
+    "any_domain_not_in": _op_any_domain_not_in,
 }
 
 
@@ -175,11 +197,13 @@ def check_operand(op: str, operand: Any) -> str | None:
         return "'exists' needs true or false"
     if op in {"in", "not_in"} and not isinstance(operand, (list, tuple)):
         return f"'{op}' needs a list"
-    if op in {"domain_in", "domain_not_in"} and (
+    if op in {"domain_in", "domain_not_in", "any_domain_in", "any_domain_not_in"} and (
         not isinstance(operand, (list, tuple)) or not all(isinstance(i, str) for i in operand)
     ):
         return f"'{op}' needs a list of domain strings"
-    if op in {"domain_in", "domain_not_in"} and any(_domain_name(i) is None for i in operand):
+    if op in {"domain_in", "domain_not_in", "any_domain_in", "any_domain_not_in"} and any(
+        _domain_name(i) is None for i in operand
+    ):
         return f"'{op}' needs valid domain names"
     if op in {"eq", "ne"} and isinstance(operand, (dict, list, tuple)):
         return f"'{op}' needs a scalar"
@@ -389,7 +413,34 @@ def _resolve(operand: Any, variables: Mapping[str, Any]) -> Any:
     return resolved
 
 
-def rule_matches(rule: Rule, ctx: EvaluationContext) -> bool:
+def unreadable(op: str, value: Any) -> bool:
+    """Whether `value` is unreadable for `op`: the check cannot meaningfully read it.
+
+    Explains a decision; never changes one. Missing or ill-typed values already make positive
+    operators false and negative operators true.
+    """
+    if op == "exists":
+        return False  # absence is what it measures
+    if op in {"eq", "ne", "in", "not_in"}:
+        return value is MISSING or isinstance(value, (Mapping, list, tuple))
+    if op in {"gt", "gte", "lt", "lte"}:
+        return not _is_number(value)
+    if op in {"domain_in", "domain_not_in"}:
+        return email_domain(value) is None
+    if op in {"any_domain_in", "any_domain_not_in"}:
+        try:
+            _list_domains(value)
+        except PolicyEvaluationError:
+            return True
+        return False
+    raise ValueError(f"unknown operator '{op}'")
+
+
+def rule_matches(
+    rule: Rule, ctx: EvaluationContext, checks: list[DecisionCheck] | None = None
+) -> bool:
+    """Whether `rule` matches. When `checks` is given, each check this evaluates is appended
+    (rule id, path, operator, unreadable), including one that raises; matching is unchanged."""
     when = rule.when
     manifest = ctx.manifest
     if when.tool is not None and not fnmatch.fnmatchcase(manifest.name, when.tool):
@@ -401,6 +452,12 @@ def rule_matches(rule: Rule, ctx: EvaluationContext) -> bool:
     for path, conditions in when.args.items():
         value = lookup(ctx.resolved_args, path)
         for op, operand in conditions.items():
+            if checks is not None:
+                checks.append(
+                    DecisionCheck(
+                        rule_id=rule.id, path=path, op=op, unreadable=unreadable(op, value)
+                    )
+                )
             resolved = _resolve(operand, ctx.variables)
             problem = check_operand(op, resolved)
             if problem:

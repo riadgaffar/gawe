@@ -11,11 +11,10 @@ earlier stages:
 4. the tool must be registered at the stored version and its args must satisfy its schema;
 5. the step must be won by compare-and-set into `executing`, so concurrent workers run it once.
 
-Side effects are idempotent end to end: every attempt of a step carries the same idempotency
-key (derived from the action hash), and connectors must deduplicate on it. If a worker dies after
-the tool returned but before its output was saved, the next worker repeats the call with the same
-key; if the output was saved, the tool is not called again. A worker that died mid-attempt is
-taken over once its lease expires.
+Shipped writes persist an operation intent and fixed deadline before invocation. Their key binds
+both action hash and plan version. Only a connector-declared pre-dispatch rejection may retry;
+a possible acceptance or saved reply routes exclusively to independent system read-back. Recovery
+never repeats such a write. Generic read-tool attempts retain the ordinary lease/retry path.
 
 Audit events contain hashes and short codes only, never arguments or tool output.
 """
@@ -31,8 +30,11 @@ from jsonschema import Draft202012Validator
 from gawe.core.approvals import ApprovalNotGrantedError, ApprovalService
 from gawe.core.audit import AuditLog
 from gawe.core.canonical import action_hash, canonical_json, sha256_hex
+from gawe.core.maintenance import JobConflictError, MaintenanceJob
 from gawe.core.models import PolicyDecision, ToolManifest
 from gawe.core.policy.signing import PolicySigner, PolicySigningError
+from gawe.core.preparation import RecipientChanged
+from gawe.core.readback import operation_identity
 from gawe.core.records import (
     AttemptConflictError,
     ExecutionStore,
@@ -42,6 +44,7 @@ from gawe.core.records import (
 )
 from gawe.core.registry import RegistryError, ToolRegistry
 from gawe.core.statemachine import StepStatus
+from gawe.core.verification import VerificationResolver
 from gawe.core.verifier import Verifier
 
 ACTOR = "gawe.executor"
@@ -58,6 +61,10 @@ class ConcurrentExecutionError(ExecutionRefusedError):
 
 class ToolTransientError(Exception):
     """Raised by a tool for failures worth retrying (timeouts, 5xx)."""
+
+
+class ToolPreDispatchError(Exception):
+    """Connector guarantees this invocation failed before any possible external acceptance."""
 
 
 @dataclass(frozen=True)
@@ -123,6 +130,7 @@ class Executor:
         approvals: ApprovalService,
         audit: AuditLog,
         verifier: Verifier,
+        verification: VerificationResolver | None = None,
         retry: RetryPolicy | None = None,
         lease: timedelta = timedelta(minutes=5),
         clock: Callable[[], datetime] = _utc_now,
@@ -136,6 +144,7 @@ class Executor:
         self._approvals = approvals
         self._audit = audit
         self._verifier = verifier
+        self.verification = verification
         self._retry = retry or RetryPolicy()
         self._lease = lease
         self._clock = clock
@@ -147,8 +156,21 @@ class Executor:
         """Run one step that policy (and, if required, a human) has cleared."""
         step = self._steps.get(run_id, step_id)
         recomputed = self._recompute_hash(step)
+        if self.verification and (step.tool, step.tool_version) in self.verification.adapters:
+            existing = self.verification.find(step)
+            if existing is not None and not existing.continued:
+                # This branch can only read/apply a persisted intent, never dispatch a tool.
+                return self.reconcile(step)
         self._check_authorization(step, decision, recomputed)
         manifest = self._load_manifest(step)  # raises before any state change
+        if manifest.retired:
+            self._refuse(step, "unsupported_tool_version")
+        if (
+            self.verification
+            and (step.tool, step.tool_version) in self.verification.adapters
+            and step.status in {StepStatus.VERIFYING, StepStatus.AWAITING_READBACK}
+        ):
+            self._refuse(step, "legacy_write_reconciliation_required")
 
         if step.status is StepStatus.VERIFYING:
             return self._resume_verification(step, manifest)
@@ -164,12 +186,178 @@ class Executor:
         if any(Draft202012Validator(manifest.input_schema).iter_errors(step.resolved_args)):
             return self._fail(step, "args_schema_invalid")
 
+        if self.verification and (step.tool, step.tool_version) in self.verification.adapters:
+            return self._execute_write(step, manifest, impl, decision)
+
         output, attempts, error = self._run_attempts(step, impl)
         if output is None:
+            if error == "recipient_changed" and manifest.preparation_required:
+                self._move(
+                    step,
+                    StepStatus.EXECUTING,
+                    StepStatus.READY,
+                    preparation={**step.preparation, "reapproval_required": True},
+                    policy_decision=None,
+                )
+                return StepOutcome(step.step_id, StepStatus.READY, attempts, error=error)
             return self._fail(step, error or "unknown", attempts=attempts)
         return self._verify(step, manifest, output, attempts)
 
     # -- authorization --------------------------------------------------------------------
+
+    def reconcile(self, step: StepRecord, *, owned: MaintenanceJob | None = None) -> StepOutcome:
+        """Read a dispatched effect without checking an expired approval or entering write code."""
+        assert self.verification is not None
+        try:
+            status = self.verification.resolve(step, owned=owned)
+        except (JobConflictError, StaleStateError) as exc:
+            raise ConcurrentExecutionError(str(exc)) from exc
+        attempts = len(self._executions.attempts(step.run_id, step.step_id))
+        saved = self._steps.get(step.run_id, step.step_id)
+        output = self._executions.load_output(step.run_id, step.step_id)
+        output_hash = (
+            sha256_hex(canonical_json(output))
+            if status is StepStatus.SUCCEEDED and output is not None
+            else None
+        )
+        return StepOutcome(
+            step.step_id, status, attempts, output_hash=output_hash, error=saved.error
+        )
+
+    def _execute_write(
+        self,
+        step: StepRecord,
+        manifest: ToolManifest,
+        impl: ToolImplementation,
+        decision: PolicyDecision,
+    ) -> StepOutcome:
+        assert self.verification is not None
+        history = self._executions.attempts(step.run_id, step.step_id)
+        assert step.action_hash is not None
+        plan_version = self.verification.runs.get(step.run_id).plan_version
+        keys = {
+            idempotency_key(step.action_hash),
+            operation_identity(step.action_hash, plan_version),
+        }
+        if any(a.idempotency_key in keys for a in history):
+            # A pre-S3 executing row has no trustworthy original verification deadline.
+            self._refuse(step, "legacy_write_reconciliation_required")
+        try:
+            job, inserted = self.verification.prepare(step)
+        except JobConflictError as exc:
+            raise ConcurrentExecutionError(str(exc)) from exc
+        if not inserted:
+            return self.reconcile(step)
+        attempts = 0
+        while attempts < self._retry.max_attempts:
+            # Each genuinely new invocation still needs live authorization. Readback does not.
+            try:
+                self._check_authorization(step, decision, step.action_hash, fresh_dispatch=True)
+            except ExecutionRefusedError:
+                job = self.verification.change(
+                    job,
+                    result={
+                        "outcome": "not_dispatched",
+                        "code": "approval_missing",
+                    },
+                )
+                return self.reconcile(step, owned=job)
+            # An expired or superseded dispatcher can only reconcile, never retry a write.
+            try:
+                job = self.verification.renew_dispatch(step, job)
+            except JobConflictError:
+                return self.reconcile(step)
+            if self._clock() >= job.deadline:
+                return self.reconcile(step, owned=job)
+            attempts += 1
+            number = len(history) + attempts
+            try:
+                self._executions.start(
+                    step.run_id,
+                    step.step_id,
+                    attempt=number,
+                    idempotency_key=job.operation_key,
+                    now=self._clock(),
+                )
+            except AttemptConflictError as exc:
+                raise ConcurrentExecutionError("attempt already started") from exc
+            # Starting an attempt is a separate store call and may have stalled past the lease.
+            try:
+                job = self.verification.renew_dispatch(step, job)
+            except JobConflictError:
+                return self.reconcile(step)
+            try:
+                reply = impl(
+                    step.resolved_args,
+                    ToolCall(
+                        step.run_id,
+                        step.step_id,
+                        number,
+                        job.operation_key,
+                    ),
+                )
+            except RecipientChanged:
+                # Commit the no-dispatch proof first. Recovery can close an unfinished attempt
+                # from this result, but must not infer non-dispatch from a missing target record.
+                job = self.verification.change(
+                    job,
+                    result={
+                        "outcome": "recipient_changed",
+                        "code": "recipient_changed",
+                    },
+                )
+                self._close_failed(step, number, "recipient_changed", retryable=False)
+                return self.reconcile(step, owned=job)
+            except ToolPreDispatchError as exc:
+                retryable = (
+                    isinstance(exc, ToolTransientError) and attempts < self._retry.max_attempts
+                )
+                self._close_failed(step, number, _error_code(exc), retryable=retryable)
+                if retryable:
+                    self._sleep(self._retry.delay(attempts))
+                    continue
+                job = self.verification.change(
+                    job,
+                    result={
+                        "outcome": "not_dispatched",
+                        "code": _error_code(exc),
+                    },
+                )
+                return self.reconcile(step, owned=job)
+            except Exception as exc:
+                # Timeout/exception with possible acceptance is NOT a retryable write failure.
+                self._close_failed(step, number, _error_code(exc), retryable=False)
+                return self.reconcile(step, owned=job)
+            try:
+                output = dict(reply)
+                output_hash = sha256_hex(canonical_json(output))
+            except Exception:
+                job = self.verification.change(job, protocol_error="output_schema_invalid")
+                self._close_failed(step, number, "output_schema_invalid", retryable=False)
+                return self.reconcile(step, owned=job)
+            self._executions.save_output(step.run_id, step.step_id, output)
+            if any(Draft202012Validator(manifest.output_schema).iter_errors(output)):
+                job = self.verification.change(job, protocol_error="output_schema_invalid")
+            self._executions.finish(
+                step.run_id,
+                step.step_id,
+                attempt=number,
+                status="succeeded",
+                now=self._clock(),
+                output_hash=output_hash,
+            )
+            self._audit.record(
+                step.run_id,
+                "execution.succeeded",
+                ACTOR,
+                {
+                    "step_id": step.step_id,
+                    "attempt": number,
+                    "output_hash": output_hash,
+                },
+            )
+            return self.reconcile(step, owned=job)
+        raise AssertionError("bounded dispatch loop must return")
 
     def _recompute_hash(self, step: StepRecord) -> str:
         recomputed = action_hash(
@@ -184,7 +372,12 @@ class Executor:
         return recomputed
 
     def _check_authorization(
-        self, step: StepRecord, decision: PolicyDecision, recomputed: str
+        self,
+        step: StepRecord,
+        decision: PolicyDecision,
+        recomputed: str,
+        *,
+        fresh_dispatch: bool = False,
     ) -> None:
         if decision.step_id != step.step_id:
             self._refuse(step, "decision_for_other_step")
@@ -196,7 +389,7 @@ class Executor:
             self._refuse(step, "policy_denied")
         if decision.outcome == "needs_approval":
             # Resuming an execution already running under a valid approval may outlive its TTL.
-            resuming = step.status is StepStatus.EXECUTING
+            resuming = step.status is StepStatus.EXECUTING and not fresh_dispatch
             try:
                 self._approvals.require_approved(
                     run_id=step.run_id,
@@ -211,6 +404,13 @@ class Executor:
         try:
             return self._registry.get(step.tool, step.tool_version)
         except RegistryError:
+            if step.tool == "email.send" and step.tool_version == "1.0.0":
+                code = (
+                    "legacy_send_reconciliation_required"
+                    if step.status in {StepStatus.EXECUTING, StepStatus.VERIFYING}
+                    else "unsupported_email_version"
+                )
+                self._refuse(step, code)
             self._refuse(step, "tool_not_registered")
 
     def _refuse(self, step: StepRecord, reason: str) -> NoReturn:
@@ -234,7 +434,11 @@ class Executor:
             self._refuse(step, f"step_not_{expected.value}")
         try:
             self._steps.transition(
-                step.run_id, step.step_id, expected=expected, to=StepStatus.EXECUTING
+                step.run_id,
+                step.step_id,
+                expected=expected,
+                to=StepStatus.EXECUTING,
+                expected_action_hash=step.action_hash,
             )
         except StaleStateError:
             raise ConcurrentExecutionError("another worker claimed this step") from None
@@ -282,7 +486,14 @@ class Executor:
     def _move(self, step: StepRecord, expected: StepStatus, to: StepStatus, **updates: Any) -> None:
         """A status change that reports losing a race as ConcurrentExecutionError."""
         try:
-            self._steps.transition(step.run_id, step.step_id, expected=expected, to=to, **updates)
+            self._steps.transition(
+                step.run_id,
+                step.step_id,
+                expected=expected,
+                to=to,
+                expected_action_hash=step.action_hash,
+                **updates,
+            )
         except StaleStateError:
             raise ConcurrentExecutionError("the step changed under this worker") from None
 
@@ -301,12 +512,16 @@ class Executor:
 
         error: str | None = None
         while True:
-            used = len(self._executions.attempts(step.run_id, step.step_id))
+            all_history = self._executions.attempts(step.run_id, step.step_id)
+            current_history = [a for a in all_history if a.idempotency_key == key]
+            used = len(current_history)
+            if current_history and current_history[-1].error == "recipient_changed":
+                return None, len(all_history), "recipient_changed"
             if used >= self._retry.max_attempts:
                 return None, used, error or "retries_exhausted"
             if used > 0:
                 self._sleep(self._retry.delay(used))
-            attempt = used + 1
+            attempt = len(all_history) + 1
             try:
                 self._executions.start(
                     step.run_id, step.step_id, attempt=attempt, idempotency_key=key,
@@ -319,6 +534,9 @@ class Executor:
             try:
                 output = dict(impl(step.resolved_args, call))
                 output_hash = sha256_hex(canonical_json(output))
+            except RecipientChanged:
+                self._close_failed(step, attempt, "recipient_changed", retryable=False)
+                return None, attempt, "recipient_changed"
             except ToolTransientError as exc:
                 error = _error_code(exc)
                 self._close_failed(step, attempt, error, retryable=True)

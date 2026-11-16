@@ -111,6 +111,18 @@ export async function decide(_prev: ActionState, form: FormData): Promise<Action
   }
 }
 
+export async function reviewVerdict(_prev: ActionState, form: FormData): Promise<ActionState> {
+  const { client } = await requireSession();
+  const verdict = text(form, "verdict");
+  if (verdict !== "confirmed" && verdict !== "missed_risk") return { error: "Choose a verdict." };
+  try {
+    await client.reviewVerdict(text(form, "item_id"), verdict);
+    return { ok: verdict === "confirmed" ? "Confirmed." : "Recorded as a missed risk." };
+  } catch (error) {
+    return fail(error);
+  }
+}
+
 export type VerifyState = {
   error?: string;
   result?: { ok: boolean; checked: number; head: string | null; failed_seq: number | null; reason: string | null };

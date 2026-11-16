@@ -9,6 +9,7 @@ export function Shell({ me, children }: { me: MeView; children: React.ReactNode 
         <strong>GAWE</strong>
         <Link href="/runs">Runs</Link>
         <Link href="/approvals">Approvals</Link>
+        <Link href="/review">Review</Link>
         <span className="spacer" />
         <span className="muted">
           {me.user_id} · {me.roles.join(", ") || "no roles"}

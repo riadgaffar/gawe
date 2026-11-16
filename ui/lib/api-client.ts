@@ -6,8 +6,10 @@ import type {
   AuditVerificationView,
   DecisionInput,
   MeView,
+  ReviewItemView,
   RunView,
   StartRunInput,
+  Verdict,
 } from "./api-types";
 
 export class ApiError extends Error {
@@ -62,6 +64,9 @@ export function createClient(options: { baseUrl: string; token: string; fetchImp
     inbox: () => call<ApprovalView[]>("GET", "/v1/approvals"),
     decide: (approvalId: string, input: DecisionInput) =>
       call<ApprovalView>("POST", `/v1/approvals/${enc(approvalId)}/decision`, input),
+    reviewItems: () => call<ReviewItemView[]>("GET", "/v1/review-items"),
+    reviewVerdict: (itemId: string, verdict: Verdict) =>
+      call<ReviewItemView>("POST", `/v1/review-items/${enc(itemId)}/verdict`, { verdict }),
   };
 }
 

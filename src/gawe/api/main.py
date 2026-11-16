@@ -11,6 +11,10 @@ GAWE_AUTO_RESUME=0 (do not restart unfinished runs at startup; default on),
 GAWE_AUTH_FAIL_LIMIT (default 20) and GAWE_AUTH_FAIL_WINDOW_SECONDS (default 300),
 GAWE_ANCHOR_SINKS and GAWE_ANCHOR_DIR (anchor each finished run's audit head; see
 gawe.anchoring.config; off by default).
+Maintenance: GAWE_MAINTENANCE_INTERVAL_SECONDS (default 30, 1-300) runs the verification sweep
+inside this process; GAWE_VERIFICATION_DEADLINE_SECONDS (default 300, 30-3600, longer than the
+interval) sets the read-back deadline; GAWE_MAINTENANCE_BATCH_SIZE (default 50) and
+GAWE_MAINTENANCE_MAX_JOBS (default 500) bound one tick. See gawe.maintenance.settings.
 
 With GAWE_STORE=memory nothing survives a restart; it is for local demos only.
 """
@@ -27,6 +31,8 @@ from gawe.api.background import ThreadBackground
 from gawe.api.throttle import DEFAULT_LIMIT, DEFAULT_WINDOW_SECONDS, FailureThrottle
 from gawe.api.wiring import AppBundle, assemble, memory_stores, postgres_stores
 from gawe.core.policy.signing import PolicySigner
+from gawe.core.review import ReviewKey
+from gawe.maintenance.settings import MaintenanceSettings, SettingsError
 
 log = logging.getLogger("gawe.api")
 
@@ -65,6 +71,19 @@ def _load_bundle(spec: str) -> AppBundle:
     return bundle
 
 
+def review_key_from_env() -> ReviewKey | None:
+    try:
+        key = ReviewKey.from_env()
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    if key is None:
+        log.warning(
+            "the next-day review runs without its sample; set GAWE_REVIEW_SAMPLE_KEY "
+            "(at least 32 random bytes, hex, not the signing key) to turn it on"
+        )
+    return key
+
+
 def create_app_from_env() -> Any:
     from gawe.api.app import create_app
     from gawe.llm.anthropic_provider import AnthropicProvider
@@ -86,6 +105,10 @@ def create_app_from_env() -> Any:
     else:
         raise ConfigError("GAWE_STORE must be 'memory' or 'postgres'")
 
+    try:
+        maintenance = MaintenanceSettings.from_env()
+    except SettingsError as exc:
+        raise ConfigError(str(exc)) from exc
     workers = _int_env("GAWE_WORKERS", 4)
     try:
         anchor_sinks = sinks_from_env()
@@ -93,6 +116,7 @@ def create_app_from_env() -> Any:
         raise ConfigError(str(exc)) from exc
     if not anchor_sinks:
         log.info("audit-head anchoring is off; set GAWE_ANCHOR_SINKS to turn it on")
+    review_key = review_key_from_env()
 
     service = assemble(
         bundle,
@@ -101,6 +125,8 @@ def create_app_from_env() -> Any:
         provider=AnthropicProvider(),
         background=ThreadBackground(max_workers=workers),
         anchor_sinks=anchor_sinks,
+        maintenance=maintenance,
+        review_key=review_key,
     )
     if os.environ.get("GAWE_AUTO_RESUME", "1") != "0":
         service.recover_interrupted()  # pick up runs a previous process left unfinished
@@ -113,4 +139,5 @@ def create_app_from_env() -> Any:
         service=service,
         authenticator=TokenAuthenticator.from_file(Path(_required("GAWE_API_TOKENS_FILE"))),
         cors_origins=origins,
+        maintenance_interval=maintenance.interval_seconds,
     )

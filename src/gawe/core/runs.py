@@ -83,6 +83,10 @@ class RunStore(Protocol):
         """Runs in any of the given statuses across all tenants, oldest first (for recovery)."""
         ...
 
+    def tenant_ids(self) -> list[str]:
+        """Every tenant that has a run (the daily review schedules one job for each)."""
+        ...
+
     def transition(
         self, run_id: str, *, expected: RunStatus, to: RunStatus, **updates: Any
     ) -> RunRecord:
@@ -124,6 +128,10 @@ class InMemoryRunStore:
         with self._lock:
             found = [r for r in self._runs.values() if r.status in wanted]
         return sorted(found, key=lambda r: r.created_at)[:limit]
+
+    def tenant_ids(self) -> list[str]:
+        with self._lock:
+            return sorted({r.tenant_id for r in self._runs.values()})
 
     def transition(
         self, run_id: str, *, expected: RunStatus, to: RunStatus, **updates: Any

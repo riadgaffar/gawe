@@ -8,19 +8,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from gawe.core.executor import ToolTransientError
+from gawe.core.executor import ToolPreDispatchError, ToolTransientError
 
 
-class ConnectorError(Exception):
-    """A permanent failure. `code` is a short label that is safe to store and show."""
+class ConnectorError(ToolPreDispatchError):
+    """A rejection known to precede acceptance; code is safe to store and show.
+
+    Failures after possible acceptance must use an ordinary exception, so the executor reconciles.
+    """
 
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
 
 
-class TransientConnectorError(ToolTransientError):
-    """A failure worth retrying (a timeout, a 503)."""
+class TransientConnectorError(ToolTransientError, ToolPreDispatchError):
+    """A mock rejection known to precede dispatch; safe to retry with the same key."""
 
     code = "transient"
 
@@ -67,6 +70,10 @@ class Ledger:
             for line in path.read_text(encoding="utf-8").splitlines():
                 if line.strip():
                     self._index(json.loads(line))
+
+    @property
+    def path(self) -> Path | None:
+        return self._path
 
     def record_once(
         self, kind: str, key: str, build: Callable[[], Mapping[str, Any]]

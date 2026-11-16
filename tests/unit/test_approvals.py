@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
-from tests.helpers import signer
+from tests.helpers import DIGEST, signer
 
 from gawe.core.approvals import (
     SYSTEM_ACTOR,
@@ -55,6 +55,7 @@ class Env:
 
     def decision(self, *, step: str = "s1", action: str = H, role: str | None = "legal_reviewer"):  # type: ignore[no-untyped-def]
         return signer().seal(
+            policy_digest=DIGEST,
             step_id=step,
             action_hash=action,
             outcome="needs_approval",
@@ -86,7 +87,9 @@ def test_request_rejects_forged_or_wrong_kind_of_decision(env: Env) -> None:
     forged = env.decision().model_copy(update={"action_hash": OTHER})
     with pytest.raises(ApprovalError, match="signature"):
         env.service.request(run_id=RUN, decision=forged, requested_by="alice")
-    allow = signer().seal(step_id="s1", action_hash=H, outcome="allow", rule_ids=[], reason="x")
+    allow = signer().seal(
+        policy_digest=DIGEST, step_id="s1", action_hash=H, outcome="allow", rule_ids=[], reason="x"
+    )
     with pytest.raises(ApprovalError, match="does not call"):
         env.service.request(run_id=RUN, decision=allow, requested_by="alice")
 

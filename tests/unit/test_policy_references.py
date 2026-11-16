@@ -178,7 +178,7 @@ def test_every_shipped_policy_loads_with_its_manifests(app: str) -> None:
     else:
         module = contract_review if app == "contract_review" else it_access
         path = module.HERE / "policies.yaml"
-        manifests = tuple(module.MANIFESTS)
+        manifests = tuple(m for m in module.MANIFESTS if not m.retired)
     assert load_rules(path, manifests=manifests)
 
 
@@ -193,7 +193,11 @@ def renamed_assessment(manifest: ToolManifest) -> ToolManifest:
     schema = deepcopy(manifest.input_schema)
     schema["properties"]["rating"] = schema["properties"].pop("risk_level")
     schema["required"] = ["rating" if key == "risk_level" else key for key in schema["required"]]
-    return manifest.model_copy(update={"input_schema": schema})
+    classes = {
+        ("rating" if path == "risk_level" else path): kind
+        for path, kind in (manifest.field_classes or {}).items()
+    }
+    return manifest.model_copy(update={"input_schema": schema, "field_classes": classes})
 
 
 @pytest.mark.parametrize("renamed_version", [None, "1.0.0", "2.0.0"])
@@ -201,15 +205,12 @@ def test_assembly_checks_every_executable_tool_version(
     tmp_path: Path, renamed_version: str | None
 ) -> None:
     bundle = contract_review.bundle(tmp_path)
-    original = next(m for m in bundle.manifests if m.name == "crm.write_assessment")
-    versions = [
-        (renamed_assessment(original) if version == renamed_version else original).model_copy(
-            update={"version": version}
-        )
-        for version in ("2.0.0", "1.0.0")
-    ]
+    originals = [m for m in bundle.manifests if m.name == "crm.write_assessment"]
+    assert {(m.version, m.retired) for m in originals} == {("1.0.0", True), ("2.0.0", False)}
+    versions = [renamed_assessment(m) if m.version == renamed_version else m for m in originals]
     bundle = replace(
-        bundle, manifests=[*(m for m in bundle.manifests if m.name != original.name), *versions]
+        bundle,
+        manifests=[*(m for m in bundle.manifests if m.name != "crm.write_assessment"), *versions],
     )
     kwargs = dict(
         stores=memory_stores(),
@@ -217,12 +218,14 @@ def test_assembly_checks_every_executable_tool_version(
         provider=FakeProvider([]),
         background=InlineBackground(),
     )
-    if renamed_version is not None:
+    if renamed_version == "2.0.0":
         with pytest.raises(RuleConfigError) as error:
             assemble(bundle, **kwargs)
         assert "low-risk-contradicted-needs-legal" in str(error.value)
         assert f"crm.write_assessment@{renamed_version}" in str(error.value)
         assert "risk_level" in str(error.value)
     else:
+        # A retired version never reaches policy (its undispatched steps fail closed), so its
+        # schema is not checked against the rules; only executable versions are.
         assert assemble(bundle, **kwargs)
     assert not (tmp_path / "ledger.jsonl").exists()

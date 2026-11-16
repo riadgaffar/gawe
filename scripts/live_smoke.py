@@ -24,6 +24,7 @@ from gawe.core.models import is_ref
 from gawe.core.policy.engine import RuleEngine
 from gawe.core.policy.rules import EvaluationContext
 from gawe.core.policy.signing import PolicySigner
+from gawe.core.preparation import PreparationError
 from gawe.core.registry import ToolRegistry
 from gawe.llm.anthropic_provider import AnthropicProvider
 from gawe.llm.planner import Planner, PlanningError
@@ -94,11 +95,20 @@ def main(app: str) -> int:
 def _dry_run(engine: RuleEngine, registry: ToolRegistry, step: Any, bundle: Any, app: str) -> str:
     if any(is_ref(v) for v in step.args.values()):
         return "(arguments depend on an earlier step's output; decided at run time)"
+    manifest = registry.get(step.tool)
+    args = step.args
+    if manifest.preparation_required:
+        try:
+            args = dict(
+                bundle.preparers[(manifest.name, manifest.version)](args, reapproval=False).args
+            )
+        except PreparationError as exc:
+            return f"blocked during preparation: {exc}"
     ctx = EvaluationContext(
         run_id="dry-run",
         step_id=step.id,
         manifest=registry.get(step.tool),
-        resolved_args=step.args,
+        resolved_args=args,
         acting_user_id="smoke",
         user_roles=frozenset(ROLES[app]),
         variables=bundle.variables(None),

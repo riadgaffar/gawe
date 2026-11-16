@@ -125,20 +125,20 @@ def test_assembly_rejects_deal_value_writes_in_every_registered_version(
     tmp_path, unsafe_version
 ) -> None:
     bundle = contract_review.bundle(tmp_path)
-    original = next(m for m in bundle.manifests if m.name == "crm.write_assessment")
+    # 1.0.0 is retired but still registered, so its declarations are still checked.
+    originals = [m for m in bundle.manifests if m.name == "crm.write_assessment"]
+    assert {m.version for m in originals} == {"1.0.0", "2.0.0"}
     versions = [
-        original.model_copy(
+        m.model_copy(
             update={
-                "version": version,
-                "writes": ("clm.contract.deal_value",)
-                if version == unsafe_version
-                else original.writes,
+                "writes": ("clm.contract.deal_value",) if m.version == unsafe_version else m.writes
             }
         )
-        for version in ("2.0.0", "1.0.0")
+        for m in originals
     ]
     bundle = replace(
-        bundle, manifests=[*(m for m in bundle.manifests if m.name != original.name), *versions]
+        bundle,
+        manifests=[*(m for m in bundle.manifests if m.name != "crm.write_assessment"), *versions],
     )
     provider = FakeProvider([])
     with pytest.raises(
@@ -205,11 +205,16 @@ def test_safe_callbacks_remain_unchanged_after_real_mock_writes(tmp_path: Path, 
     }
     count = 0
     for manifest in bundle.manifests:
-        if manifest.writes:
+        if manifest.writes and not manifest.retired:  # retired versions never dispatch
             count += 1
             call = ToolCall(
                 run_id="fixed", step_id=f"s{count}", attempt=1, idempotency_key=f"key{count}"
             )
-            assert bundle.tools[manifest.name](actions[manifest.name], call)
+            args = actions[manifest.name]
+            if manifest.preparation_required:
+                args = dict(
+                    bundle.preparers[(manifest.name, manifest.version)](args, reapproval=False).args
+                )
+            assert bundle.tools[manifest.name](args, call)
             assert bundle.variables(run) == before
     assert len((tmp_path / "ledger.jsonl").read_text().splitlines()) == count

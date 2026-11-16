@@ -4,19 +4,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.helpers import make_ctx, signer
+from tests.helpers import bound_args, current_manifest, make_ctx, prepared_email, signer
 
 from gawe.api.auth import Identity
 from gawe.api.background import InlineBackground
 from gawe.api.errors import ForbiddenError
-from gawe.api.wiring import assemble, memory_stores
+from gawe.api.wiring import assemble, load_app_rules, memory_stores
 from gawe.apps import contract_review as cr
 from gawe.apps.contract_review.reader_schema import SCHEMA_ID
 from gawe.connectors.base import Ledger
 from gawe.connectors.mock_email import MockEmail
 from gawe.core.executor import ToolCall
 from gawe.core.policy.engine import RuleEngine
-from gawe.core.policy.rules import load_rules
 from gawe.llm.fake import FakeProvider
 
 T = "t1"
@@ -193,7 +192,9 @@ def test_transient_outage_is_retried_without_a_second_email(tmp_path: Path) -> N
 def test_tools_deduplicate_across_a_restart(tmp_path: Path) -> None:
     call = ToolCall("r", "s", 1, "a" * 64)
     args = {"to": "pat@acme.example", "subject": "s", "body": "b"}
-    first = cr.bundle(tmp_path).tools["email.send"](args, call)
+    bundle = cr.bundle(tmp_path)
+    args = dict(bundle.preparers[("email.send", "2.0.0")](args, reapproval=False).args)
+    first = bundle.tools["email.send"](args, call)
     after_restart = cr.bundle(tmp_path).tools["email.send"](args, call)
     assert first == after_restart
     assert len(Ledger(tmp_path / "ledger.jsonl").records("email.sent")) == 1
@@ -242,9 +243,9 @@ def test_unknown_contract_fails_permanently(tmp_path: Path) -> None:
             "email.send",
             {"to": "a@acme.example, b@evil.example", "subject": "s", "body": "b"},
             ["case_manager"],
-            "needs_approval",
-            "legal_reviewer",
-        ),  # not judged by the first address
+            "deny",
+            None,
+        ),  # invalid prepared mailbox lists fail closed
         ("email.send", {"to": "a@acme.example", "subject": "s", "body": "b"}, [], "deny", None),
         (
             "esign.send_for_signature",
@@ -263,12 +264,20 @@ def test_unknown_contract_fails_permanently(tmp_path: Path) -> None:
     ],
 )
 def test_policy_golden_cases(
-    tool: str, args: dict[str, Any], roles: list[str], outcome: str, approver: str | None
+    tool: str,
+    args: dict[str, Any],
+    roles: list[str],
+    outcome: str,
+    approver: str | None,
+    tmp_path: Path,
 ) -> None:
-    b = cr.bundle(Path("/nonexistent-never-written"))
-    engine = RuleEngine(load_rules(b.policy_rules, manifests=b.manifests), signer())
-    manifest = {m.name: m for m in b.manifests}[tool]
+    b = cr.bundle(tmp_path)
+    engine = RuleEngine(load_app_rules(b), signer())
+    manifest = current_manifest(b.manifests, tool)
     variables = b.variables(None)  # type: ignore[arg-type]  # no run: no findings yet
+    if tool == "email.send":
+        args = prepared_email(args)
+    args = bound_args(manifest, args)
     decision = engine.evaluate(make_ctx(manifest, args, roles=roles, variables=variables))
     assert (decision.outcome, decision.approver_role) == (outcome, approver)
 
@@ -287,15 +296,20 @@ def assessment(contract: str, level: str) -> dict[str, Any]:
         (CLEAN_READ, assessment("C-1002", "medium"), "allow", None),
         (CLEAN_READ, assessment("C-1004", "low"), "allow", None),  # 60,000: the accepted gap
         (None, assessment("C-1002", "low"), "needs_approval", "large-deal"),
-        (CLEAN_READ, assessment("C-9999", "low"), "allow", None),  # unknown: fails at the tool
+        (CLEAN_READ, assessment("C-9999", "low"), "allow", None),  # unknown: fails in preparation
     ],
 )
 def test_a_low_risk_rating_needs_legal_when_contradicted_or_large(
-    findings: dict[str, Any] | None, args: dict[str, Any], outcome: str, rule: str | None
+    findings: dict[str, Any] | None,
+    args: dict[str, Any],
+    outcome: str,
+    rule: str | None,
+    tmp_path: Path,
 ) -> None:
-    b = cr.bundle(Path("/nonexistent-never-written"))
-    engine = RuleEngine(load_rules(b.policy_rules, manifests=b.manifests), signer())
-    manifest = {m.name: m for m in b.manifests}["crm.write_assessment"]
+    b = cr.bundle(tmp_path)
+    engine = RuleEngine(load_app_rules(b), signer())
+    manifest = current_manifest(b.manifests, "crm.write_assessment")
+    args = bound_args(manifest, args)
     variables = {
         **cr.TENANT_VARIABLES,
         "review": cr.review_variables(

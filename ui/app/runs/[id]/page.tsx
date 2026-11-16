@@ -35,6 +35,12 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         </span>
       </p>
       {run.error && <p className="notice error">{run.error}</p>}
+      {run.status === "waiting_verification" && <p className="notice wait">
+        Waiting for the target system to confirm the action. No new work will start while confirmation is pending.
+      </p>}
+      {run.status === "unknown" && <p className="notice error">
+        Confirmation could not be established before the deadline. The action may have happened; it will not be resent automatically.
+      </p>}
       {waiting && (
         <p className="notice wait">
           A step is waiting for approval. <Link href="/approvals">Open the approval inbox</Link> as someone
@@ -61,6 +67,10 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                 <td>
                   <StatusBadge status={step.status} />
                   {step.error && <div className="muted">{step.error}</div>}
+                  {step.verification && <details><summary>Verification evidence</summary>
+                    <p>Deadline: {step.verification.deadline}</p>
+                    <pre>{JSON.stringify(step.verification.evidence, null, 2)}</pre>
+                  </details>}
                 </td>
                 <td>
                   <StatusBadge status={step.policy_outcome} />

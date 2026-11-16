@@ -17,7 +17,7 @@ from gawe.core.models import PolicyDecision
 from gawe.core.policy.signing import PolicySigner
 from gawe.core.statemachine import StepStatus
 from tests.flow import ALICE, BOB, EXTERNAL_EMAIL, INTERNAL_EMAIL, RUN, Flow
-from tests.helpers import signer
+from tests.helpers import DIGEST, signer
 
 SEND = "contracts.send_email"
 H = "f" * 64
@@ -169,7 +169,12 @@ def test_decision_signed_with_another_key_is_refused() -> None:
     flow = Flow()
     decision = external(flow)
     attacker = PolicySigner(bytes(range(1, 33))).seal(
-        step_id="s1", action_hash=decision.action_hash, outcome="allow", rule_ids=[], reason="x"
+        policy_digest=DIGEST,
+        step_id="s1",
+        action_hash=decision.action_hash,
+        outcome="allow",
+        rule_ids=[],
+        reason="x",
     )
     refused(flow, attacker, "invalid_policy_decision")
 
@@ -198,7 +203,9 @@ def test_unregistered_tool_is_refused_even_with_a_valid_decision() -> None:
     h = action_hash(
         tool="evil.exfiltrate", version="1.0.0", resolved_args={}, run_id=RUN, step_id="s1"
     )
-    decision = action.seal(step_id="s1", action_hash=h, outcome="allow", rule_ids=[], reason="x")
+    decision = action.seal(
+        policy_digest=DIGEST, step_id="s1", action_hash=h, outcome="allow", rule_ids=[], reason="x"
+    )
     flow.add_step(decision, "evil.exfiltrate", {})
     refused(flow, decision, "tool_not_registered")
 

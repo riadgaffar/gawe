@@ -9,44 +9,67 @@ import fnmatch
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import yaml
-from hypothesis import given, settings
+from hypothesis import event, given, settings
 from hypothesis import strategies as st
 from jsonschema import Draft202012Validator
 
 from gawe.apps import contract_review as cr
 from gawe.apps import it_access as ia
+from gawe.core.policy import engine as engine_module
 from gawe.core.policy import rules as rules_module
 from gawe.core.policy.engine import RuleEngine
 from gawe.core.policy.rules import (
     MISSING,
+    PolicyEvaluationError,
     RuleConfigError,
     apply_operator,
     load_rules,
     parse_rules,
 )
-from tests.helpers import TOOLS, make_ctx, signer
+from tests.helpers import TOOLS, make_ctx, prepared_email, signer
 
 # Expected outcomes are independently specified, not computed from the policy being tested.
 CASES = {
     "contract_review": {
         "clm.get_contract": ({"contract_id": "C-1001"}, "allow"),
         "crm.write_assessment": (
-            {"contract_id": "C-1001", "risk_level": "low", "summary": "Review"},
+            {
+                "contract_id": "C-1001",
+                "risk_level": "low",
+                "summary": "Review",
+                "record": {"contract_version": "rev-1"},
+            },
             "allow",
         ),
-        "email.send": ({"to": "a@acme.example", "subject": "Review", "body": "Hello"}, "allow"),
+        "email.send": (
+            prepared_email({"to": "a@acme.example", "subject": "Review", "body": "Hello"}),
+            "allow",
+        ),
         "esign.send_for_signature": (
-            {"contract_id": "C-1001", "deal_value": 100, "signer_email": "a@acme.example"},
+            {
+                "contract_id": "C-1001",
+                "deal_value": 100,
+                "signer_email": "a@acme.example",
+                "record": {"contract_version": "rev-1"},
+            },
             "needs_approval",
         ),
     },
     "it_access": {
         "iam.lookup_user": ({"email": "a@acme.example"}, "allow"),
         "iam.grant_access": (
-            {"email": "a@acme.example", "system": "wiki", "level": "read"},
+            {
+                "email": "a@acme.example",
+                "system": "wiki",
+                "level": "read",
+                "record": {"user_version": "rev-1"},
+                "expires_at": "2026-11-22T00:00:00Z",
+                "lifetime_hours": 168,
+            },
             "allow",
         ),
     },
@@ -61,9 +84,10 @@ CASES = {
         "esign.send_for_signature": ({"contract_id": "C-1001"}, "deny"),
     },
 }
+# Executable versions only: retired versions never reach policy.
 MANIFESTS = {
-    "contract_review": {m.name: m for m in cr.MANIFESTS},
-    "it_access": {m.name: m for m in ia.MANIFESTS},
+    "contract_review": {m.name: m for m in cr.MANIFESTS if not m.retired},
+    "it_access": {m.name: m for m in ia.MANIFESTS if not m.retired},
     "example": TOOLS,
 }
 PATHS = {
@@ -84,7 +108,7 @@ RULES = {
 }
 ENGINES = {app: RuleEngine(rules, signer()) for app, rules in RULES.items()}
 DOMAIN_TARGETS = {
-    ("contract_review", "email.send", "to"): ("needs_approval", "external-email-needs-legal"),
+    ("contract_review", "email.send", "delivery.mailboxes"): ("deny", "engine.error"),
     ("it_access", "iam.grant_access", "email"): ("deny", "external-user-denied"),
     ("example", "contracts.send_email", "to"): ("needs_approval", "external-email-needs-legal"),
 }
@@ -95,6 +119,7 @@ VARIABLE_TARGETS = [
     ("contract_review", "crm.write_assessment", "review.large_deals"),
     ("it_access", "iam.grant_access", "tenant.internal_domains"),
     ("it_access", "iam.grant_access", "request.requester_email"),
+    ("it_access", "iam.grant_access", "tenant.max_grant_lifetime_hours"),
     ("example", "contracts.send_email", "tenant.internal_domains"),
 ]
 # Every field and mutation kind is a pytest parameter: random selection cannot omit a target.
@@ -171,7 +196,7 @@ def test_unreadable_input_never_allows(
         assert decision.rule_ids == ("engine.error",)
     elif kind == "domain":
         token = data.draw(TOKEN)
-        args[field] = data.draw(
+        bad_address = data.draw(
             st.sampled_from(
                 [
                     f"{token}@@acme.example",
@@ -182,6 +207,10 @@ def test_unreadable_input_never_allows(
                 ]
             )
         )
+        if field == "delivery.mailboxes":
+            args["delivery"]["mailboxes"] = [bad_address]
+        else:
+            args[field] = bad_address
         assert Draft202012Validator(MANIFESTS[app][name].input_schema).is_valid(args)
         outcome, rule_id = DOMAIN_TARGETS[(app, name, field)]
         decision = decide(app, name, args, variables)
@@ -216,6 +245,12 @@ def test_property_targets_cover_all_shipped_tools_paths_and_variables() -> None:
         for name, manifest in manifests.items():
             fields = set(CASES[app][name][0])
             assert fields == set(manifest.input_schema["properties"])
+            if name == "email.send":
+                fields |= {
+                    "delivery.mailboxes",
+                    "delivery.directory_marker",
+                    "delivery.reapproval_required",
+                }
             for rule in RULES[app]:
                 when = rule.when
                 if when.tool is not None and not fnmatch.fnmatchcase(name, when.tool):
@@ -230,7 +265,12 @@ def test_property_targets_cover_all_shipped_tools_paths_and_variables() -> None:
                 assert set(when.args) <= fields  # A future nested path needs an explicit strategy.
                 for path, conditions in when.args.items():
                     for op, operand in conditions.items():
-                        if op in {"domain_in", "domain_not_in"}:
+                        if op in {
+                            "domain_in",
+                            "domain_not_in",
+                            "any_domain_in",
+                            "any_domain_not_in",
+                        }:
                             domains.add((app, name, path))
                         if isinstance(operand, str) and operand.startswith("$"):
                             variables.add((app, name, operand[1:]))
@@ -258,7 +298,8 @@ HOLDS_WHEN_UNREADABLE = {
     "domain_not_in": True,
 }
 NUMERIC_OPS = {"gt", "gte", "lt", "lte"}
-DOMAIN_OPS = {"domain_in", "domain_not_in"}
+LIST_DOMAIN_OPS = {"any_domain_in", "any_domain_not_in"}
+DOMAIN_OPS = {"domain_in", "domain_not_in", *LIST_DOMAIN_OPS}
 ABSENT = object()  # drop the key from the arguments
 SCALARS = TOKEN | st.integers(-1000, 1000)
 CONTAINERS = st.lists(JSON_SCALARS, max_size=3) | st.dictionaries(
@@ -281,6 +322,15 @@ MALFORMED_ADDRESSES = TOKEN.flatmap(
 
 
 def unreadable_values(op: str) -> st.SearchStrategy[Any]:
+    if op in LIST_DOMAIN_OPS:
+        return (
+            st.just(ABSENT)
+            | st.none()
+            | st.booleans()
+            | st.just([])
+            | MALFORMED_ADDRESSES
+            | MALFORMED_ADDRESSES.map(lambda bad: ["valid@acme.example", bad])
+        )
     if op == "exists":
         return st.just(ABSENT)
     values = st.just(ABSENT) | CONTAINERS
@@ -316,7 +366,7 @@ def place(path: str, value: Any) -> dict[str, Any]:
 
 
 def test_unreadable_semantics_cover_every_operator() -> None:
-    assert {*HOLDS_WHEN_UNREADABLE, "exists"} == set(rules_module._OPS)
+    assert {*HOLDS_WHEN_UNREADABLE, *LIST_DOMAIN_OPS, "exists"} == set(rules_module._OPS)
 
 
 @pytest.mark.parametrize("op", sorted(rules_module._OPS))
@@ -325,6 +375,10 @@ def test_unreadable_semantics_cover_every_operator() -> None:
 def test_every_operator_restricts_on_unreadable_values(op: str, data: st.DataObject) -> None:
     operand = data.draw(operands(op), label="operand")
     value = data.draw(unreadable_values(op), label="value")
+    if op in LIST_DOMAIN_OPS:
+        with pytest.raises(PolicyEvaluationError):
+            apply_operator(op, MISSING if value is ABSENT else value, operand)
+        return
     held = apply_operator(op, MISSING if value is ABSENT else value, operand)
     assert held is expected_hold(op, operand)
 
@@ -407,7 +461,57 @@ def test_shipped_checks_hold_or_fail_toward_restriction_on_unreadable_values(
     variables = data.draw(st.sampled_from([POPULATED[app], emptied(POPULATED[app])]))
     resolved = resolve(operand, variables)
     value = data.draw(unreadable_values(op), label="value")
+    if op in LIST_DOMAIN_OPS:
+        with pytest.raises(PolicyEvaluationError):
+            apply_operator(op, MISSING if value is ABSENT else value, resolved)
+        return
     held = apply_operator(op, MISSING if value is ABSENT else value, resolved)
     assert held is expected_hold(op, resolved)
     # An allow predicate that holds on an unreadable value would widen what is allowed.
     assert not (effect == "allow" and held)
+
+
+# M16b: decisions record each evaluated check with an unreadable marker. Recording must explain a
+# decision without changing it.
+CASE_KEYS = [(app, name) for app in CASES for name in CASES[app]]
+FIELD_VALUES = (
+    st.just(ABSENT) | JSON_VALUES | TOKEN | MALFORMED_ADDRESSES | st.integers(-1000, 100000)
+)
+
+
+@settings(max_examples=300, derandomize=True, database=None, deadline=None)
+@given(data=st.data())
+def test_recording_checks_never_changes_outcome_or_rule_ids(data: st.DataObject) -> None:
+    app, name = data.draw(st.sampled_from(CASE_KEYS), label="case")
+    args = deepcopy(CASES[app][name][0])
+    for key in sorted(args):
+        # Change few fields at a time so most inputs pass the schema and reach the rules.
+        if data.draw(st.integers(0, 3), label=f"change {key}") == 0:
+            value = data.draw(FIELD_VALUES, label=key)
+            if value is ABSENT:
+                del args[key]
+            else:
+                args[key] = value
+    variables = data.draw(st.sampled_from([POPULATED[app], emptied(POPULATED[app])]))
+    manifest = MANIFESTS[app][name]
+    ctx = make_ctx(manifest, args, roles=manifest.required_roles, variables=variables)
+
+    recorded = ENGINES[app].evaluate(ctx)
+    original = engine_module.rule_matches
+    with patch.object(
+        engine_module, "rule_matches", lambda rule, c, checks=None: original(rule, c)
+    ):
+        plain = ENGINES[app].evaluate(ctx)
+
+    event(f"{recorded.outcome}, {'with' if recorded.checks else 'no'} checks")
+    assert plain.checks == ()
+    assert (recorded.outcome, recorded.rule_ids, recorded.reason, recorded.approver_role) == (
+        plain.outcome,
+        plain.rule_ids,
+        plain.reason,
+        plain.approver_role,
+    )
+    assert signer().verify(recorded)
+    for check in recorded.checks:
+        value = rules_module.lookup(args, check.path)
+        assert check.unreadable is rules_module.unreadable(check.op, value)

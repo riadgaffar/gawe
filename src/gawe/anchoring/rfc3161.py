@@ -37,7 +37,7 @@ from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from gawe.anchoring.file_sink import FileAnchorSink
-from gawe.core.anchor import AnchorRecord, EvidenceCheck
+from gawe.core.anchor import AnchorConflictError, AnchorRecord, EvidenceCheck
 
 CERT_DIR = Path(__file__).parent / "tsa_certs"
 _MAX_REPLY_BYTES = 64 * 1024
@@ -329,6 +329,17 @@ class Rfc3161AnchorSink(FileAnchorSink):
         existing = self.get(record.run_id)
         if existing is not None and existing.digest == record.digest:
             return existing  # never ask the authority twice for the same anchor
+        return super().put(self._timestamp(record))
+
+    def extend(self, record: AnchorRecord, *, previous: AnchorRecord) -> AnchorRecord:
+        existing = self.get(record.run_id)
+        if existing is not None and existing.digest == record.digest:
+            return existing
+        if existing is None or existing.digest != previous.digest:
+            raise AnchorConflictError("anchor changed before timestamp continuation")
+        return super().extend(self._timestamp(record), previous=previous)
+
+    def _timestamp(self, record: AnchorRecord) -> AnchorRecord:
         authority = AUTHORITIES[self._authority]
         digest = bytes.fromhex(record.digest)
         nonce = self._nonce()
@@ -341,7 +352,7 @@ class Rfc3161AnchorSink(FileAnchorSink):
             "serial": str(info.serial),
             "policy": info.policy,
         }
-        return super().put(replace(record, evidence=evidence))
+        return replace(record, evidence=evidence)
 
     def check(self, record: AnchorRecord) -> EvidenceCheck:
         if not record.digest_ok():

@@ -14,28 +14,45 @@ from typing import Any
 from gawe.api.background import Background
 from gawe.api.service import ApiService, Limits
 from gawe.core.anchor import Anchorer, AnchorSink
-from gawe.core.approvals import ApprovalService, ApprovalStore, InMemoryApprovalStore
+from gawe.core.approvals import (
+    ApprovalRecord,
+    ApprovalService,
+    ApprovalStore,
+    InMemoryApprovalStore,
+)
 from gawe.core.audit import AuditLog, AuditStore, InMemoryAuditStore
 from gawe.core.executor import Executor, RetryPolicy, ToolImplementation
+from gawe.core.expiry import Revoker
+from gawe.core.maintenance import InMemoryMaintenanceStore, MaintenanceStore
 from gawe.core.models import ToolManifest
 from gawe.core.policy.engine import RuleEngine
 from gawe.core.policy.provenance import PolicySource, PolicyVariable, validate_provenance
 from gawe.core.policy.rules import Rule, load_rules
 from gawe.core.policy.signing import PolicySigner
+from gawe.core.preparation import Preparer
+from gawe.core.readback import ReadbackAdapter
 from gawe.core.records import (
     ExecutionStore,
     InMemoryExecutionStore,
     InMemoryStepStore,
+    StepNotFoundError,
     StepStore,
 )
 from gawe.core.registry import ToolRegistry
-from gawe.core.runs import InMemoryRunStore, RunRecord, RunStore
+from gawe.core.review import InMemoryReviewStore, ReviewKey, ReviewStore
+from gawe.core.runs import InMemoryRunStore, RunNotFoundError, RunRecord, RunStore
 from gawe.core.telemetry import NoopTelemetry, Telemetry
+from gawe.core.verification import VerificationResolver
 from gawe.core.verifier import PostCondition, Verifier
 from gawe.engine.orchestrator import Orchestrator
 from gawe.llm.planner import Planner
 from gawe.llm.provider import LLMProvider
 from gawe.llm.reader import Reader, ReaderProfile
+from gawe.maintenance.expiry import GrantExpiryJobs
+from gawe.maintenance.readback import ReadbackJobs
+from gawe.maintenance.review import DailyReviewJobs, SampleCandidate
+from gawe.maintenance.runner import MaintenanceRunner
+from gawe.maintenance.settings import MaintenanceSettings
 
 
 @dataclass(frozen=True)
@@ -51,12 +68,58 @@ class AppBundle:
     postconditions: Mapping[str, PostCondition] = field(default_factory=dict)
     policy_sources: Mapping[str, PolicySource] = field(default_factory=dict)
     policy_variables: Mapping[str, PolicyVariable] = field(default_factory=dict)
+    preparers: Mapping[tuple[str, str], Preparer] = field(default_factory=dict)
+    readbacks: Mapping[tuple[str, str], ReadbackAdapter] = field(default_factory=dict)
+    # (tool, version) writes whose connector checks the bound record revision in the write's
+    # own transaction. Declared by the connectors, not by the manifests.
+    conditional_writes: frozenset[tuple[str, str]] = frozenset()
+    # (tool, version) writes that grant access until `expires_at`, with the target system's
+    # revocation. Each such grant gets an expiry job the sweep runs at its end date.
+    revokers: Mapping[tuple[str, str], Revoker] = field(default_factory=dict)
+    # Which automatic, executed actions the next-day review may draw for a person to check.
+    review_sample: SampleCandidate | None = None
 
 
 def load_app_rules(bundle: AppBundle) -> tuple[Rule, ...]:
     """Application entry points must validate schemas and provenance before serving runs."""
-    rules = load_rules(bundle.policy_rules, manifests=bundle.manifests)
+    required = {(m.name, m.version) for m in bundle.manifests if m.preparation_required}
+    if required != set(bundle.preparers):
+        raise ValueError("preparation adapters must match required tool versions")
+    for manifest in bundle.manifests:
+        identity = (manifest.name, manifest.version)
+        if manifest.record_binding is None:
+            continue
+        if manifest.side_effect_class == "read" or not manifest.preparation_required:
+            raise ValueError(
+                f"{manifest.name}@{manifest.version}: record binding needs a write "
+                "with trusted preparation"
+            )
+        if identity not in bundle.conditional_writes:
+            raise ValueError(
+                f"{manifest.name}@{manifest.version}: record binding needs a "
+                "connector with conditional writes"
+            )
+    expiring = {
+        (m.name, m.version)
+        for m in bundle.manifests
+        if not m.retired
+        and m.side_effect_class != "read"
+        and "expires_at" in m.input_schema.get("required", ())
+    }
+    if expiring != set(bundle.revokers):
+        raise ValueError(
+            "every write with an end date needs a revoker, and only those: "
+            f"missing {sorted(expiring - set(bundle.revokers))}, "
+            f"unexpected {sorted(set(bundle.revokers) - expiring)}"
+        )
+    # Retired versions never reach policy: their undispatched steps fail closed.
+    rules = load_rules(
+        bundle.policy_rules, manifests=[m for m in bundle.manifests if not m.retired]
+    )
     validate_provenance(rules, bundle.manifests, bundle.policy_sources, bundle.policy_variables)
+    writes = {(m.name, m.version) for m in bundle.manifests if m.side_effect_class != "read"}
+    if writes != set(bundle.readbacks):
+        raise ValueError("read-back adapters must match write tool versions")
     return rules
 
 
@@ -67,14 +130,26 @@ class Stores:
     executions: ExecutionStore
     approvals: ApprovalStore
     audit: AuditStore
+    maintenance: MaintenanceStore = field(default_factory=InMemoryMaintenanceStore)
+    reviews: ReviewStore = field(default_factory=InMemoryReviewStore)
 
 
 def memory_stores() -> Stores:
+    runs, steps = InMemoryRunStore(), InMemoryStepStore()
+
+    def describe(record: ApprovalRecord) -> tuple[str, str, str] | None:
+        try:
+            run = runs.get(record.run_id)
+            step = steps.get(record.run_id, record.step_id)
+        except (RunNotFoundError, StepNotFoundError):
+            return None
+        return run.tenant_id, step.tool, step.tool_version
+
     return Stores(
-        runs=InMemoryRunStore(),
-        steps=InMemoryStepStore(),
+        runs=runs,
+        steps=steps,
         executions=InMemoryExecutionStore(),
-        approvals=InMemoryApprovalStore(),
+        approvals=InMemoryApprovalStore(describe),
         audit=InMemoryAuditStore(),
     )
 
@@ -84,6 +159,8 @@ def postgres_stores(engine: Any) -> Stores:
     from gawe.db.approval_store import PostgresApprovalStore
     from gawe.db.audit_store import PostgresAuditStore
     from gawe.db.execution_store import PostgresExecutionStore
+    from gawe.db.maintenance_store import PostgresMaintenanceStore
+    from gawe.db.review_store import PostgresReviewStore
     from gawe.db.run_store import PostgresRunStore
     from gawe.db.step_store import PostgresStepStore
 
@@ -93,11 +170,150 @@ def postgres_stores(engine: Any) -> Stores:
         executions=PostgresExecutionStore(engine),
         approvals=PostgresApprovalStore(engine),
         audit=PostgresAuditStore(engine),
+        maintenance=PostgresMaintenanceStore(engine),
+        reviews=PostgresReviewStore(engine),
     )
 
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+@dataclass(frozen=True)
+class Engine:
+    """The engine parts shared by the API and the standalone maintenance command."""
+
+    registry: ToolRegistry
+    audit: AuditLog
+    anchorer: Anchorer
+    approvals: ApprovalService
+    verification: VerificationResolver
+    orchestrator: Orchestrator
+    runner: MaintenanceRunner
+
+
+def build_engine(
+    bundle: AppBundle,
+    *,
+    stores: Stores,
+    signer: PolicySigner,
+    provider: LLMProvider | None,
+    telemetry: Telemetry | None = None,
+    retry: RetryPolicy | None = None,
+    anchor_sinks: Sequence[AnchorSink] = (),
+    maintenance: MaintenanceSettings | None = None,
+    continuation: Callable[[str], object] | None = None,
+    review_key: ReviewKey | None = None,
+    clock: Callable[[], datetime] = _utc_now,
+) -> Engine:
+    """Without `provider` the orchestrator cannot plan or read; it only drives existing plans.
+
+    `continuation` drives a run after the sweep resolves its verification; by default the sweep
+    drives it inline. The API passes its background submission instead.
+    """
+    settings = maintenance or MaintenanceSettings()
+    registry = ToolRegistry()
+    for manifest in bundle.manifests:
+        registry.register(manifest)
+    missing = {m.name for m in bundle.manifests} - set(bundle.tools)
+    if missing:
+        raise ValueError(f"no implementation for tools: {sorted(missing)}")
+
+    rules = load_app_rules(bundle)
+    telemetry = telemetry or NoopTelemetry()
+    audit = AuditLog(stores.audit, clock=clock)
+    anchorer = Anchorer(audit, anchor_sinks, telemetry=telemetry, clock=clock)
+    approvals = ApprovalService(stores.approvals, signer, audit, clock=clock)
+    verification = VerificationResolver(
+        jobs=stores.maintenance,
+        steps=stores.steps,
+        executions=stores.executions,
+        runs=stores.runs,
+        registry=registry,
+        adapters=bundle.readbacks,
+        audit=audit,
+        clock=clock,
+        window=settings.deadline,
+        expiring=frozenset(bundle.revokers),
+    )
+    executor = Executor(
+        steps=stores.steps,
+        executions=stores.executions,
+        registry=registry,
+        tools=bundle.tools,
+        signer=signer,
+        approvals=approvals,
+        audit=audit,
+        verifier=Verifier(bundle.postconditions),
+        verification=verification,
+        retry=retry,
+        clock=clock,
+    )
+    policy = RuleEngine(rules, signer)
+    orchestrator = Orchestrator(
+        runs=stores.runs,
+        steps=stores.steps,
+        executions=stores.executions,
+        registry=registry,
+        policy=policy,
+        executor=executor,
+        approvals=approvals,
+        planner=Planner(provider, registry) if provider is not None else None,
+        reader=(
+            Reader(provider, bundle.reader_profile)
+            if provider is not None and bundle.reader_profile
+            else None
+        ),
+        audit=audit,
+        telemetry=telemetry,
+        variables=bundle.variables,
+        preparers=bundle.preparers,
+        on_finished=anchorer.anchor_run if anchor_sinks else None,
+        clock=clock,
+    )
+    runner = MaintenanceRunner(
+        store=stores.maintenance,
+        handlers=[
+            ReadbackJobs(verification, continuation or orchestrator.advance),
+            *(
+                [
+                    GrantExpiryJobs(
+                        revokers=bundle.revokers,
+                        jobs=stores.maintenance,
+                        runs=stores.runs,
+                        audit=audit,
+                        anchorer=anchorer,
+                        clock=clock,
+                    )
+                ]
+                if bundle.revokers
+                else []
+            ),
+            DailyReviewJobs(
+                jobs=stores.maintenance,
+                runs=stores.runs,
+                steps=stores.steps,
+                audit_store=stores.audit,
+                audit=audit,
+                reviews=stores.reviews,
+                registry=registry,
+                engine=policy,
+                signer=signer,
+                variables=bundle.variables,
+                anchorer=anchorer,
+                clock=clock,
+                key=review_key,
+                sample=bundle.review_sample,
+                telemetry=telemetry,
+            ),
+        ],
+        telemetry=telemetry,
+        clock=clock,
+        batch_size=settings.batch_size,
+        max_jobs=settings.max_jobs,
+        retry_after=settings.interval,
+    )
+    return Engine(registry, audit, anchorer, approvals, verification, orchestrator, runner)
 
 
 def assemble(
@@ -111,58 +327,46 @@ def assemble(
     limits: Limits | None = None,
     retry: RetryPolicy | None = None,
     anchor_sinks: Sequence[AnchorSink] = (),
+    maintenance: MaintenanceSettings | None = None,
+    review_key: ReviewKey | None = None,
     clock: Callable[[], datetime] = _utc_now,
 ) -> ApiService:
     """With `anchor_sinks`, every run's audit head is anchored when the run ends."""
-    registry = ToolRegistry()
-    for manifest in bundle.manifests:
-        registry.register(manifest)
-    missing = {m.name for m in bundle.manifests} - set(bundle.tools)
-    if missing:
-        raise ValueError(f"no implementation for tools: {sorted(missing)}")
+    services: list[ApiService] = []
 
-    rules = load_app_rules(bundle)
-    audit = AuditLog(stores.audit, clock=clock)
-    anchorer = Anchorer(audit, anchor_sinks, telemetry=telemetry, clock=clock)
-    approvals = ApprovalService(stores.approvals, signer, audit, clock=clock)
-    executor = Executor(
-        steps=stores.steps,
-        executions=stores.executions,
-        registry=registry,
-        tools=bundle.tools,
+    def continue_in_background(run_id: str) -> None:
+        # Same path as resume: off the sweep thread, with advance errors recorded in the audit.
+        services[0].kick(run_id)
+
+    engine = build_engine(
+        bundle,
+        stores=stores,
         signer=signer,
-        approvals=approvals,
-        audit=audit,
-        verifier=Verifier(bundle.postconditions),
+        provider=provider,
+        telemetry=telemetry,
         retry=retry,
+        anchor_sinks=anchor_sinks,
+        maintenance=maintenance,
+        continuation=continue_in_background,
+        review_key=review_key,
         clock=clock,
     )
-    orchestrator = Orchestrator(
+    service = ApiService(
+        orchestrator=engine.orchestrator,
         runs=stores.runs,
         steps=stores.steps,
-        executions=stores.executions,
-        registry=registry,
-        policy=RuleEngine(rules, signer),
-        executor=executor,
-        approvals=approvals,
-        planner=Planner(provider, registry),
-        reader=Reader(provider, bundle.reader_profile) if bundle.reader_profile else None,
-        audit=audit,
-        telemetry=telemetry or NoopTelemetry(),
-        variables=bundle.variables,
-        on_finished=anchorer.anchor_run if anchor_sinks else None,
-        clock=clock,
-    )
-    return ApiService(
-        orchestrator=orchestrator,
-        runs=stores.runs,
-        steps=stores.steps,
-        approval_service=approvals,
+        approval_service=engine.approvals,
         approval_store=stores.approvals,
-        registry=registry,
-        audit=audit,
+        registry=engine.registry,
+        audit=engine.audit,
         background=background,
         profiles=bundle.profiles,
         limits=limits,
-        anchorer=anchorer,
+        anchorer=engine.anchorer,
+        maintenance=stores.maintenance,
+        maintenance_runner=engine.runner,
+        reviews=stores.reviews,
+        clock=clock,
     )
+    services.append(service)
+    return service

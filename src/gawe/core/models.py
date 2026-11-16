@@ -7,7 +7,7 @@ All models are frozen and reject unknown fields: anything crossing a trust bound
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SEMVER_PATTERN = r"^\d+\.\d+\.\d+$"
 TOOL_NAME_PATTERN = r"^[a-z][a-z0-9_.]{0,127}$"
@@ -32,12 +32,23 @@ class ToolManifest(FrozenModel):
     description: str = ""
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
+    proposal_schema: dict[str, Any] | None = None
+    preparation_required: bool = False
     side_effect_class: SideEffectClass
     risk_tier: RiskTier
     required_roles: tuple[str, ...] = ()
     postcondition: str | None = None
     # None is undeclared; () explicitly declares no application-resource writes.
     writes: tuple[str, ...] | None = None
+    # The system-of-record resource whose revision preparation binds into the arguments
+    # (for example "clm.contract"). Such a tool needs a preparer and a conditional write.
+    record_binding: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.]{0,127}$")
+    # For every leaf path of input_schema: "typed" (shown first on the approval card) or
+    # "free_text" (model-written prose, collapsed). Registration requires it to be complete.
+    field_classes: dict[str, Literal["typed", "free_text"]] | None = None
+    # Kept registered only so writes dispatched before retirement can still be verified;
+    # a step pinned to a retired version that has not dispatched fails closed.
+    retired: bool = False
 
 
 class PlanStep(FrozenModel):
@@ -54,7 +65,24 @@ class Plan(FrozenModel):
     steps: tuple[PlanStep, ...]
 
 
+class DecisionCheck(FrozenModel):
+    """One evaluated rule check. Never carries the argument value or the operand."""
+
+    rule_id: str
+    path: str
+    op: str
+    unreadable: bool
+
+
 class PolicyDecision(FrozenModel):
+    """A signed policy outcome.
+
+    Format 1 (before M16b) has no checks and no rule-set digest. Format 2 adds the ordered list of
+    evaluated checks with a per-check unreadable marker, and the digest of the loaded rule set.
+    JSON without `format` parses as format 1; a format 1 decision carrying the new fields is
+    invalid, so they cannot be attached to an old signature.
+    """
+
     step_id: str
     action_hash: str
     outcome: PolicyOutcome
@@ -62,6 +90,17 @@ class PolicyDecision(FrozenModel):
     reason: str
     approver_role: str | None = None
     signature: str
+    format: Literal[1, 2] = 1
+    checks: tuple[DecisionCheck, ...] = ()
+    policy_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _check_format(self) -> "PolicyDecision":
+        if self.format == 1 and (self.checks or self.policy_digest is not None):
+            raise ValueError("a format 1 decision has no checks and no policy digest")
+        if self.format == 2 and self.policy_digest is None:
+            raise ValueError("a format 2 decision needs a policy digest")
+        return self
 
 
 class ApprovalRequest(FrozenModel):

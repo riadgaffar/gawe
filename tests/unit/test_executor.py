@@ -3,7 +3,7 @@ from datetime import timedelta
 
 import pytest
 from tests.flow import INTERNAL_EMAIL, RUN, Crash, Flow
-from tests.helpers import signer
+from tests.helpers import DIGEST, signer
 
 from gawe.core.executor import (
     ConcurrentExecutionError,
@@ -102,7 +102,12 @@ def test_args_that_violate_the_tool_schema_never_reach_the_tool() -> None:
     denied = flow.judge(SEND, bad)
     assert denied.outcome == "deny"
     allowed = signer().seal(
-        step_id="s1", action_hash=denied.action_hash, outcome="allow", rule_ids=["test"], reason="x"
+        policy_digest=DIGEST,
+        step_id="s1",
+        action_hash=denied.action_hash,
+        outcome="allow",
+        rule_ids=["test"],
+        reason="x",
     )
     flow.add_step(allowed, SEND, bad)
     outcome = flow.executor.execute(RUN, "s1", allowed)

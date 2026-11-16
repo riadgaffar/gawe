@@ -47,6 +47,10 @@ billed to that Anthropic account. `make check` uses a fake model and needs neith
 
 See [docs/roadmap.md](docs/roadmap.md) for milestones and status.
 
+Each milestone was built in steps in a private development repository and lands here as one
+commit. Commit ids in the design, plan and results documents refer to that private history: in
+the results they name the exact code each benchmark run measured.
+
 ## Benchmark (M12)
 
 `bench/` measures the Reader's accuracy on CUAD (public contracts labelled by lawyers) and runs a
@@ -87,6 +91,7 @@ src/gawe/core/runs.py          run records and store interface (in-memory refere
 src/gawe/core/refs.py          resolves `$ref` arguments from earlier steps' saved outputs
 src/gawe/core/telemetry.py     spans and metrics interface; no-op, in-memory and OpenTelemetry
 src/gawe/engine/         orchestrator (the run loop) and startup recovery of interrupted runs
+src/gawe/maintenance/    scheduled verification sweep, heartbeats, `python -m gawe.maintenance`
 src/gawe/apps/           Contract Review and IT-access applications (tools, policies, samples)
 src/gawe/connectors/     mock systems with idempotent, ledger-backed effects
 src/gawe/anchoring/      audit-head anchor sinks: local file, RFC 3161 signed timestamps

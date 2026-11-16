@@ -2,6 +2,7 @@ import pytest
 
 from gawe.core.models import ToolManifest
 from gawe.core.registry import ToolRegistry
+from tests.helpers import classify
 
 
 def make_manifest(name: str = "contracts.send_email", version: str = "1.0.0", **overrides):  # type: ignore[no-untyped-def]
@@ -25,6 +26,8 @@ def make_manifest(name: str = "contracts.send_email", version: str = "1.0.0", **
     }
     base["writes"] = () if overrides.get("side_effect_class") == "read" else (name,)
     base.update(overrides)
+    if "field_classes" not in overrides:
+        base["field_classes"] = classify(base["input_schema"])  # type: ignore[arg-type]
     return ToolManifest(**base)
 
 

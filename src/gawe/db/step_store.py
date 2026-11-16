@@ -16,16 +16,17 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from gawe.core.records import StaleStateError, StepNotFoundError, StepRecord
+from gawe.core.records import UNCHECKED_ACTION_HASH, StaleStateError, StepNotFoundError, StepRecord
 from gawe.core.statemachine import StepStatus, check_step_transition
 from gawe.db.bind import Bind, connection_for
 
-_UPDATABLE = frozenset({"action_hash", "error", "resolved_args"})
+_UPDATABLE = frozenset({"action_hash", "error", "resolved_args", "preparation", "policy_decision"})
 _UNIQUE_VIOLATION = "23505"
 
 _COLUMNS = (
     "CAST(s.run_id AS text) AS run_id, s.step_key, s.tool_name, s.tool_version, s.args_template, "
-    "s.resolved_args, s.action_hash, s.depends_on, s.status, s.error"
+    "s.resolved_args, s.action_hash, s.depends_on, s.status, s.error, "
+    "s.preparation, s.policy_decision"
 )
 # Steps of the run's current plan only.
 _CURRENT = (
@@ -44,14 +45,15 @@ _PLAN = text(
 )
 _INSERT = text(
     "INSERT INTO steps (run_id, plan_id, step_key, tool_name, tool_version, args_template, "
-    "resolved_args, action_hash, depends_on, status, error) "
+    "resolved_args, action_hash, depends_on, status, error, preparation, policy_decision) "
     "VALUES (CAST(:run_id AS uuid), CAST(:plan_id AS uuid), :step_key, :tool, :version, "
     "CAST(:args_template AS jsonb), CAST(:resolved_args AS jsonb), :action_hash, :depends_on, "
-    ":status, :error)"
+    ":status, :error, CAST(:preparation AS jsonb), CAST(:policy_decision AS jsonb))"
 )
 _UPDATE = text(
     "UPDATE steps SET status = :to, action_hash = :action_hash, error = :error, "
-    "resolved_args = CAST(:resolved_args AS jsonb), updated_at = now() "
+    "resolved_args = CAST(:resolved_args AS jsonb), preparation = CAST(:preparation AS jsonb), "
+    "policy_decision = CAST(:policy_decision AS jsonb), updated_at = now() "
     "WHERE id = CAST(:id AS uuid) AND status = :expected"
 )
 
@@ -72,6 +74,8 @@ def _to_record(row: Any) -> StepRecord:
         depends_on=tuple(row["depends_on"] or ()),
         status=StepStatus(row["status"]),
         error=row["error"],
+        preparation=row["preparation"],
+        policy_decision=row["policy_decision"],
     )
 
 
@@ -98,6 +102,10 @@ class PostgresStepStore:
                 "depends_on": list(step.depends_on),
                 "status": step.status.value,
                 "error": step.error,
+                "preparation": _dumps(step.preparation),
+                "policy_decision": _dumps(step.policy_decision.model_dump())
+                if step.policy_decision
+                else None,
             }
             try:
                 with conn.begin_nested():
@@ -117,7 +125,14 @@ class PostgresStepStore:
         return _to_record(row)
 
     def transition(
-        self, run_id: str, step_id: str, *, expected: StepStatus, to: StepStatus, **updates: Any
+        self,
+        run_id: str,
+        step_id: str,
+        *,
+        expected: StepStatus,
+        to: StepStatus,
+        expected_action_hash: str | None = UNCHECKED_ACTION_HASH,
+        **updates: Any,
     ) -> StepRecord:
         unknown = set(updates) - _UPDATABLE
         if unknown:
@@ -132,6 +147,11 @@ class PostgresStepStore:
             if row is None:
                 raise StepNotFoundError(f"no step {step_id} in run {run_id}")
             current = _to_record(row)
+            if (
+                expected_action_hash != UNCHECKED_ACTION_HASH
+                and current.action_hash != expected_action_hash
+            ):
+                raise StaleStateError("step action changed")
             if current.status is not expected:
                 raise StaleStateError(
                     f"step {step_id} is {current.status.value}, expected {expected.value}"
@@ -147,6 +167,10 @@ class PostgresStepStore:
                     "action_hash": changed.action_hash,
                     "error": changed.error,
                     "resolved_args": _dumps(changed.resolved_args),
+                    "preparation": _dumps(changed.preparation),
+                    "policy_decision": _dumps(changed.policy_decision.model_dump())
+                    if changed.policy_decision
+                    else None,
                 },
             )
             if result.rowcount != 1:

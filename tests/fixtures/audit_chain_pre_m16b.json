@@ -1,0 +1,159 @@
+{
+  "decisions": {
+    "write": {
+      "action_hash": "9d6d0e2d97b6549a8bfbf3603de7bc6b97f62d36e3a2c7c64c03da603bbb80fc",
+      "approver_role": "legal_reviewer",
+      "outcome": "needs_approval",
+      "reason": "Sending for signature needs legal review",
+      "rule_ids": [
+        "signature-standard-needs-legal"
+      ],
+      "signature": "eb3e3c8731c6d3be1ffd63e7d9c3e2260aeda1b59d052a5bb52f13135674425f",
+      "step_id": "write"
+    }
+  },
+  "events": [
+    {
+      "actor": "alice",
+      "hash": "7c4e4d3da32f4867c1fac0079bf9bd6d34843f82cfff8c36b4c75401c118d767",
+      "payload_hash": "adf71c7a3e9827b5314beab8e3724c919560cd1eb8309c2f8d215bc0e9bbecea",
+      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "run_id": "run-1",
+      "seq": 1,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "run.created"
+    },
+    {
+      "actor": "gawe.orchestrator",
+      "hash": "c8c759b7469b155a27de1b37f0342b4237e78a0d2b2102aca8b0ccd0b7c1cba5",
+      "payload_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "prev_hash": "7c4e4d3da32f4867c1fac0079bf9bd6d34843f82cfff8c36b4c75401c118d767",
+      "run_id": "run-1",
+      "seq": 2,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "run.planning"
+    },
+    {
+      "actor": "gawe.orchestrator",
+      "hash": "a3dddf1e750fd7b29b68cb14053bd9ae356f355f05094439f418f099981625df",
+      "payload_hash": "827f074f49b170497251b9755b015b26717c5d78dd170256e1170c7d6339745e",
+      "prev_hash": "c8c759b7469b155a27de1b37f0342b4237e78a0d2b2102aca8b0ccd0b7c1cba5",
+      "run_id": "run-1",
+      "seq": 3,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "llm.plan"
+    },
+    {
+      "actor": "gawe.orchestrator",
+      "hash": "100d4e590beb23020643fd1fb21dc9c13fce4e15aff058525c2555e79a5e96c6",
+      "payload_hash": "41b516e2e047afdf0ac39fac7329855af5415167ecddd6d36aec925750e44854",
+      "prev_hash": "a3dddf1e750fd7b29b68cb14053bd9ae356f355f05094439f418f099981625df",
+      "run_id": "run-1",
+      "seq": 4,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "plan.created"
+    },
+    {
+      "actor": "gawe.orchestrator",
+      "hash": "0dc2ecaacaf025972c58a6fdc033a3cabbcfc458bbc030c80b517394774ae62e",
+      "payload_hash": "4f63cd7bc8b9a82508b9ca70b75ace716a20d7dead9da32639f16ee2b72399cc",
+      "prev_hash": "100d4e590beb23020643fd1fb21dc9c13fce4e15aff058525c2555e79a5e96c6",
+      "run_id": "run-1",
+      "seq": 5,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "policy.decided"
+    },
+    {
+      "actor": "alice",
+      "hash": "c5981a844643b8627bcbdd828490a381ec687998de1c880d699c7782cbd4e4a2",
+      "payload_hash": "43ce27f2346bfee561f2aad1761c3f6843d4098c8b827843ed498e81a524ccb6",
+      "prev_hash": "0dc2ecaacaf025972c58a6fdc033a3cabbcfc458bbc030c80b517394774ae62e",
+      "run_id": "run-1",
+      "seq": 6,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "approval.requested"
+    },
+    {
+      "actor": "gawe.orchestrator",
+      "hash": "8a8addb9e774c34f1c2bc6cc09f2b89c42632228e85b04c24aa9ff084fc49fe9",
+      "payload_hash": "733782caa6778271a15d4bfdbbec44f5071dba670da0b7c841d6869f6b7dd66b",
+      "prev_hash": "c5981a844643b8627bcbdd828490a381ec687998de1c880d699c7782cbd4e4a2",
+      "run_id": "run-1",
+      "seq": 7,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "run.paused"
+    },
+    {
+      "actor": "bob",
+      "hash": "f72f2b92b7d13e363376d04db080b1438fa29405ea91f3a13c864cdd17cee0ef",
+      "payload_hash": "af8265e0835d250dda2e0e642324e29cfad3185e9c754721beeb001b44dead67",
+      "prev_hash": "8a8addb9e774c34f1c2bc6cc09f2b89c42632228e85b04c24aa9ff084fc49fe9",
+      "run_id": "run-1",
+      "seq": 8,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "approval.decided"
+    },
+    {
+      "actor": "gawe.orchestrator",
+      "hash": "0f141894976fe2924f8514626544e376add87ee46a9b09e813f8b3bd61d77f70",
+      "payload_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "prev_hash": "f72f2b92b7d13e363376d04db080b1438fa29405ea91f3a13c864cdd17cee0ef",
+      "run_id": "run-1",
+      "seq": 9,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "run.resumed"
+    },
+    {
+      "actor": "gawe.orchestrator",
+      "hash": "7e6534617ce09c4a26b15d4b7eb00a0efd2d13b01d264ea6b85b72d99cfa6754",
+      "payload_hash": "29720dccf3596bf6b9ba8497082ac998c38fbcce1bb8fa1eaeed39a67e27713f",
+      "prev_hash": "0f141894976fe2924f8514626544e376add87ee46a9b09e813f8b3bd61d77f70",
+      "run_id": "run-1",
+      "seq": 10,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "step.approved"
+    },
+    {
+      "actor": "gawe.executor",
+      "hash": "2f818096ee2de437ac70b5c7e33670d8d1b71e4d32eef845eca8a8ce4c872dc2",
+      "payload_hash": "674b95d9dc25aba76901eea6683ff580274246bfbc562079e40686496c1a016b",
+      "prev_hash": "7e6534617ce09c4a26b15d4b7eb00a0efd2d13b01d264ea6b85b72d99cfa6754",
+      "run_id": "run-1",
+      "seq": 11,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "execution.started"
+    },
+    {
+      "actor": "gawe.executor",
+      "hash": "f4d9bea4bbe2785c7ff10c2a4bb36f269d89869c3427a5f21fbe86eb5d867ea3",
+      "payload_hash": "2bfb4d96f0ac970e60904d76f184e872082d955a4e91b38178a6ca63ad434993",
+      "prev_hash": "2f818096ee2de437ac70b5c7e33670d8d1b71e4d32eef845eca8a8ce4c872dc2",
+      "run_id": "run-1",
+      "seq": 12,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "execution.succeeded"
+    },
+    {
+      "actor": "gawe.verifier",
+      "hash": "0e9d64fc1b029720d0228e88a5e4fcad2d71e94a36bd9fff1e6ed87bc9169aa7",
+      "payload_hash": "3d090437815009cebedb93cd6a779d9411b15ebcab3dba7ca3b39bd8ad9c964f",
+      "prev_hash": "f4d9bea4bbe2785c7ff10c2a4bb36f269d89869c3427a5f21fbe86eb5d867ea3",
+      "run_id": "run-1",
+      "seq": 13,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "verification.readback"
+    },
+    {
+      "actor": "gawe.orchestrator",
+      "hash": "d1dc50a096360bea035263e7e06011e641e8a01106383bed7329639957b148ef",
+      "payload_hash": "247fb85306c7b6f642aee12a918f957c0b9a12bb7ec0137ac820deb73746f779",
+      "prev_hash": "0e9d64fc1b029720d0228e88a5e4fcad2d71e94a36bd9fff1e6ed87bc9169aa7",
+      "run_id": "run-1",
+      "seq": 14,
+      "ts": "2026-01-01T12:00:00Z",
+      "type": "run.completed"
+    }
+  ],
+  "note": "Recorded with the code before M16b decision format 2; do not regenerate.",
+  "run_id": "run-1"
+}

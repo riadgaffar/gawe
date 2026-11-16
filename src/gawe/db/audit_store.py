@@ -15,6 +15,7 @@ Anything else (malformed hash, unknown run, ...) is a real error and propagates 
 append runs in a SAVEPOINT so a conflict does not poison the caller's transaction.
 """
 
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
@@ -32,6 +33,11 @@ _LAST = text(
 )
 _EVENTS = text(
     f"SELECT {_COLUMNS} FROM audit_events WHERE run_id = CAST(:run_id AS uuid) ORDER BY seq ASC"
+)
+# Served by audit_events_type_ts_idx (migration 0007).
+_RUNS_WITH = text(
+    "SELECT DISTINCT CAST(run_id AS text) FROM audit_events "
+    "WHERE type = :type AND ts >= :start AND ts < :end ORDER BY 1"
 )
 _INSERT = text(
     "INSERT INTO audit_events (run_id, seq, type, actor, payload_hash, prev_hash, hash, ts) "
@@ -101,6 +107,11 @@ class PostgresAuditStore:
                     f"event seq {event.seq} does not extend the chain for run {event.run_id}"
                 ) from exc
             raise
+
+    def run_ids_with(self, type: str, start: datetime, end: datetime) -> list[str]:
+        with connection_for(self._bind) as conn:
+            rows = conn.execute(_RUNS_WITH, {"type": type, "start": start, "end": end}).all()
+        return [row[0] for row in rows]
 
     def events(self, run_id: str) -> list[AuditEvent]:
         with connection_for(self._bind) as conn:

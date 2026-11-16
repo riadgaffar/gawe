@@ -38,6 +38,7 @@ flowchart LR
 | Verifier | `gawe/core/verifier.py` | A step succeeds only if its output passes schema and post-conditions |
 | Orchestrator | `gawe/engine/orchestrator.py` | Drives a run: plan, then each step through policy, approval, execution, verification |
 | Recovery | `gawe/engine/recovery.py` | At startup, drives unfinished runs again |
+| Maintenance | `gawe/maintenance/` | Every 30 s in the API (or `sweep --once`): claims due jobs by lease, resolves read-backs read-only, continues existing plans, revokes grants at their end date, runs each tenant's next-day review at 01:00 UTC, emits heartbeats. Grants made before M16b have no end date and need operator review |
 | Audit | `gawe/core/audit.py` | Per-run hash chain; Postgres triggers enforce linkage and append-only |
 | API | `gawe/api/` | Token auth, tenant checks, REST + event stream, failed-sign-in limit |
 | UI | `ui/` | Next.js client; relays choices, decides nothing |

@@ -6,9 +6,15 @@
     python -m bench run --max-usd 15 --resume bench-results/<run id> [--estimate-from FILE]
     python -m bench report bench-results/<run id>
     python -m bench scripted
+    python -m bench integrity
 
 `scripted` runs every attack with a model fooled on purpose (M13): no model is called, nothing is
 spent, so it takes no cap and no model. It writes a run directory and its report.
+
+`integrity` runs the execution-integrity scenarios (M16a): poisoned tool output used as an email
+recipient, and encoded text riding in the Reader's summary into an email body. They are separate
+from the scripted suite's 38 runs and have their own expected records. No model is called; exit
+code 1 means a scenario differed from its expected record.
 
 Every command that may call a real model needs --max-usd: there is no default and no
 environment fallback, so a cap is always a deliberate choice. The model comes from --model or
@@ -46,6 +52,7 @@ from bench.harness import (
     run_estimate,
     run_scripted_suite,
 )
+from bench.integrity.scenarios import run_suite
 from bench.report import write_report
 from gawe.llm.provider import ProviderConfigError
 
@@ -82,6 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "scripted", help="run every attack with a model fooled on purpose (free, no model)"
     )
+
+    commands.add_parser("integrity", help="run the execution-integrity scenarios (free, no model)")
 
     report = commands.add_parser("report", help="write report.json and report.md for a run")
     report.add_argument("directory", help="a run directory under bench-results/")
@@ -134,6 +143,12 @@ def main(
     if args.command == "scripted":
         directory = run_scripted_suite(deps or Deps(), out)
         return _report(directory, out, err)
+    if args.command == "integrity":
+        deps = deps or Deps()
+        ok = run_suite(
+            deps.results_dir, stamp=deps.now().strftime("%Y%m%dT%H%M%SZ"), git=deps.git(), out=out
+        )
+        return EXIT_OK if ok else EXIT_STOPPED
     settings = _settings(args, env, err)
     if settings is None:
         return EXIT_REFUSED

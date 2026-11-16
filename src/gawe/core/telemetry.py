@@ -14,6 +14,12 @@ Metric names used by the engine:
     gawe.approval.latency_seconds  histogram, label: decision
     gawe.anchor.written         count, label: sink
     gawe.anchor.failures        count, label: sink
+    gawe.maintenance.heartbeat  count, labels: kind, status (ok|error), one per tick and kind
+    gawe.maintenance.checked    count, label: kind
+    gawe.maintenance.jobs       count, labels: kind, outcome (done, blocked, newly_unknown, ...)
+    gawe.maintenance.backlog    histogram (observed value per ok tick), labels: kind, state
+                                (waiting = unresolved jobs, unknown = retained terminal unknowns)
+    gawe.maintenance.tick_seconds  histogram, labels: kind, status
 """
 
 import importlib

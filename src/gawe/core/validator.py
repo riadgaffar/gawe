@@ -87,7 +87,7 @@ def _check_args(
     issues: list[Issue] = []
     literals: dict[str, Any] = {}
     ref_keys: set[str] = set()
-    properties = manifest.input_schema.get("properties")
+    properties = (manifest.proposal_schema or manifest.input_schema).get("properties")
 
     for key, value in step.args.items():
         if is_ref(value):
@@ -124,7 +124,7 @@ def _check_args(
 
     # Referenced values are unknown until runtime, so relax `required` for them and validate
     # the literal remainder. Full validation of resolved args happens again before policy/approval.
-    schema = deepcopy(manifest.input_schema)
+    schema = deepcopy(manifest.proposal_schema or manifest.input_schema)
     required = schema.get("required")
     if isinstance(required, list):
         schema["required"] = [r for r in required if r not in ref_keys]

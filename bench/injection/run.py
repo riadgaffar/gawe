@@ -15,7 +15,7 @@ import secrets
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -30,6 +30,13 @@ from gawe.api.service import ApiService
 from gawe.api.wiring import AppBundle, Stores, assemble, memory_stores
 from gawe.apps import contract_review, it_access
 from gawe.connectors.base import Ledger
+from gawe.connectors.mock_clm import MockCLM
+from gawe.connectors.mock_directory import MockDirectory
+from gawe.connectors.mock_esign import MockESign
+from gawe.connectors.mock_iam import MockIAM
+from gawe.connectors.mock_mail_server import MockMailServer
+from gawe.connectors.mock_operations import MockOperations
+from gawe.core.canonical import sha256_hex
 from gawe.core.policy.signing import PolicySigner
 from gawe.core.runs import RunRecord
 from gawe.core.statemachine import RunStatus
@@ -129,6 +136,7 @@ class TrialEnvironment:
     stores: Stores
     signer: PolicySigner
     ledger_path: Path
+    _observed_order: list[tuple[str, str]] = field(default_factory=list, compare=False, repr=False)
 
     @classmethod
     def create(cls, app: str, directory: Path) -> "TrialEnvironment":
@@ -141,7 +149,70 @@ class TrialEnvironment:
         )
 
     def effects(self) -> list[dict[str, Any]]:
-        return Ledger(self.ledger_path).records()
+        ledger = Ledger(self.ledger_path).records()
+        # Count accepted effects even when read-back subsequently detects a mismatch or waits.
+        # Both stores: record-bound (2.0.0) writes and any earlier 1.0.0 ones.
+        stores: list[tuple[MockOperations, str]]
+        if self.app == "it_access":
+            iam = MockIAM.from_seed(
+                it_access.HERE / "samples" / "iam_seed.json", Ledger(self.ledger_path)
+            )
+            stores = [(iam.operations, "iam.grant"), (iam.legacy_operations, "iam.grant")]
+        else:
+            clm = MockCLM.from_seed(
+                contract_review.HERE / "samples" / "clm_seed.json", Ledger(self.ledger_path)
+            )
+            esign = MockESign(Ledger(self.ledger_path), clm)
+            stores = [
+                (clm.operations, "crm.assessment"),
+                (clm.legacy_operations, "crm.assessment"),
+                (esign.operations, "esign.envelope"),
+                (esign.legacy_operations, "esign.envelope"),
+            ]
+        independent = [
+            {"kind": kind, "key": record["operation_key"], "data": record}
+            for operations, kind in stores
+            for record in operations.records()
+        ]
+        if self.app != "contract_review":
+            return self._ordered_effects(independent)
+        accepted = {
+            r.operation_key: r
+            for r in MockMailServer(MockDirectory(self.ledger_path.parent)).records()
+        }
+        effects = independent
+        for record in ledger:
+            if record["kind"] != "email.sent":
+                continue
+            receipt = accepted.pop(record["key"], None)
+            if receipt is None:
+                continue
+            data: dict[str, Any] = {"accepted_recipients": list(receipt.accepted_recipients)}
+            for text_field in ("subject", "body"):
+                value = record["data"].get(text_field)
+                if isinstance(value, str) and sha256_hex(value.encode()) == getattr(
+                    receipt, text_field + "_digest"
+                ):
+                    data[text_field] = value
+            effects.append({**record, "data": data})
+        for receipt in accepted.values():
+            effects.append(
+                {
+                    "kind": "email.sent",
+                    "key": receipt.operation_key,
+                    "data": {"accepted_recipients": list(receipt.accepted_recipients)},
+                }
+            )
+        return self._ordered_effects(effects)
+
+    def _ordered_effects(self, effects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Stable observation order across systems; refresh data rather than hiding mutations."""
+        by_identity = {(e["kind"], e["key"]): e for e in effects}
+        known = set(self._observed_order)
+        self._observed_order.extend(identity for identity in by_identity if identity not in known)
+        return [
+            by_identity[identity] for identity in self._observed_order if identity in by_identity
+        ]
 
     def service(self, provider: LLMProvider) -> ApiService:
         return assemble(
@@ -178,7 +249,7 @@ def _drive(
     sleep: Callable[[float], None],
     environment: TrialEnvironment,
 ) -> dict[str, Any]:
-    effect_start = len(environment.effects())
+    existing_effects = {(e["kind"], e["key"]) for e in environment.effects()}
     recorder = Recorder(provider)
     service = environment.service(recorder)
     stores = environment.stores
@@ -198,7 +269,7 @@ def _drive(
     if paused:
         service.cancel_run(who, run_id)  # never approve
     run = stores.runs.get(run_id)
-    effects = environment.effects()[effect_start:]
+    effects = [e for e in environment.effects() if (e["kind"], e["key"]) not in existing_effects]
     return classify(case, run, recorder.replies, effects, paused=paused)
 
 
@@ -280,6 +351,8 @@ def _assessment_risk(effects: Sequence[Mapping[str, Any]]) -> str | None:
 def _status(run: RunRecord) -> str:
     if run.status in _STILL_PLANNING:
         return "unavailable"
+    if run.status in {RunStatus.WAITING_VERIFICATION, RunStatus.UNKNOWN}:
+        return run.status.value
     if run.error == "reading_failed":
         return "reader_error"
     if run.error == "planning_failed":

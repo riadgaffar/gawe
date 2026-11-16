@@ -17,7 +17,8 @@ that can no longer run are failed with a reason rather than left dangling.
 Audit events and telemetry carry ids, hashes and status codes only, never prompts, document text,
 tool arguments or outputs.
 
-`on_finished` is called once a run has ended and its last audit event is written (after open
+`on_finished` is called when a run ends and after new post-terminal verification evidence
+is appended. It follows the last audit event (after open
 approvals are closed), which is where the audit head gets anchored. It can never fail the run.
 """
 
@@ -29,19 +30,25 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from jsonschema import Draft202012Validator
+
 from gawe.core.approvals import ApprovalAlreadyOpenError, ApprovalService
 from gawe.core.audit import AuditLog
 from gawe.core.canonical import canonical_json, sha256_hex
 from gawe.core.executor import ConcurrentExecutionError, ExecutionRefusedError, Executor
+from gawe.core.maintenance import run_target
 from gawe.core.models import PolicyDecision
+from gawe.core.policy.audit_payload import decided_payload
 from gawe.core.policy.engine import PolicyEngine
 from gawe.core.policy.rules import EvaluationContext
+from gawe.core.preparation import PreparationError, Preparer
 from gawe.core.records import ExecutionStore, StaleStateError, StepRecord, StepStore
 from gawe.core.refs import RefResolutionError, resolve_args
-from gawe.core.registry import ToolRegistry
-from gawe.core.runs import RunRecord, RunStore
-from gawe.core.statemachine import STEP_TERMINAL, RunStatus, StepStatus
+from gawe.core.registry import RegistryError, ToolRegistry
+from gawe.core.runs import RunRecord, RunStore, StaleRunError
+from gawe.core.statemachine import RUN_TERMINAL, STEP_TERMINAL, RunStatus, StepStatus
 from gawe.core.telemetry import NoopTelemetry, Telemetry
+from gawe.core.verification import READBACK_KIND
 from gawe.llm.planner import Planner, PlanningError
 from gawe.llm.provider import LLMUnavailableError
 from gawe.llm.reader import Findings, Reader, ReaderError
@@ -49,15 +56,34 @@ from gawe.llm.reader import Findings, Reader, ReaderError
 log = logging.getLogger("gawe.engine")
 
 ACTOR = "gawe.orchestrator"
-_RUN_TERMINAL = frozenset(
-    {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.DENIED}
-)
+_RUN_TERMINAL = RUN_TERMINAL
 _IN_FLIGHT = frozenset({StepStatus.EXECUTING, StepStatus.VERIFYING})
-_BAD_UPSTREAM = frozenset({StepStatus.FAILED, StepStatus.DENIED, StepStatus.REJECTED})
+_UNDISPATCHED = frozenset(
+    {
+        StepStatus.PENDING,
+        StepStatus.READY,
+        StepStatus.POLICY_CHECKED,
+        StepStatus.AWAITING_APPROVAL,
+        StepStatus.APPROVED,
+    }
+)
+_BAD_UPSTREAM = frozenset(
+    {
+        StepStatus.FAILED,
+        StepStatus.DENIED,
+        StepStatus.REJECTED,
+        StepStatus.VERIFICATION_BLOCKED,
+        StepStatus.VERIFICATION_UNKNOWN,
+    }
+)
 
 
 class RunBusyError(Exception):
     """The run cannot be changed right now (a step is mid-execution)."""
+
+
+class PlanningUnavailableError(Exception):
+    """This orchestrator was built without a planner (maintenance-only process)."""
 
 
 def _utc_now() -> datetime:
@@ -75,11 +101,12 @@ class Orchestrator:
         policy: PolicyEngine,
         executor: Executor,
         approvals: ApprovalService,
-        planner: Planner,
+        planner: Planner | None,
         audit: AuditLog,
         reader: Reader | None = None,
         telemetry: Telemetry | None = None,
         variables: Callable[[RunRecord], Mapping[str, Any]] | None = None,
+        preparers: Mapping[tuple[str, str], Preparer] | None = None,
         on_finished: Callable[[RunRecord], object] | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
@@ -95,6 +122,7 @@ class Orchestrator:
         self._audit = audit
         self._telemetry: Telemetry = telemetry or NoopTelemetry()
         self._variables = variables or (lambda run: {})
+        self._preparers = dict(preparers or {})
         self._on_finished = on_finished
         self._clock = clock
         self._locks: dict[str, threading.Lock] = {}
@@ -148,12 +176,32 @@ class Orchestrator:
         try:
             with self._telemetry.span("gawe.run.advance", run_id=run_id) as span:
                 run = self._runs.get(run_id)
+                reconciled = False
+                if run.status not in {RunStatus.CREATED, RunStatus.PLANNING}:
+                    # Also finish a result whose worker died before step/audit/run bookkeeping.
+                    reconciled = self._reconcile_pending(run)
+                if run.status in {RunStatus.WAITING_VERIFICATION, *_RUN_TERMINAL}:
+                    if run.status in _RUN_TERMINAL:
+                        if reconciled:
+                            self._notify_finished(run)
+                        if self._executor.verification:
+                            self._executor.verification.acknowledge(run_id)
+                        return run
+                    run = self._settle(run)
+                    if run.status is RunStatus.WAITING_VERIFICATION:
+                        if self._executor.verification:
+                            self._executor.verification.acknowledge(run_id)
+                        return run
                 if run.status in (RunStatus.CREATED, RunStatus.PLANNING):
                     run = self._plan(run)
                 if run.status in (RunStatus.RUNNING, RunStatus.PAUSED_FOR_APPROVAL):
                     run = self._execute(run)
                 span.set("status", run.status.value)
+                if self._executor.verification:
+                    self._executor.verification.acknowledge(run_id)
                 return run
+        except StaleRunError:
+            return self._runs.get(run_id)  # another driver settled this run first
         finally:
             lock.release()
 
@@ -181,6 +229,24 @@ class Orchestrator:
             self._notify_finished(run)
             return run
 
+    def _reconcile_pending(self, run: RunRecord) -> bool:
+        resolver = self._executor.verification
+        if resolver is None:
+            return False
+        reconciled = False
+        for job in resolver.jobs.for_run(run.tenant_id, run.run_id):
+            if job.kind != READBACK_KIND or job.continued or job.plan_version != run.plan_version:
+                continue
+            step = self._steps.get(run.run_id, run_target(job).step_id)
+            if step.action_hash != job.action_hash:
+                continue
+            try:
+                self._executor.reconcile(step)
+                reconciled = True
+            except ConcurrentExecutionError:
+                continue
+        return reconciled
+
     # -- planning -------------------------------------------------------------------------
 
     def _plan(self, run: RunRecord) -> RunRecord:
@@ -190,6 +256,9 @@ class Orchestrator:
             )
             self._audit.record(run.run_id, "run.planning", ACTOR, {})
         if run.plan is None:
+            if self._planner is None:
+                # A maintenance-only driver never plans; the run stays where it is.
+                raise PlanningUnavailableError("this process does not plan runs")
             try:
                 with self._telemetry.span("gawe.plan", run_id=run.run_id):
                     findings = self._read(run)
@@ -292,20 +361,44 @@ class Orchestrator:
             for planned in run.plan.steps:
                 run = self._runs.get(run.run_id)
                 step = self._steps.get(run.run_id, planned.id)
-                if self._step_forward(run, step):
-                    progress = True
+                try:
+                    if self._step_forward(run, step):
+                        progress = True
+                except StaleStateError:
+                    return self._runs.get(run.run_id)
+                if self._steps.get(run.run_id, planned.id).status is StepStatus.AWAITING_READBACK:
+                    return self._settle(self._runs.get(run.run_id))
         return self._settle(self._runs.get(run.run_id))
 
     def _can_resume(self, run: RunRecord) -> bool:
         assert run.plan is not None
         for planned in run.plan.steps:
             step = self._steps.get(run.run_id, planned.id)
+            if (
+                step.tool == "email.send"
+                and step.tool_version == "1.0.0"
+                and step.status not in STEP_TERMINAL
+            ):
+                return True
+            if step.status in _UNDISPATCHED and self._retired(step):
+                return True
             if step.status is StepStatus.AWAITING_APPROVAL:
                 if self._approval_state(step) != "pending":
                     return True
-            elif step.status in {StepStatus.APPROVED, *_IN_FLIGHT}:
+            elif step.status in {
+                StepStatus.READY,
+                StepStatus.POLICY_CHECKED,
+                StepStatus.APPROVED,
+                *_IN_FLIGHT,
+            }:
                 return True
         return False
+
+    def _retired(self, step: StepRecord) -> bool:
+        try:
+            return self._registry.get(step.tool, step.tool_version).retired
+        except RegistryError:
+            return False
 
     def _approval_state(self, step: StepRecord) -> str:
         assert step.action_hash is not None
@@ -316,20 +409,37 @@ class Orchestrator:
     def _step_forward(self, run: RunRecord, step: StepRecord) -> bool:
         """Advance one step by whatever its status calls for. True if anything changed."""
         status = step.status
+        if status not in STEP_TERMINAL:
+            try:
+                manifest = self._registry.get(step.tool, step.tool_version)
+            except RegistryError:
+                code = "tool_not_registered"
+                if step.tool == "email.send" and step.tool_version == "1.0.0":
+                    code = (
+                        "legacy_send_reconciliation_required"
+                        if status in _IN_FLIGHT
+                        else "unsupported_email_version"
+                    )
+                self._fail_step(run.run_id, step.step_id, code)
+                return True
+            if manifest.retired and status in _UNDISPATCHED:
+                # Registered only to verify earlier dispatches; never relabel or resend.
+                self._fail_step(run.run_id, step.step_id, "unsupported_tool_version")
+                return True
         if status is StepStatus.PENDING:
             return self._start_step(run, step)
         if status is StepStatus.READY:
             self._evaluate_policy(run, step)
             return True
         if status is StepStatus.POLICY_CHECKED:
-            decision = run.decisions.get(step.step_id)
+            decision = step.policy_decision or run.decisions.get(step.step_id)
             if decision is None:
                 self._fail_step(run.run_id, step.step_id, "decision_missing")
                 return True
             return self._after_policy(run, step, decision)
         if status is StepStatus.AWAITING_APPROVAL:
             return self._check_approval(run, step)
-        if status in {StepStatus.APPROVED, *_IN_FLIGHT}:
+        if status in {StepStatus.APPROVED, StepStatus.AWAITING_READBACK, *_IN_FLIGHT}:
             return self._run_tool(run, step)
         return False
 
@@ -354,6 +464,24 @@ class Orchestrator:
             self._fail_step(run.run_id, step.step_id, "ref_unresolved")
             return
         manifest = self._registry.get(step.tool, step.tool_version)
+        metadata = dict(step.preparation)
+        if manifest.preparation_required:
+            if any(
+                Draft202012Validator(manifest.proposal_schema or manifest.input_schema).iter_errors(
+                    resolved
+                )
+            ):
+                self._fail_step(run.run_id, step.step_id, "preparation_invalid_proposal")
+                return
+            try:
+                prepared = self._preparers[(step.tool, step.tool_version)](
+                    resolved, reapproval=bool(metadata.get("reapproval_required"))
+                )
+            except PreparationError as exc:
+                self._fail_step(run.run_id, step.step_id, str(exc))
+                return
+            resolved = dict(prepared.args)
+            metadata = dict(prepared.metadata)
         ctx = EvaluationContext(
             run_id=run.run_id,
             step_id=step.step_id,
@@ -365,7 +493,6 @@ class Orchestrator:
         )
         with self._telemetry.span("gawe.policy.evaluate", step_id=step.step_id, tool=step.tool):
             decision = self._policy.evaluate(ctx)
-        run = self._runs.update(run.run_id, decisions={**run.decisions, step.step_id: decision})
         checked = self._steps.transition(
             run.run_id,
             step.step_id,
@@ -373,26 +500,28 @@ class Orchestrator:
             to=StepStatus.POLICY_CHECKED,
             action_hash=decision.action_hash,
             resolved_args=resolved,
+            expected_action_hash=step.action_hash,
+            preparation=metadata,
+            policy_decision=decision,
         )
+        run = self._runs.update(run.run_id, decisions={**run.decisions, step.step_id: decision})
         self._telemetry.count("gawe.policy.decision", tool=step.tool, outcome=decision.outcome)
         self._audit.record(
             run.run_id,
             "policy.decided",
             ACTOR,
-            {
-                "step_id": step.step_id,
-                "outcome": decision.outcome,
-                "rule_ids": list(decision.rule_ids),
-                "action_hash": decision.action_hash,
-                "approver_role": decision.approver_role,
-            },
+            decided_payload(decision),
         )
         self._after_policy(run, checked, decision)
 
     def _after_policy(self, run: RunRecord, step: StepRecord, decision: PolicyDecision) -> bool:
         if decision.outcome == "deny":
             self._steps.transition(
-                run.run_id, step.step_id, expected=StepStatus.POLICY_CHECKED, to=StepStatus.DENIED
+                run.run_id,
+                step.step_id,
+                expected=StepStatus.POLICY_CHECKED,
+                to=StepStatus.DENIED,
+                expected_action_hash=step.action_hash,
             )
             self._audit.record(
                 run.run_id,
@@ -405,15 +534,22 @@ class Orchestrator:
         if decision.outcome == "needs_approval":
             assert step.action_hash is not None
             if self._approval_state(step) == "none":
+                if step.preparation.get("reapproval_required"):
+                    self._approvals.close_stale_for_step(run.run_id, step.step_id, step.action_hash)
                 with contextlib.suppress(ApprovalAlreadyOpenError):  # asked just before a restart
                     self._approvals.request(
-                        run_id=run.run_id, decision=decision, requested_by=run.acting_user_id
+                        run_id=run.run_id,
+                        decision=decision,
+                        requested_by=run.acting_user_id,
+                        preparation=step.preparation,
+                        resolved_args=step.resolved_args,
                     )
             self._steps.transition(
                 run.run_id,
                 step.step_id,
                 expected=StepStatus.POLICY_CHECKED,
                 to=StepStatus.AWAITING_APPROVAL,
+                expected_action_hash=step.action_hash,
             )
             return True
         return self._run_tool(run, step)
@@ -425,6 +561,22 @@ class Orchestrator:
         )
         if status.state == "pending":
             return False
+        if status.state == "none" and step.preparation.get("reapproval_required"):
+            # A delayed worker may have inserted an obsolete pending request between stores.
+            decision = step.policy_decision
+            if decision is not None and decision.outcome == "needs_approval":
+                self._approvals.close_stale_for_step(run.run_id, step.step_id, step.action_hash)
+                try:
+                    self._approvals.request(
+                        run_id=run.run_id,
+                        decision=decision,
+                        requested_by=run.acting_user_id,
+                        preparation=step.preparation,
+                        resolved_args=step.resolved_args,
+                    )
+                except ApprovalAlreadyOpenError:
+                    return False
+                return True
         if status.record is not None and status.record.decided_at is not None:
             latency = (status.record.decided_at - status.record.requested_at).total_seconds()
             self._telemetry.observe("gawe.approval.latency_seconds", latency, decision=status.state)
@@ -434,6 +586,7 @@ class Orchestrator:
                 step.step_id,
                 expected=StepStatus.AWAITING_APPROVAL,
                 to=StepStatus.APPROVED,
+                expected_action_hash=step.action_hash,
             )
             self._audit.record(run.run_id, "step.approved", ACTOR, {"step_id": step.step_id})
             return self._run_tool(run, self._steps.get(run.run_id, step.step_id))
@@ -452,7 +605,7 @@ class Orchestrator:
         return True
 
     def _run_tool(self, run: RunRecord, step: StepRecord) -> bool:
-        decision = run.decisions.get(step.step_id)
+        decision = step.policy_decision or run.decisions.get(step.step_id)
         if decision is None:
             self._fail_step(run.run_id, step.step_id, "decision_missing")
             return True
@@ -462,6 +615,8 @@ class Orchestrator:
             except ConcurrentExecutionError:
                 return False  # another worker owns the step right now
             except ExecutionRefusedError as refusal:
+                if self._steps.get(run.run_id, step.step_id).action_hash != step.action_hash:
+                    return False
                 self._fail_step(run.run_id, step.step_id, f"refused_{refusal}")
                 return True
         verification_ran = outcome.status is StepStatus.SUCCEEDED or str(outcome.error).startswith(
@@ -470,12 +625,12 @@ class Orchestrator:
         if verification_ran:
             self._telemetry.count("gawe.verification", ok=outcome.status is StepStatus.SUCCEEDED)
         self._telemetry.count("gawe.step.outcome", tool=step.tool, status=outcome.status.value)
-        return True
+        return outcome.status != step.status
 
     def _fail_step(self, run_id: str, step_id: str, code: str) -> None:
         for _ in range(3):
             step = self._steps.get(run_id, step_id)
-            if step.status in STEP_TERMINAL:
+            if step.status in {*STEP_TERMINAL, StepStatus.AWAITING_READBACK}:
                 return
             try:
                 self._steps.transition(
@@ -490,6 +645,9 @@ class Orchestrator:
     # -- finishing ------------------------------------------------------------------------
 
     def _settle(self, run: RunRecord) -> RunRecord:
+        run = self._runs.get(run.run_id)
+        if run.status in _RUN_TERMINAL:
+            return run
         assert run.plan is not None
         steps = [self._steps.get(run.run_id, s.id) for s in run.plan.steps]
         statuses = {s.status for s in steps}
@@ -499,11 +657,23 @@ class Orchestrator:
             self._terminate_remaining(run, steps)
             code = "policy_denied" if StepStatus.DENIED in statuses else "approval_rejected"
             return self._finish(run, RunStatus.DENIED, code)
-        if StepStatus.FAILED in statuses:
+        if StepStatus.VERIFICATION_UNKNOWN in statuses:
+            self._terminate_remaining(run, steps)
+            return self._finish(run, RunStatus.UNKNOWN, "verification_unknown")
+        if statuses & {StepStatus.FAILED, StepStatus.VERIFICATION_BLOCKED}:
             self._terminate_remaining(run, steps)
             return self._finish(run, RunStatus.FAILED, "step_failed")
         if statuses == {StepStatus.SUCCEEDED}:
             return self._finish(run, RunStatus.COMPLETED, None)
+        if StepStatus.AWAITING_READBACK in statuses:
+            if run.status is not RunStatus.WAITING_VERIFICATION:
+                run = self._runs.transition(
+                    run.run_id, expected=run.status, to=RunStatus.WAITING_VERIFICATION
+                )
+                self._audit.record(run.run_id, "run.waiting_verification", ACTOR, {})
+            return run
+        if run.status is RunStatus.WAITING_VERIFICATION:
+            run = self._runs.transition(run.run_id, expected=run.status, to=RunStatus.RUNNING)
         awaiting = [s.step_id for s in steps if s.status is StepStatus.AWAITING_APPROVAL]
         if awaiting and run.status is RunStatus.RUNNING:
             run = self._runs.transition(
@@ -519,6 +689,8 @@ class Orchestrator:
 
     def _finish(self, run: RunRecord, to: RunStatus, error: str | None) -> RunRecord:
         current = self._runs.get(run.run_id)
+        if current.status in _RUN_TERMINAL:
+            return current
         finished = self._runs.transition(
             run.run_id,
             expected=current.status,

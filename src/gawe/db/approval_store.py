@@ -5,6 +5,7 @@ The database enforces the same rules the service checks: at most one open approv
 requester. A decision is applied with `WHERE decision IS NULL`, so racing deciders cannot both win.
 """
 
+import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -17,6 +18,7 @@ from gawe.core.approvals import (
     ApprovalAlreadyOpenError,
     ApprovalNotFoundError,
     ApprovalRecord,
+    ApprovedCall,
     Decision,
 )
 from gawe.core.records import StepNotFoundError
@@ -29,7 +31,7 @@ _COLUMNS = (
     "CAST(a.id AS text) AS approval_id, CAST(s.run_id AS text) AS run_id, s.step_key AS step_id, "
     "a.action_hash, a.approver_role, CAST(a.requested_by AS text) AS requested_by, "
     "a.requested_at, a.expires_at, CAST(a.decided_by AS text) AS decided_by, a.decision, "
-    "a.comment, a.decided_at"
+    "a.comment, a.decided_at, a.preparation, a.resolved_args"
 )
 _FROM = "FROM approvals a JOIN steps s ON s.id = a.step_id"
 _CURRENT_STEP = (
@@ -43,6 +45,13 @@ _FOR_STEP = text(
     f"SELECT {_COLUMNS} {_FROM} {_CURRENT_STEP} "
     "WHERE s.run_id = CAST(:run_id AS uuid) AND s.step_key = :step_key ORDER BY a.requested_at"
 )
+_LATEST_APPROVED = text(
+    f"SELECT {_COLUMNS}, s.tool_version {_FROM} JOIN runs r ON r.id = s.run_id "
+    "WHERE r.tenant_id = CAST(:tenant_id AS uuid) AND s.tool_name = :tool "
+    "AND a.decision = 'approved' AND a.id <> CAST(:exclude_id AS uuid) "
+    "AND (CAST(:before AS timestamptz) IS NULL OR a.decided_at < CAST(:before AS timestamptz)) "
+    "ORDER BY a.decided_at DESC, a.id DESC LIMIT 1"
+)
 _OPEN = text(f"SELECT {_COLUMNS} {_FROM} WHERE a.decision IS NULL ORDER BY a.requested_at")
 _STEP_ID = text(
     f"SELECT s.id FROM steps s {_CURRENT_STEP} "
@@ -50,8 +59,10 @@ _STEP_ID = text(
 )
 _INSERT = text(
     "INSERT INTO approvals (id, step_id, action_hash, approver_role, requested_by, requested_at, "
-    "expires_at) VALUES (CAST(:id AS uuid), CAST(:step_id AS uuid), :action_hash, :approver_role, "
-    "CAST(:requested_by AS uuid), :requested_at, :expires_at)"
+    "expires_at, preparation, resolved_args) VALUES (CAST(:id AS uuid), "
+    "CAST(:step_id AS uuid), :action_hash, :approver_role, "
+    "CAST(:requested_by AS uuid), :requested_at, :expires_at, "
+    "CAST(:preparation AS jsonb), CAST(:resolved_args AS jsonb))"
 )
 _DECIDE = text(
     "UPDATE approvals SET decided_by = CAST(:decided_by AS uuid), decision = :decision, "
@@ -93,6 +104,8 @@ class PostgresApprovalStore:
                 "requested_by": record.requested_by,
                 "requested_at": record.requested_at,
                 "expires_at": record.expires_at,
+                "preparation": json.dumps(record.preparation),
+                "resolved_args": json.dumps(record.resolved_args),
             }
             try:
                 with conn.begin_nested():
@@ -126,6 +139,30 @@ class PostgresApprovalStore:
         with connection_for(self._bind) as conn:
             rows = conn.execute(_OPEN).mappings().all()
         return [_to_record(row) for row in rows]
+
+    def latest_approved(
+        self,
+        *,
+        tenant_id: str,
+        tool: str,
+        exclude_id: str,
+        decided_before: datetime | None,
+    ) -> ApprovedCall | None:
+        if not (_is_uuid(tenant_id) and _is_uuid(exclude_id)):
+            return None
+        params = {
+            "tenant_id": tenant_id,
+            "tool": tool,
+            "exclude_id": exclude_id,
+            "before": decided_before,
+        }
+        with connection_for(self._bind) as conn:
+            row = conn.execute(_LATEST_APPROVED, params).mappings().first()
+        if row is None:
+            return None
+        fields = dict(row)
+        version = fields.pop("tool_version")
+        return ApprovedCall(ApprovalRecord(**fields), version)
 
     def record_decision(
         self,

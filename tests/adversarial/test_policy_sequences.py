@@ -122,7 +122,29 @@ def assert_prefix_completed(env, run, steps):
         attempts = env.stores.executions.attempts(run.run_id, step["id"])
         assert len(attempts) == 1 and attempts[0].status == "succeeded"
         keys.append(attempts[0].idempotency_key)
+        assert_prefix_write_verified(env, run, step["id"], attempts[0].idempotency_key)
     assert len(set(keys)) == len(steps)
+
+
+def assert_prefix_write_verified(env, run, step_id, key):
+    """A prefix write succeeds only through independent read-back; a prefix send went through
+    preparation and the server accepted exactly the prepared envelope."""
+    record = env.stores.steps.get(run.run_id, step_id)
+    jobs = [
+        j
+        for j in env.stores.maintenance.for_run(run.tenant_id, run.run_id)
+        if j.step_id == step_id and j.kind == "write_readback"
+    ]
+    if record.tool in {"clm.get_contract", "iam.lookup_user"}:
+        assert jobs == []
+        return
+    (job,) = jobs
+    assert job.operation_key == key and job.result is not None
+    assert job.result["code"] == "readback_agreed"
+    if record.tool == "email.send":
+        mailboxes = record.resolved_args["delivery"]["mailboxes"]
+        accepted = {e["key"]: e for e in env.effects() if e["kind"] == "email.sent"}[key]
+        assert accepted["data"]["accepted_recipients"] == mailboxes == [record.resolved_args["to"]]
 
 
 def run_prefix(env, case, steps):

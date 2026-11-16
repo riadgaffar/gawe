@@ -215,3 +215,15 @@ def test_cors_is_off_by_default_and_explicit_when_set() -> None:
     assert ok.headers["access-control-allow-origin"] == "http://localhost:3000"
     other = c2.http.get("/healthz", headers={"Origin": "http://evil.test"})
     assert "access-control-allow-origin" not in other.headers
+
+
+def test_verification_evidence_requires_auth_and_same_tenant() -> None:
+    c = Client(INTERNAL_PLAN)
+    run_id = c.http.post("/v1/runs", json=START, headers=c.h("alice")).json()["run_id"]
+    path = f"/v1/runs/{run_id}/verification"
+    assert c.http.get(path).status_code == 401
+    assert c.http.get(path, headers=c.h("carol")).status_code == 404
+    response = c.http.get(path, headers=c.h("bob"))
+    assert response.status_code == 200
+    assert response.json()[0]["outcome"] == "agreement"
+    assert "resolved_args" not in response.json()[0]

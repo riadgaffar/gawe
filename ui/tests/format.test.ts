@@ -82,3 +82,13 @@ test("anchorNotice handles no anchor and an unreachable anchor", () => {
   assert.equal(anchorNotice({ ...ANCHOR, status: "none" }).tone, "wait");
   assert.equal(anchorNotice({ ...ANCHOR, status: "unavailable" }).text, "Anchor could not be checked right now");
 });
+
+test("read-back lifecycle distinguishes waiting from terminal uncertainty", () => {
+  assert.equal(toneFor("awaiting_readback"), "wait");
+  assert.equal(toneFor("waiting_verification"), "wait");
+  assert.equal(toneFor("verification_blocked"), "bad");
+  assert.equal(toneFor("verification_unknown"), "bad");
+  assert.equal(toneFor("unknown"), "bad");
+  assert.equal(isFinished("unknown"), true);
+  assert.equal(isFinished("waiting_verification"), false);
+});

@@ -95,7 +95,7 @@ def _entry(manifest: ToolManifest) -> dict[str, Any]:
         "description": manifest.description,
         "side_effect_class": manifest.side_effect_class,
         "risk_tier": manifest.risk_tier,
-        "input_schema": manifest.input_schema,
+        "input_schema": manifest.proposal_schema or manifest.input_schema,
         "output_schema": manifest.output_schema,
     }
 

@@ -324,3 +324,18 @@ def test_config_builds_the_timestamp_sink(tmp_path: Path) -> None:
 def test_config_refuses_an_unknown_authority() -> None:
     with pytest.raises(AnchorConfigError):
         sinks_from_env({"GAWE_ANCHOR_SINKS": "rfc3161", "GAWE_ANCHOR_TSA": "nobody"})
+
+
+def test_checkpoint_extension_requires_a_new_timestamp_for_the_new_digest(tmp_path: Path) -> None:
+    sink = make_sink(tmp_path)
+    original = sink.put(fixture_record())
+    point = AnchorPoint(original.point.seq + 1, "f" * 64)
+    record = replace(
+        original,
+        point=point,
+        digest=anchor_digest(tenant_id=original.tenant_id, run_id=original.run_id, point=point),
+    )
+    # The fixture authority supplies the old signed reply: it cannot prove this new checkpoint.
+    with pytest.raises(TimestampError):
+        sink.extend(record, previous=original)
+    assert sink.get(original.run_id) == original

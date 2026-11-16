@@ -1,5 +1,5 @@
 import pytest
-from tests.helpers import KEY, signer
+from tests.helpers import DIGEST, KEY, signer
 
 from gawe.core.models import PolicyDecision
 from gawe.core.policy.signing import (
@@ -20,7 +20,7 @@ SEAL = {
 
 
 def sealed() -> PolicyDecision:
-    return signer().seal(**SEAL)  # type: ignore[arg-type]
+    return signer().seal(policy_digest=DIGEST, **SEAL)  # type: ignore[arg-type]
 
 
 def test_sealed_decision_verifies() -> None:
@@ -50,7 +50,12 @@ def test_changing_any_field_invalidates_signature(field: str, value: object) -> 
 
 def test_flipping_deny_to_allow_is_caught() -> None:
     denied = signer().seal(
-        step_id="s1", action_hash="a" * 64, outcome="deny", rule_ids=["default-deny"], reason="no"
+        policy_digest=DIGEST,
+        step_id="s1",
+        action_hash="a" * 64,
+        outcome="deny",
+        rule_ids=["default-deny"],
+        reason="no",
     )
     assert not signer().verify(denied.model_copy(update={"outcome": "allow"}))
 
@@ -70,7 +75,7 @@ def test_fabricated_decision_with_made_up_signature_is_rejected() -> None:
 
 def test_decision_signed_with_another_key_is_rejected() -> None:
     other = PolicySigner(bytes(reversed(KEY)))
-    decision = other.seal(**SEAL)  # type: ignore[arg-type]
+    decision = other.seal(policy_digest=DIGEST, **SEAL)  # type: ignore[arg-type]
     assert not signer().verify(decision)
     with pytest.raises(ForgedDecisionError):
         signer().require_valid(decision, expected_action_hash="a" * 64)
