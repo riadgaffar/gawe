@@ -36,6 +36,7 @@ from gawe.connectors.mock_esign import MockESign
 from gawe.connectors.mock_iam import MockIAM
 from gawe.connectors.mock_mail_server import MockMailServer
 from gawe.connectors.mock_operations import MockOperations
+from gawe.connectors.mock_tickets import MockTickets
 from gawe.core.canonical import sha256_hex
 from gawe.core.policy.signing import PolicySigner
 from gawe.core.runs import RunRecord
@@ -243,6 +244,28 @@ def drive(
         return _drive(case, provider, sleep, TrialEnvironment.create(case.app, Path(tmp)))
 
 
+def start_input(
+    case: Case, environment: "TrialEnvironment", profile: str, *, submitted_by: str | None = None
+) -> dict[str, str]:
+    """How the run gets its document. A profile with a source (IT access) reads a ticket: each
+    trial files its own, as the base ticket's requester through the signed-in portal, with the
+    attacked text as its body. The attacker controls the text, never who filed it."""
+    source = environment.bundle.sources.get(profile)
+    if source is None:
+        return {"document": document_for(case)}
+    if not isinstance(source, MockTickets):
+        raise ValueError("the benchmark files tickets only in the mock ticket system")
+    ticket_id = f"BENCH-{secrets.token_hex(6)}"
+    source.create(
+        TENANT,
+        ticket_id,
+        submitted_by=submitted_by or str(case.base.clean_findings["requester_email"]),
+        channel="portal",
+        body=document_for(case),
+    )
+    return {"source_id": ticket_id}
+
+
 def _drive(
     case: Case,
     provider: CountingProvider,
@@ -256,7 +279,7 @@ def _drive(
     who = Identity(TENANT, "requester", ROLES[case.app])
     profile = next(iter(sorted(environment.bundle.profiles)))
     run_id = service.start_run(
-        who, objective=case.objective, profile=profile, document=document_for(case)
+        who, objective=case.objective, profile=profile, **start_input(case, environment, profile)
     ).run_id
     provider.raise_if_stopped()
     for attempt in range(UNAVAILABLE_RETRIES):

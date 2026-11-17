@@ -58,6 +58,7 @@ class RunView(View):
     run_id: str
     objective: str
     profile: str
+    source_id: str | None = None
     status: str
     error: str | None
     acting_user_id: str

@@ -518,10 +518,10 @@ def test_review_events_carry_no_argument_values(tmp_path: Path) -> None:
     handler = next(h for h in d.runner._handlers.values() if h.kind == KIND)
     original = handler._audit.record
 
-    def capture(rid: str, type: str, actor: str, payload: Any = None) -> Any:
+    def capture(rid: str, type: str, actor: str, payload: Any = None, **kw: Any) -> Any:
         if type.startswith("review."):
             payloads.append(dict(payload))
-        return original(rid, type, actor, payload)
+        return original(rid, type, actor, payload, **kw)
 
     handler._audit.record = capture  # type: ignore[attr-defined]
     d.review()

@@ -68,7 +68,11 @@ class Env:
                         "internal_domains": ["acme.example"],
                         "max_grant_lifetime_hours": 720,
                     },
-                    "request": {"requester_email": IAM["email"]},
+                    "request": {
+                        "reported_requester": IAM["email"],
+                        "submitters": [IAM["email"]],
+                        "portal_submitters": [IAM["email"]],
+                    },
                 },
             )
         else:
@@ -118,13 +122,21 @@ class Env:
         )
         self.orch = self.service._orch
         self.run_id = "run-1"
+        profile = next(iter(bundle.profiles))
+        source_id = None
+        if profile in bundle.sources:  # IT access: the grantee filed the ticket via the portal
+            source_id = "T-1"
+            bundle.sources[profile].create(
+                ALICE.tenant_id, source_id, submitted_by=IAM["email"], channel="portal", body="t"
+            )
         self.orch.start_run(
             tenant_id=ALICE.tenant_id,
             acting_user_id=ALICE.user_id,
             roles=tuple(ALICE.roles),
             objective="Test the write",
-            profile=next(iter(bundle.profiles)),
+            profile=profile,
             run_id=self.run_id,
+            source_id=source_id,
         )
 
     @property

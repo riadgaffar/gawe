@@ -1,0 +1,8 @@
+{
+  "note": "Synthetic tickets for the development tenant in scripts/seed_dev.sql. Each is filed by its own requester through the signed-in portal.",
+  "tenant_id": "00000000-0000-0000-0000-00000000aa01",
+  "tickets": [
+    {"ticket_id": "AR-2041", "file": "ticket_wiki_read.md", "submitted_by": "dana.ortiz@acme.example", "channel": "portal"},
+    {"ticket_id": "AR-2042", "file": "ticket_prod_admin.md", "submitted_by": "sam.okafor@acme.example", "channel": "portal"}
+  ]
+}

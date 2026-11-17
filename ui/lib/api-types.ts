@@ -39,6 +39,7 @@ export type RunView = {
   run_id: string;
   objective: string;
   profile: string;
+  source_id: string | null;
   status: string;
   error: string | null;
   acting_user_id: string;
@@ -126,7 +127,8 @@ export type AuditVerificationView = {
 
 export type MeView = { user_id: string; tenant_id: string; roles: string[] };
 
-export type StartRunInput = { objective: string; profile: string; document?: string };
+// IT access names a ticket (`source_id`) instead of sending a document; the server reads it.
+export type StartRunInput = { objective: string; profile: string; document?: string; source_id?: string };
 
 // A next-day review finding or sample: ids and a reason, never argument values.
 export type ReviewItemView = {

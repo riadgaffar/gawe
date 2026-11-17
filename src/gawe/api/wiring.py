@@ -41,6 +41,7 @@ from gawe.core.records import (
 from gawe.core.registry import ToolRegistry
 from gawe.core.review import InMemoryReviewStore, ReviewKey, ReviewStore
 from gawe.core.runs import InMemoryRunStore, RunNotFoundError, RunRecord, RunStore
+from gawe.core.sources import DocumentSource
 from gawe.core.telemetry import NoopTelemetry, Telemetry
 from gawe.core.verification import VerificationResolver
 from gawe.core.verifier import PostCondition, Verifier
@@ -76,12 +77,19 @@ class AppBundle:
     # (tool, version) writes that grant access until `expires_at`, with the target system's
     # revocation. Each such grant gets an expiry job the sweep runs at its end date.
     revokers: Mapping[tuple[str, str], Revoker] = field(default_factory=dict)
+    # Profiles whose runs read their document from a record (a ticket) instead of an upload.
+    sources: Mapping[str, DocumentSource] = field(default_factory=dict)
     # Which automatic, executed actions the next-day review may draw for a person to check.
     review_sample: SampleCandidate | None = None
 
 
 def load_app_rules(bundle: AppBundle) -> tuple[Rule, ...]:
     """Application entry points must validate schemas and provenance before serving runs."""
+    unknown_profiles = set(bundle.sources) - set(bundle.profiles)
+    if unknown_profiles:
+        raise ValueError(f"sources name profiles the app does not have: {sorted(unknown_profiles)}")
+    if bundle.sources and bundle.reader_profile is None:
+        raise ValueError("a profile with a source needs a Reader to read its document")
     required = {(m.name, m.version) for m in bundle.manifests if m.preparation_required}
     if required != set(bundle.preparers):
         raise ValueError("preparation adapters must match required tool versions")
@@ -366,6 +374,7 @@ def assemble(
         maintenance=stores.maintenance,
         maintenance_runner=engine.runner,
         reviews=stores.reviews,
+        sources=bundle.sources,
         clock=clock,
     )
     services.append(service)

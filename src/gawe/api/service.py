@@ -15,6 +15,7 @@ Who may do what:
   role); this layer only adds the tenant check and maps failures to API errors.
 """
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -75,7 +76,8 @@ from gawe.core.review import (
     Status,
     Verdict,
 )
-from gawe.core.runs import RunNotFoundError, RunRecord, RunStore
+from gawe.core.runs import SOURCE_ID_PATTERN, RunNotFoundError, RunRecord, RunStore
+from gawe.core.sources import DocumentSource, SourceError
 from gawe.core.statemachine import RUN_TERMINAL, StepStatus
 from gawe.core.verification import READBACK_KIND
 from gawe.engine.orchestrator import Orchestrator, RunBusyError
@@ -119,6 +121,7 @@ class ApiService:
         maintenance: MaintenanceStore | None = None,
         maintenance_runner: MaintenanceRunner | None = None,
         reviews: ReviewStore | None = None,
+        sources: Mapping[str, DocumentSource] | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._orch = orchestrator
@@ -134,6 +137,7 @@ class ApiService:
         self._anchorer = anchorer or Anchorer(audit, [])
         self._maintenance = maintenance
         self._reviews = reviews or InMemoryReviewStore()
+        self._sources = dict(sources or {})
         self._clock = clock
         self.maintenance_runner = maintenance_runner
 
@@ -156,14 +160,36 @@ class ApiService:
     # -- runs -----------------------------------------------------------------------------
 
     def start_run(
-        self, who: Identity, *, objective: str, profile: str, document: str | None = None
+        self,
+        who: Identity,
+        *,
+        objective: str,
+        profile: str,
+        document: str | None = None,
+        source_id: str | None = None,
     ) -> RunView:
+        """A profile with a source (IT access) takes `source_id`, never an uploaded document:
+        the server fetches the text from that record in the caller's tenant."""
         if not objective.strip():
             raise BadRequestError("objective is required")
         if len(objective) > MAX_OBJECTIVE_CHARS:
             raise BadRequestError(f"objective is longer than {MAX_OBJECTIVE_CHARS} characters")
         if profile not in self._profiles:
             raise BadRequestError("unknown profile")
+        source = self._sources.get(profile)
+        if source is None and source_id is not None:
+            raise BadRequestError("this profile does not read from a source record")
+        if source is not None:
+            if document is not None:
+                raise BadRequestError("this profile reads its document from its source record")
+            if source_id is None:
+                raise BadRequestError("source_id is required for this profile")
+            if re.fullmatch(SOURCE_ID_PATTERN, source_id) is None:
+                raise BadRequestError("source_id is malformed")
+            try:
+                document = source.fetch(who.tenant_id, source_id)
+            except SourceError as exc:
+                raise BadRequestError(f"source record unavailable: {exc.code}") from None
         if document is not None and len(document) > self._limits.max_document_chars:
             raise BadRequestError(
                 f"document is longer than {self._limits.max_document_chars} characters"
@@ -176,6 +202,7 @@ class ApiService:
                 objective=objective,
                 profile=profile,
                 document=document,
+                source_id=source_id,
             )
         except ValueError as exc:
             raise BadRequestError(str(exc)) from exc
@@ -472,6 +499,7 @@ class ApiService:
             run_id=run.run_id,
             objective=run.objective,
             profile=run.profile,
+            source_id=run.source_id,
             status=run.status.value,
             error=run.error,
             acting_user_id=run.acting_user_id,

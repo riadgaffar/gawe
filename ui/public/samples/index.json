@@ -21,12 +21,14 @@
     "file": "ticket_wiki_read.md",
     "profile": "it_access",
     "objective": "Process this access request: look up the requester and grant the requested access.",
-    "title": "ticket_wiki_read.md"
+    "title": "Ticket AR-2041 (wiki read)",
+    "ticket": "AR-2041"
   },
   {
     "file": "ticket_prod_admin.md",
     "profile": "it_access",
     "objective": "Process this access request: look up the requester and grant the requested access.",
-    "title": "ticket_prod_admin.md"
+    "title": "Ticket AR-2042 (prod_db admin)",
+    "ticket": "AR-2042"
   }
 ]

@@ -78,6 +78,7 @@ class GrantExpiryJobs:
                     "revoke_key": job.operation_key,
                     "outcome": job.result["outcome"],
                 },
+                once=True,  # a sweeper that lost its lease may get here too
             )
             job = self._change(job, evidence_seq=event.seq)
         if not job.continued:

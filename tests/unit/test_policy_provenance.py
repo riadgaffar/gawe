@@ -176,12 +176,19 @@ def test_apps_require_metadata_and_declarations_at_entry_point(tmp_path, app) ->
 @pytest.mark.parametrize("app", [contract_review, it_access])
 def test_safe_callbacks_remain_unchanged_after_real_mock_writes(tmp_path: Path, app) -> None:
     bundle = app.bundle(tmp_path)
+    source_id = None
+    if app.PROFILE_NAME in bundle.sources:  # IT access: a ticket, so its variables are covered
+        source_id = "T-1"
+        bundle.sources[app.PROFILE_NAME].create(
+            "t", source_id, submitted_by="dana.ortiz@acme.example", channel="portal", body="t"
+        )
     run = RunRecord(
         run_id="fixed",
         tenant_id="t",
         acting_user_id="u",
         objective="Check sources",
         profile=app.PROFILE_NAME,
+        source_id=source_id,
         created_at=datetime.now(UTC),
         findings={
             "requester_email": "dana.ortiz@acme.example",
@@ -189,6 +196,8 @@ def test_safe_callbacks_remain_unchanged_after_real_mock_writes(tmp_path: Path, 
         },
     )
     before = deepcopy(bundle.variables(run))
+    if source_id is not None:
+        assert before["request"]["submitters"] == ["dana.ortiz@acme.example"]
     actions = {
         "crm.write_assessment": {
             "contract_id": "C-1002",
@@ -212,9 +221,8 @@ def test_safe_callbacks_remain_unchanged_after_real_mock_writes(tmp_path: Path, 
             )
             args = actions[manifest.name]
             if manifest.preparation_required:
-                args = dict(
-                    bundle.preparers[(manifest.name, manifest.version)](args, reapproval=False).args
-                )
+                prepare = bundle.preparers[(manifest.name, manifest.version)]
+                args = dict(prepare(args, reapproval=False, run=run).args)
             assert bundle.tools[manifest.name](args, call)
             assert bundle.variables(run) == before
     assert len((tmp_path / "ledger.jsonl").read_text().splitlines()) == count

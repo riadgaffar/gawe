@@ -32,7 +32,7 @@ Every error is `{"error": {"code": "...", "message": "..."}}`.
 | `GET /healthz` | anyone | liveness |
 | `GET /v1/me` | any user | the caller's `user_id`, `tenant_id` and `roles` (used by the UI to check a token) |
 | `GET /v1/tools` | any user | registered tools with input schemas |
-| `POST /v1/runs` | any user | start a run: `{objective, profile, document?}`. Returns `201` with the new run; planning and execution continue in the background |
+| `POST /v1/runs` | any user | start a run: `{objective, profile, document?, source_id?}`. Returns `201` with the new run; planning and execution continue in the background. See [Runs started from a record](#runs-started-from-a-record) |
 | `GET /v1/runs?limit=` | any user | the tenant's runs, newest first |
 | `GET /v1/runs/{id}` | any user in tenant | run, steps, policy outcome and evaluated checks per step, each write step's verification record |
 | `GET /v1/runs/{id}/verification` | any user in tenant | independent read-back records for the run, see [Independent write verification](#independent-write-verification) |
@@ -45,6 +45,23 @@ Every error is `{"error": {"code": "...", "message": "..."}}`.
 | `POST /v1/approvals/{id}/decision` | approver | `{decision: "approved"\|"rejected", action_hash, comment?}` |
 | `GET /v1/review-items?status=` | `legal_reviewer` | next-day review items in the tenant; `status` is `open` (default), `confirmed`, `missed_risk` or `all` |
 | `POST /v1/review-items/{id}/verdict` | `legal_reviewer` who did not start the run | `{verdict: "confirmed"\|"missed_risk"}`, once; a second verdict is a `409` |
+
+## Runs started from a record
+
+A profile can read its document from a record in another system instead of an upload. IT Access
+reads from the ticket system:
+
+- `source_id` is required, and `document` is refused. The id is at most 64 characters of
+  letters, digits, `.`, `_` and `-`.
+- The server fetches the ticket's text in the caller's tenant. An unknown ticket, another
+  tenant's ticket or an unreadable ticket system is a `422` with its code, and no run is created.
+- A profile without a source refuses `source_id`.
+- The run keeps `source_id` (also in `GET /v1/runs/{id}` and in the `run.created` audit event).
+  The fetched text is cleared when the run ends, as an upload is.
+
+Policy reads who filed the ticket and through which channel from the ticket system, not from its
+text. Grant preparation reads the ticket again and refuses one that is no longer open
+(`ticket_not_open`).
 
 An approval appears in the inbox only for someone holding the role the policy named, who did not
 request it, in the same tenant, while its step is still waiting. The approver sees the tool, the

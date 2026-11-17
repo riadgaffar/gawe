@@ -11,7 +11,10 @@ from typing import Any
 
 from gawe.connectors.base import ConnectorError
 from gawe.connectors.mock_iam import MockIAM
+from gawe.connectors.mock_tickets import MockTickets
 from gawe.core.preparation import PreparationError, PreparedAction
+from gawe.core.runs import RunRecord
+from gawe.core.sources import SourceError
 
 MIN_LIFETIME_HOURS = 1
 MAX_LIFETIME_HOURS = 30 * 24
@@ -37,12 +40,25 @@ def format_expiry(moment: datetime) -> str:
 
 
 class GrantPreparer:
-    def __init__(self, iam: MockIAM, *, lifetime_hours: int, clock: Callable[[], datetime]) -> None:
+    def __init__(
+        self,
+        iam: MockIAM,
+        *,
+        lifetime_hours: int,
+        clock: Callable[[], datetime],
+        tickets: MockTickets | None = None,
+    ) -> None:
         self.iam = iam
         self.lifetime_hours = validate_lifetime(lifetime_hours)  # startup fails otherwise
         self.clock = clock
+        # With a ticket system, every grant needs its run's ticket, still open (M16c D5).
+        self.tickets = tickets
 
-    def __call__(self, args: Mapping[str, Any], *, reapproval: bool) -> PreparedAction:
+    def __call__(
+        self, args: Mapping[str, Any], *, reapproval: bool, run: RunRecord | None = None
+    ) -> PreparedAction:
+        if self.tickets is not None:
+            self._require_open_ticket(run)
         try:
             revision = self.iam.user_version(args["email"])
         except ConnectorError as exc:
@@ -61,3 +77,16 @@ class GrantPreparer:
             },
             metadata={},
         )
+
+    def _require_open_ticket(self, run: RunRecord | None) -> None:
+        assert self.tickets is not None
+        if run is None or run.source_id is None:
+            raise PreparationError("ticket_required")
+        try:
+            ticket = self.tickets.get(run.tenant_id, run.source_id)
+        except SourceError as exc:
+            raise PreparationError(exc.code) from exc
+        except Exception as exc:  # noqa: BLE001 - an unreadable ticket fails closed
+            raise PreparationError("source_unreadable") from exc
+        if ticket.status != "open":
+            raise PreparationError("ticket_not_open")

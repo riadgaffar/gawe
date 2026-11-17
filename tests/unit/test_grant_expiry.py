@@ -17,6 +17,7 @@ from gawe.api.wiring import assemble, load_app_rules, memory_stores
 from gawe.apps import it_access
 from gawe.connectors.base import ConnectorError, Ledger
 from gawe.connectors.mock_iam import MockIAM
+from gawe.connectors.mock_tickets import MockTickets
 from gawe.core.audit import verify_chain
 from gawe.core.expiry import KIND, expiry_identity, revoke_identity
 from gawe.core.maintenance import MaintenanceJob
@@ -48,9 +49,11 @@ class Desk:
             it_access.HERE / "samples/iam_seed.json", Ledger(path / "ledger.jsonl")
         )
         self.sink = FileAnchorSink(path / "anchors.jsonl")
+        self.tickets = MockTickets.in_state_dir(path)
         self.steps = steps or [step("write", WIKI)]
         self.service = self.restart([{"steps": self.steps}])
         self.run_id = "run-1"
+        self.tickets.create(ALICE.tenant_id, "T-1", submitted_by=DANA, channel="portal", body="t")
         self.service._orch.start_run(
             tenant_id=ALICE.tenant_id,
             acting_user_id=ALICE.user_id,
@@ -58,15 +61,20 @@ class Desk:
             objective="Grant access",
             profile=it_access.PROFILE_NAME,
             run_id=self.run_id,
+            source_id="T-1",
         )
 
     def bundle(self) -> Any:
-        b = it_access.bundle(self.path, iam=self.iam, clock=self.clock)
+        b = it_access.bundle(self.path, iam=self.iam, tickets=self.tickets, clock=self.clock)
         return replace(
             b,
             variables=lambda run: {
                 "tenant": {"internal_domains": ["acme.example"], "max_grant_lifetime_hours": 720},
-                "request": {"requester_email": DANA},
+                "request": {
+                    "reported_requester": DANA,
+                    "submitters": [DANA],
+                    "portal_submitters": [DANA],
+                },
             },
         )
 
@@ -414,10 +422,10 @@ def test_the_revocation_event_carries_no_argument_values(tmp_path: Path) -> None
     payloads: list[dict[str, Any]] = []
     original = d.service._orch._audit.record
 
-    def capture(run_id: str, type: str, actor: str, payload: Any = None) -> Any:
+    def capture(run_id: str, type: str, actor: str, payload: Any = None, **kw: Any) -> Any:
         if type == "grant.revoked":
             payloads.append(dict(payload))
-        return original(run_id, type, actor, payload)
+        return original(run_id, type, actor, payload, **kw)
 
     handler = next(h for h in d.runner._handlers.values() if h.kind == KIND)
     handler._audit.record = capture  # type: ignore[attr-defined]

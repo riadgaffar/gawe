@@ -305,6 +305,7 @@ class VerificationResolver:
                 "status": target.value,
                 "code": code,
             },
+            once=True,
         )
         self.change(job, evidence_seq=event.seq)
         return target

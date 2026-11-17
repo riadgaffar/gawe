@@ -174,10 +174,12 @@ class Executor:
 
         if step.status is StepStatus.VERIFYING:
             return self._resume_verification(step, manifest)
+        # The attempts this worker has vetted. Any attempt beyond them belongs to another worker.
         resuming = step.status is StepStatus.EXECUTING
         if resuming:
-            self._take_over_if_stale(step)
+            vetted = self._take_over_if_stale(step)
         else:
+            vetted = len(self._executions.attempts(step.run_id, step.step_id))
             self._claim(step, decision)
 
         impl = self._tools.get(step.tool)
@@ -189,7 +191,7 @@ class Executor:
         if self.verification and (step.tool, step.tool_version) in self.verification.adapters:
             return self._execute_write(step, manifest, impl, decision)
 
-        output, attempts, error = self._run_attempts(step, impl)
+        output, attempts, error = self._run_attempts(step, impl, vetted)
         if output is None:
             if error == "recipient_changed" and manifest.preparation_required:
                 self._move(
@@ -449,22 +451,22 @@ class Executor:
             {"step_id": step.step_id, "action_hash": step.action_hash},
         )
 
-    def _take_over_if_stale(self, step: StepRecord) -> None:
+    def _take_over_if_stale(self, step: StepRecord) -> int:
         """Resume a step another worker left in `executing`, but only once it has gone quiet.
 
         Any recorded activity (an attempt starting or finishing) within the lease means a worker
         may still be alive, so we back off. After the lease, an attempt still marked `started`
-        is closed as failed so the next attempt can begin.
+        is closed as failed so the next attempt can begin. Returns how many attempts were vetted.
         """
         attempts = self._executions.attempts(step.run_id, step.step_id)
         last = attempts[-1] if attempts else None
         if last is None:
-            return  # claimed but never started an attempt; racing starters collide on attempt 1
+            return 0  # claimed but never started an attempt; racing starters collide on attempt 1
         last_activity = last.finished_at or last.started_at
         if self._clock() < last_activity + self._lease:
             raise ConcurrentExecutionError("another worker is active on this step")
         if last.status != "started":
-            return
+            return len(attempts)
         try:
             self._executions.finish(
                 step.run_id,
@@ -482,6 +484,7 @@ class Executor:
             ACTOR,
             {"step_id": step.step_id, "abandoned_attempt": last.attempt},
         )
+        return len(attempts)
 
     def _move(self, step: StepRecord, expected: StepStatus, to: StepStatus, **updates: Any) -> None:
         """A status change that reports losing a race as ConcurrentExecutionError."""
@@ -500,8 +503,13 @@ class Executor:
     # -- running --------------------------------------------------------------------------
 
     def _run_attempts(
-        self, step: StepRecord, impl: ToolImplementation
+        self, step: StepRecord, impl: ToolImplementation, vetted: int
     ) -> tuple[Mapping[str, Any] | None, int, str | None]:
+        """Dispatch attempts numbered after the `vetted` ones this worker took ownership of.
+
+        An attempt this worker neither vetted nor started belongs to a racing worker, finished
+        or not, so this worker backs off instead of retrying it.
+        """
         assert step.action_hash is not None
         key = idempotency_key(step.action_hash)
 
@@ -511,8 +519,11 @@ class Executor:
             return saved, len(history), None
 
         error: str | None = None
+        started = 0
         while True:
             all_history = self._executions.attempts(step.run_id, step.step_id)
+            if len(all_history) != vetted + started:
+                raise ConcurrentExecutionError("another worker started an attempt")
             current_history = [a for a in all_history if a.idempotency_key == key]
             used = len(current_history)
             if current_history and current_history[-1].error == "recipient_changed":
@@ -521,7 +532,7 @@ class Executor:
                 return None, used, error or "retries_exhausted"
             if used > 0:
                 self._sleep(self._retry.delay(used))
-            attempt = len(all_history) + 1
+            attempt = vetted + started + 1
             try:
                 self._executions.start(
                     step.run_id, step.step_id, attempt=attempt, idempotency_key=key,
@@ -529,6 +540,7 @@ class Executor:
                 )  # fmt: skip
             except AttemptConflictError:
                 raise ConcurrentExecutionError("another worker started an attempt") from None
+            started += 1
 
             call = ToolCall(step.run_id, step.step_id, attempt, key)
             try:

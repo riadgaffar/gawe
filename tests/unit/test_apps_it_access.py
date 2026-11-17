@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from tests.helpers import bound_args, current_manifest, make_ctx, signer
@@ -31,6 +32,9 @@ PROD_ADMIN = {
 }
 
 
+DANA = "dana.ortiz@acme.example"
+
+
 def plan(email: str, system: str, level: str) -> dict[str, Any]:
     return {
         "steps": [
@@ -59,9 +63,24 @@ def grants(tmp_path: Path) -> list[dict[str, Any]]:
     return Ledger(tmp_path / "ledger.jsonl").records("iam.grant")
 
 
-def start(svc: Any, who: Identity = AGENT) -> str:
+def ticket(svc: Any, who: Identity = AGENT, submitted_by: str = DANA, **kw: Any) -> str:
+    """File a ticket in the app's mock ticket system; returns its id."""
+    ticket_id = f"T-{uuid4().hex[:8]}"
+    svc._sources["it_access"].create(
+        who.tenant_id,
+        ticket_id,
+        submitted_by=submitted_by,
+        channel=kw.pop("channel", "portal"),
+        body=kw.pop("body", "ticket text"),
+        **kw,
+    )
+    return ticket_id
+
+
+def start(svc: Any, who: Identity = AGENT, **ticket_fields: Any) -> str:
+    source_id = ticket(svc, who, **ticket_fields)
     return svc.start_run(
-        who, objective="Process the request", profile="it_access", document="ticket text"
+        who, objective="Process the request", profile="it_access", source_id=source_id
     ).run_id
 
 
@@ -118,7 +137,14 @@ def test_policy_still_denies_an_external_account() -> None:
             manifest,
             bound_args(manifest, {"email": "a@outside.example", "system": "wiki", "level": "read"}),
             roles=["it_agent"],
-            variables={**ia.TENANT_VARIABLES, "request": {"requester_email": "a@outside.example"}},
+            variables={
+                **ia.TENANT_VARIABLES,
+                "request": {
+                    "reported_requester": "a@outside.example",
+                    "submitters": ["a@outside.example"],
+                    "portal_submitters": ["a@outside.example"],
+                },
+            },
         )
     )
     assert decision.outcome == "deny" and "external-user-denied" in decision.rule_ids
@@ -152,7 +178,14 @@ def test_policy_golden_cases(system: str, level: str, outcome: str) -> None:
             manifest,
             args,
             roles=["it_agent"],
-            variables={**ia.TENANT_VARIABLES, "request": ia.request_variables(WIKI_READ)},
+            variables={
+                **ia.TENANT_VARIABLES,
+                "request": {
+                    **ia.request_variables(WIKI_READ),
+                    "submitters": [DANA],
+                    "portal_submitters": [DANA],
+                },
+            },
         )
     )
     assert decision.outcome == outcome
@@ -208,7 +241,9 @@ def test_grant_matches_reported_requester_exactly(
 ) -> None:
     b = ia.bundle(Path("/nonexistent-never-written"))
     request = ia.request_variables({"requester_email": reported})
-    assert request == {"requester_email": reported}  # do not normalize the identity
+    assert request == {"reported_requester": reported}  # do not normalize the identity
+    # The reported requester also filed the ticket, so only the Reader cross-check varies.
+    request = {**request, "submitters": [reported], "portal_submitters": [reported]}
     decision = RuleEngine(load_app_rules(b), signer()).evaluate(
         make_ctx(
             current_manifest(b.manifests, "iam.grant_access"),
@@ -235,11 +270,16 @@ def test_fooled_planner_cannot_grant_to_a_different_person(tmp_path: Path) -> No
     assert "requester-mismatch-denied" in view.steps[-1].policy_rule_ids
 
 
-def test_fooled_reader_can_still_report_the_attackers_requester(tmp_path: Path) -> None:
+def test_a_fooled_readers_lateral_grant_waits_for_security(tmp_path: Path) -> None:
+    """M16c: the Reader names Sam, but Dana filed the ticket, so the grant waits for a person.
+
+    Before M16c this grant ran: the only check was against the Reader's own report."""
     findings = {**WIKI_READ, "requester_email": "sam.okafor@acme.example"}
     svc = service(tmp_path, [findings, plan("sam.okafor@acme.example", "billing", "write")])
-    assert svc.get_run(AGENT, start(svc)).status == "completed"
-    assert len(grants(tmp_path)) == 1
+    view = svc.get_run(AGENT, start(svc, submitted_by=DANA))
+    assert view.status == "paused_for_approval" and grants(tmp_path) == []
+    assert "grant-to-other-than-submitter-needs-security" in view.steps[-1].policy_rule_ids
+    assert view.steps[-1].approver_role == "security_admin"
 
 
 def test_requester_variables_are_bound_to_each_persisted_run(tmp_path: Path) -> None:
@@ -263,6 +303,6 @@ def test_requester_variables_are_bound_to_each_persisted_run(tmp_path: Path) -> 
             "findings": {**WIKI_READ, "requester_email": "sam.okafor@acme.example"},
         }
     )
-    assert bundle.variables(run)["request"] == {"requester_email": "dana.ortiz@acme.example"}
-    assert bundle.variables(other)["request"] == {"requester_email": "sam.okafor@acme.example"}
+    assert bundle.variables(run)["request"] == {"reported_requester": "dana.ortiz@acme.example"}
+    assert bundle.variables(other)["request"] == {"reported_requester": "sam.okafor@acme.example"}
     assert bundle.variables(run.model_copy(update={"findings": None}))["request"] == {}

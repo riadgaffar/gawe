@@ -31,7 +31,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
       <p className="row">
         <StatusBadge status={run.status} />
         <span className="muted">
-          {run.profile} · started by {run.acting_user_id} {relativeTime(run.created_at)} · plan v{run.plan_version}
+          {run.profile}{run.source_id ? ` · ticket ${run.source_id}` : ""} · started by {run.acting_user_id} {relativeTime(run.created_at)} · plan v{run.plan_version}
         </span>
       </p>
       {run.error && <p className="notice error">{run.error}</p>}

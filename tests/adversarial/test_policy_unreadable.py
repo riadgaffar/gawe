@@ -100,7 +100,14 @@ VARIABLES = {
         **cr.TENANT_VARIABLES,
         "review": {"unsupported_levels": [], "large_deals": []},
     },
-    "it_access": {**ia.TENANT_VARIABLES, "request": {"requester_email": "a@acme.example"}},
+    "it_access": {
+        **ia.TENANT_VARIABLES,
+        "request": {
+            "reported_requester": "a@acme.example",
+            "submitters": ["a@acme.example"],
+            "portal_submitters": ["a@acme.example"],
+        },
+    },
     "example": {"tenant": {"internal_domains": ["acme.com"]}},
 }
 RULES = {
@@ -118,7 +125,9 @@ VARIABLE_TARGETS = [
     ("contract_review", "crm.write_assessment", "review.unsupported_levels"),
     ("contract_review", "crm.write_assessment", "review.large_deals"),
     ("it_access", "iam.grant_access", "tenant.internal_domains"),
-    ("it_access", "iam.grant_access", "request.requester_email"),
+    ("it_access", "iam.grant_access", "request.reported_requester"),
+    ("it_access", "iam.grant_access", "request.submitters"),
+    ("it_access", "iam.grant_access", "request.portal_submitters"),
     ("it_access", "iam.grant_access", "tenant.max_grant_lifetime_hours"),
     ("example", "contracts.send_email", "tenant.internal_domains"),
 ]
@@ -187,8 +196,10 @@ def test_unreadable_input_never_allows(
         if kind == "variable_missing":
             del variables[parent][key]
         else:
+            # A scalar variable is broken by a list; a list variable by a scalar.
+            scalar_request = parent == "request" and key == "reported_requester"
             variables[parent][key] = (
-                [] if parent == "request" else data.draw(st.none() | st.booleans() | TOKEN)
+                [] if scalar_request else data.draw(st.none() | st.booleans() | TOKEN)
             )
         # Templates satisfy preceding conjuncts, including risk_level == low.
         decision = decide(app, name, args, variables)

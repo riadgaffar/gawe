@@ -14,6 +14,7 @@ from gawe.api.wiring import assemble, postgres_stores
 from gawe.apps import it_access
 from gawe.connectors.base import Ledger
 from gawe.connectors.mock_iam import MockIAM
+from gawe.connectors.mock_tickets import MockTickets
 from gawe.core.audit import verify_chain
 from gawe.core.statemachine import RunStatus, StepStatus
 from gawe.llm.fake import FakeProvider
@@ -123,6 +124,7 @@ class Grants:
         self.iam = MockIAM.from_seed(
             it_access.HERE / "samples/iam_seed.json", Ledger(directory / "ledger.jsonl")
         )
+        self.tickets = MockTickets.in_state_dir(directory)
         self.run_id, self.tenant = str(uuid4()), TENANT
         self.service = self.load(
             [
@@ -142,6 +144,9 @@ class Grants:
                 }
             ]
         )
+        self.tickets.create(
+            TENANT, "T-1", submitted_by="dana.ortiz@acme.example", channel="portal", body="t"
+        )
         self.service._orch.start_run(
             run_id=self.run_id,
             tenant_id=TENANT,
@@ -149,14 +154,19 @@ class Grants:
             roles=("it_agent",),
             objective="Grant access",
             profile="it_access",
+            source_id="T-1",
         )
 
     def load(self, script: list[Any] | None = None) -> Any:
         bundle = replace(
-            it_access.bundle(self.directory, iam=self.iam, clock=self.clock),
+            it_access.bundle(self.directory, iam=self.iam, tickets=self.tickets, clock=self.clock),
             variables=lambda run: {
                 "tenant": {"internal_domains": ["acme.example"], "max_grant_lifetime_hours": 720},
-                "request": {"requester_email": "dana.ortiz@acme.example"},
+                "request": {
+                    "reported_requester": "dana.ortiz@acme.example",
+                    "submitters": ["dana.ortiz@acme.example"],
+                    "portal_submitters": ["dana.ortiz@acme.example"],
+                },
             },
         )
         return assemble(

@@ -1,7 +1,7 @@
 import secrets
 import shutil
 from collections import Counter
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -33,6 +33,7 @@ from gawe.core.policy.engine import RuleEngine
 from gawe.core.policy.rules import EvaluationContext
 from gawe.core.policy.signing import PolicySigner
 from gawe.core.registry import ToolRegistry
+from gawe.core.runs import RunRecord
 from gawe.llm.fake import FakeProvider
 from gawe.llm.provider import LLMUnavailableError
 from gawe.llm.safety import sanitize_text
@@ -78,12 +79,33 @@ def test_each_goal_states_what_the_real_policy_does(tmp_path: Path, goal_name: s
         PolicySigner(secrets.token_bytes(32)),
     )
     variables = dict(bundle.variables(None))  # type: ignore[arg-type]
+    run = None
     if goal.app == "it_access":
-        # Clean Reader report, deliberately independent of the attack's proposed grant.
-        variables["request"] = request_variables(first_case(goal_name).base.clean_findings)
+        # Clean Reader report and a ticket filed by that requester through the portal, both
+        # independent of the attack's proposed grant.
+        clean = first_case(goal_name).base.clean_findings
+        requester = str(clean["requester_email"])
+        bundle.sources["it_access"].create(  # type: ignore[attr-defined]
+            "bench", "GOAL-1", submitted_by=requester, channel="portal", body="ticket"
+        )
+        run = RunRecord(
+            run_id="r",
+            tenant_id="bench",
+            acting_user_id="requester",
+            objective="o",
+            profile="it_access",
+            source_id="GOAL-1",
+            created_at=datetime.now(UTC),
+        )
+        variables["request"] = {
+            **request_variables(clean),
+            "submitters": [requester],
+            "portal_submitters": [requester],
+        }
     manifest = registry.get(tool)
     if manifest.preparation_required:
-        args = dict(bundle.preparers[(tool, manifest.version)](args, reapproval=False).args)
+        prepare = bundle.preparers[(tool, manifest.version)]
+        args = dict(prepare(args, reapproval=False, run=run).args)
     decision = engine.evaluate(
         EvaluationContext(
             run_id="r",

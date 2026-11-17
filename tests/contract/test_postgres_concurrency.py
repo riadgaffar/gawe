@@ -494,3 +494,17 @@ def test_latest_approved_call_is_per_tenant_and_tool(pg_engine: Any) -> None:
     other = latest(tenant_id=other_tenant)
     assert other.record.approval_id == their_call and other.tool_version == "2.0.0"
     assert latest(tenant_id="not-a-uuid") is None
+
+
+def test_racing_writers_record_a_once_event_once(pg_engine: Any) -> None:
+    run_id = committed_run(pg_engine)
+
+    def write(_: int) -> Any:
+        log = AuditLog(PostgresAuditStore(pg_engine), max_retries=50)
+        return log.record(run_id, "sweep.done", "sweeper", {"job": 1}, once=True)
+
+    results = race(8, write)
+    assert not [r for r in results if isinstance(r, BaseException)], results
+    events = PostgresAuditStore(pg_engine).events(run_id)
+    assert [e.type for e in events] == ["sweep.done"]
+    assert {r.hash for r in results} == {events[0].hash}

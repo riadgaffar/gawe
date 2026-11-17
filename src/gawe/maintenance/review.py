@@ -279,6 +279,7 @@ class DailyReviewJobs:
                     "reason": reason,
                     "key_id": item.key_id,
                 },
+                once=True,  # a second reviewer of the same day may get here too
             )
             item = self._reviews.set_event(run.tenant_id, item.item_id, event.seq)
         return item

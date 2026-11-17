@@ -62,11 +62,15 @@ export async function startRun(_prev: ActionState, form: FormData): Promise<Acti
   const objective = text(form, "objective").trim();
   const profile = text(form, "profile").trim();
   if (!objective || !profile) return { error: "Objective and profile are required." };
+  const sourceId = text(form, "source_id").trim();
   const doc = await documentFrom(form);
   if (typeof doc === "object") return doc;
+  if (sourceId && doc) return { error: "Give a ticket id or a document, not both." };
   let runId: string;
   try {
-    runId = (await client.startRun({ objective, profile, document: doc })).run_id;
+    runId = (
+      await client.startRun({ objective, profile, document: doc, source_id: sourceId || undefined })
+    ).run_id;
   } catch (error) {
     return fail(error);
   }

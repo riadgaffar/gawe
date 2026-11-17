@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from gawe.core.runs import RunRecord
+
 
 @dataclass(frozen=True)
 class PreparedAction:
@@ -22,4 +24,9 @@ class RecipientChanged(Exception):
 
 
 class Preparer(Protocol):
-    def __call__(self, args: Mapping[str, Any], *, reapproval: bool) -> PreparedAction: ...
+    def __call__(
+        self, args: Mapping[str, Any], *, reapproval: bool, run: RunRecord | None = None
+    ) -> PreparedAction:
+        """`run` is the step's run; the orchestrator always passes it. A preparer that needs it
+        (to read the run's ticket, say) must fail closed without it."""
+        ...

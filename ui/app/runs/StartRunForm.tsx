@@ -4,7 +4,8 @@ import { startRun, type ActionState } from "@/app/actions";
 import { Notice } from "@/components/Notice";
 import { SubmitButton } from "@/components/SubmitButton";
 
-type Sample = { file: string; profile: string; objective: string; title: string };
+// A sample with a `ticket` is read from the mock ticket system by id, not uploaded.
+type Sample = { file: string; profile: string; objective: string; title: string; ticket?: string };
 
 export function StartRunForm() {
   const [state, action] = useActionState<ActionState, FormData>(startRun, null);
@@ -12,6 +13,7 @@ export function StartRunForm() {
   const [objective, setObjective] = useState("");
   const [profile, setProfile] = useState("contract_review");
   const [docText, setDocText] = useState("");
+  const [ticketId, setTicketId] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -25,6 +27,14 @@ export function StartRunForm() {
     const sample = samples.find((s) => s.file === file);
     if (!sample) return;
     setLoadError(null);
+    if (sample.ticket) {
+      setTicketId(sample.ticket);
+      setDocText("");
+      setObjective(sample.objective);
+      setProfile(sample.profile);
+      return;
+    }
+    setTicketId("");
     try {
       const response = await fetch(`/samples/${encodeURIComponent(sample.file)}`);
       if (!response.ok) throw new Error("not found");
@@ -58,6 +68,10 @@ export function StartRunForm() {
       <label>
         Profile
         <input name="profile" required value={profile} onChange={(e) => setProfile(e.target.value)} />
+      </label>
+      <label>
+        Ticket id <span className="muted">(IT access reads the ticket itself; leave the document empty)</span>
+        <input name="source_id" value={ticketId} onChange={(e) => setTicketId(e.target.value)} />
       </label>
       <label>
         Document (text or Markdown)

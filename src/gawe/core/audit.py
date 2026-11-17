@@ -218,15 +218,36 @@ class AuditLog:
         type: str,
         actor: str,
         payload: Mapping[str, Any] | None = None,
+        *,
+        once: bool = False,
     ) -> AuditEvent:
-        """Append an event. Only a hash of `payload` is stored in the log."""
+        """Append an event. Only a hash of `payload` is stored in the log.
+
+        With `once`, an event already in the run's chain with the same type, actor and payload
+        hash is returned instead of appending another. The check reads the chain and builds on its
+        last event from the same read, so a writer that appends in between makes this append
+        conflict, and the retry finds that writer's event. Use it for events whose payload
+        identifies a single fact, such as a sweep's result, which a worker that lost its lease
+        may try to record again.
+        """
         for name, value in (("run_id", run_id), ("type", type), ("actor", actor)):
             if not value or len(value) > _MAX_FIELD:
                 raise ValueError(f"{name} must be 1-{_MAX_FIELD} characters")
         payload_hash = sha256_hex(canonical_json(payload if payload is not None else {}))
 
         for _ in range(self._max_retries + 1):
-            last = self._store.last(run_id)
+            if once:
+                chain = self._store.events(run_id)
+                for existing in chain:
+                    if (existing.type, existing.actor, existing.payload_hash) == (
+                        type,
+                        actor,
+                        payload_hash,
+                    ):
+                        return existing
+                last = chain[-1] if chain else None
+            else:
+                last = self._store.last(run_id)
             seq = 1 if last is None else last.seq + 1
             prev_hash = GENESIS_HASH if last is None else last.hash
             ts = self._clock()

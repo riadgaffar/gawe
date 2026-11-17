@@ -62,6 +62,7 @@ class StartRunBody(BaseModel):
     objective: str = Field(min_length=1, max_length=MAX_OBJECTIVE_CHARS)
     profile: str = Field(min_length=1, max_length=64)
     document: str | None = None  # length is limited by the service and the body-size cap
+    source_id: str | None = Field(default=None, max_length=64)  # format checked by the service
 
 
 class DecisionBody(BaseModel):
@@ -177,7 +178,11 @@ def create_app(
     @app.post("/v1/runs", status_code=201)
     def start_run(body: StartRunBody, who: Identity = Depends(identity)) -> RunView:
         return service.start_run(
-            who, objective=body.objective, profile=body.profile, document=body.document
+            who,
+            objective=body.objective,
+            profile=body.profile,
+            document=body.document,
+            source_id=body.source_id,
         )
 
     @app.get("/v1/runs")

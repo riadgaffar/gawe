@@ -3,6 +3,7 @@
 Run with `GAWE_APP=gawe.apps.it_access:bundle`.
 """
 
+import json
 import os
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ from gawe.apps.it_access.tools import MANIFESTS, POSTCONDITIONS, implementations
 from gawe.apps.readback import operation_adapter
 from gawe.connectors.base import Ledger
 from gawe.connectors.mock_iam import MockIAM
+from gawe.connectors.mock_tickets import MockTickets, Ticket
 from gawe.core.policy.provenance import PolicySource, PolicyVariable
 from gawe.core.policy.rules import email_domain
 from gawe.core.readback import ReadbackAdapter
@@ -36,40 +38,64 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def sample_tickets(path: Path = HERE / "samples" / "tickets.json") -> list[Ticket]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return [
+        Ticket(
+            tenant_id=data["tenant_id"],
+            ticket_id=t["ticket_id"],
+            submitted_by=t["submitted_by"],
+            channel=t["channel"],
+            status="open",
+            body=(path.parent / t["file"]).read_text(encoding="utf-8"),
+        )
+        for t in data["tickets"]
+    ]
+
+
 def bundle(
     demo_dir: Path | None = None,
     *,
     iam: MockIAM | None = None,
+    tickets: MockTickets | None = None,
     grant_lifetime_hours: int = DEFAULT_LIFETIME_HOURS,
     clock: Callable[[], datetime] = _utc_now,
 ) -> AppBundle:
     directory = demo_dir or Path(os.environ.get("GAWE_DEMO_DIR", ".demo-data"))
     ledger = Ledger(directory / "ledger.jsonl")
     iam = iam or MockIAM.from_seed(HERE / "samples" / "iam_seed.json", ledger)
+    if tickets is None:
+        tickets = MockTickets.in_state_dir(ledger.path.parent if ledger.path else None)
+        tickets.seed(sample_tickets())
     return AppBundle(
         manifests=MANIFESTS,
         tools=implementations(iam),
         readbacks=readbacks(iam),
         preparers={
             ("iam.grant_access", "2.0.0"): GrantPreparer(
-                iam, lifetime_hours=grant_lifetime_hours, clock=clock
+                iam, lifetime_hours=grant_lifetime_hours, clock=clock, tickets=tickets
             )
         },
         conditional_writes=iam.CONDITIONAL_WRITES,
         revokers={("iam.grant_access", "2.0.0"): iam},
+        # Runs read their ticket from the ticket system; uploads are refused.
+        sources={PROFILE_NAME: tickets},
         policy_rules=HERE / "policies.yaml",
         profiles=frozenset({PROFILE_NAME}),
         reader_profile=PROFILE,
-        variables=_variables,
+        variables=variables_for(tickets),
         postconditions=POSTCONDITIONS,
         policy_sources={
             "tenant_config": PolicySource(kind="configuration", resource="config.tenant"),
             "reader_findings": PolicySource(kind="findings", resource="run.findings"),
+            "ticket_system": PolicySource(kind="resource", resource="tickets.ticket"),
         },
         policy_variables={
             "tenant.internal_domains": PolicyVariable(dependencies=("tenant_config",)),
             "tenant.max_grant_lifetime_hours": PolicyVariable(dependencies=("tenant_config",)),
-            "request.requester_email": PolicyVariable(dependencies=("reader_findings",)),
+            "request.reported_requester": PolicyVariable(dependencies=("reader_findings",)),
+            "request.submitters": PolicyVariable(dependencies=("ticket_system",)),
+            "request.portal_submitters": PolicyVariable(dependencies=("ticket_system",)),
         },
     )
 
@@ -91,18 +117,42 @@ def readbacks(iam: MockIAM) -> dict[tuple[str, str], ReadbackAdapter]:
 
 
 def request_variables(findings: Mapping[str, Any] | None) -> dict[str, str]:
-    """The reported requester, unchanged; unusable findings cannot authorize a grant.
+    """The Reader's reported requester, unchanged; unusable findings cannot authorize a grant.
 
-    This binds the Planner to the Reader's report, not to an independently verified identity.
+    It binds the grantee to what the Reader reported (M15). It is attacker-influenced text, so
+    it is a cross-check only; who filed the ticket comes from the ticket system.
     """
     requester = (findings or {}).get("requester_email")
     if not isinstance(requester, str) or email_domain(requester) is None:
         return {}
-    return {"requester_email": requester}
+    return {"reported_requester": requester}
 
 
-def _variables(run: RunRecord | None) -> Mapping[str, Any]:
-    return {
-        **TENANT_VARIABLES,
-        "request": request_variables(run.findings if run is not None else None),
-    }
+def ticket_variables(run: RunRecord | None, tickets: MockTickets) -> dict[str, list[str]]:
+    """Who filed the run's ticket, from the ticket system's own record (M16c).
+
+    `submitters` is the filer. `portal_submitters` is the filer only when the ticket came through
+    the signed-in portal; an email or public-form "submitter" is whatever the sender wrote, so the
+    list is empty. Without a readable ticket both are absent, and policy denies.
+    """
+    if run is None or run.source_id is None:
+        return {}
+    try:
+        ticket = tickets.get(run.tenant_id, run.source_id)
+    except Exception:  # noqa: BLE001 - an unreadable ticket leaves policy without its inputs
+        return {}
+    trusted = [ticket.submitted_by] if ticket.channel == "portal" else []
+    return {"submitters": [ticket.submitted_by], "portal_submitters": trusted}
+
+
+def variables_for(tickets: MockTickets) -> Callable[[RunRecord | None], Mapping[str, Any]]:
+    def variables(run: RunRecord | None) -> Mapping[str, Any]:
+        return {
+            **TENANT_VARIABLES,
+            "request": {
+                **request_variables(run.findings if run is not None else None),
+                **ticket_variables(run, tickets),
+            },
+        }
+
+    return variables

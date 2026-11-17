@@ -44,6 +44,14 @@ BOUNDARIES = {
         "lookup-allowed": ("baseline", "Read tools have baseline permission."),
         "grant-baseline-allowed": ("grant", "Grants have baseline permission."),
         "requester-mismatch-denied": ("requester", "A different reported requester denies."),
+        "grant-to-other-than-submitter-needs-security": (
+            "requester",
+            "A grantee who did not file the ticket needs security.",
+        ),
+        "untrusted-channel-needs-security": (
+            "requester",
+            "A ticket not filed through the portal needs security.",
+        ),
         "elevated-access-needs-security": ("grant", "Admin access needs security."),
         "production-database-needs-security": ("grant", "Production DB access needs security."),
         "external-user-denied": ("address", "Noninternal or unreadable grant recipients deny."),
@@ -185,8 +193,8 @@ def test_address_boundaries(app: str, kind: str, token: str) -> None:
     parses, category = ADDRESS_KINDS[kind]
     internal_match = category in {"internal", "blocked_internal"}
     if app == "it_access" and parses:
-        # Isolate the domain boundary with a separately declared matching Reader report.
-        variables["request"]["requester_email"] = addresses[kind]
+        # Isolate the domain boundary: the Reader and the ticket both name this address.
+        variables["request"] = self_filed(addresses[kind])
     if app == "it_access":
         expected = "allow" if internal_match else "deny"
         ids = {"grant-baseline-allowed"} | (set() if internal_match else {"external-user-denied"})
@@ -201,7 +209,12 @@ def test_address_boundaries(app: str, kind: str, token: str) -> None:
     if app == "contract_review" and not parses:
         expected, ids = "deny", {"engine.error"}
     if app == "it_access" and not parses:
-        ids.add("requester-mismatch-denied")
+        # Not the reported requester, and not the ticket's submitter either; deny still wins.
+        ids |= {
+            "requester-mismatch-denied",
+            "grant-to-other-than-submitter-needs-security",
+            "untrusted-channel-needs-security",
+        }
     assert_decision(app, tool, args, variables, expected, ids, parse=(args[field], parses))
 
 
@@ -275,7 +288,7 @@ def test_grant_boundaries(system: str, level: str, external: bool, token: str) -
         "it_access",
         "iam.grant_access",
         {"email": email, "system": system, "level": level},
-        {**deepcopy(VARIABLES["it_access"]), "request": {"requester_email": email}},
+        {**deepcopy(VARIABLES["it_access"]), "request": self_filed(email)},
         outcome,
         ids,
         parse=(email, True),
@@ -510,32 +523,70 @@ def test_blocked_idn_operand_is_normalized_without_expanding_internal_list(
     assert_decision(app, tool, args, variables, "deny", ids, parse=(address, True))
 
 
-@pytest.mark.parametrize("kind", ["same", "different", "case", "missing"])
+def self_filed(address: str, *, channel: str = "portal") -> dict[str, Any]:
+    """Request variables for a ticket filed by `address` that the Reader also reports."""
+    return {
+        "reported_requester": address,
+        "submitters": [address],
+        "portal_submitters": [address] if channel == "portal" else [],
+    }
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["same", "different", "case", "missing", "on_behalf", "fooled_reader", "email_channel"],
+)
 @seed(FIXED_SEED)
 @GENERATED
 @given(token=TOKEN)
 def test_requester_identity_boundary(kind: str, token: str) -> None:
     reported = token + "@acme.example"
-    # Proposed identity and report are constructed independently for each boundary label.
+    filer = "manager-" + token + "@acme.example"
+    # Proposed grantee, Reader report and ticket submitter are set independently per label.
     proposed = {
         "same": reported,
         "different": "other-" + token + "@acme.example",
         "case": token + "@ACME.EXAMPLE",
         "missing": reported,
+        "on_behalf": reported,
+        "fooled_reader": reported,
+        "email_channel": reported,
     }[kind]
     variables = deepcopy(VARIABLES["it_access"])
-    variables["request"] = {} if kind == "missing" else {"requester_email": reported}
+    variables["request"] = {
+        "missing": {},
+        "on_behalf": {  # an honest ticket a manager filed for someone else
+            "reported_requester": reported,
+            "submitters": [filer],
+            "portal_submitters": [filer],
+        },
+        "fooled_reader": {  # the Reader names the attacker's target; the filer is someone else
+            "reported_requester": reported,
+            "submitters": [filer],
+            "portal_submitters": [filer],
+        },
+        "email_channel": self_filed(reported, channel="email"),
+    }.get(kind, self_filed(reported))
     ids = {"grant-baseline-allowed"}
+    outcome = "allow"
     if kind in {"different", "case"}:
-        ids.add("requester-mismatch-denied")
+        outcome = "deny"
+        ids |= {"requester-mismatch-denied"}
+        ids |= {"grant-to-other-than-submitter-needs-security", "untrusted-channel-needs-security"}
     elif kind == "missing":
-        ids = {"engine.error"}
+        outcome, ids = "deny", {"engine.error"}
+    elif kind in {"on_behalf", "fooled_reader"}:
+        outcome = "needs_approval"
+        ids |= {"grant-to-other-than-submitter-needs-security", "untrusted-channel-needs-security"}
+    elif kind == "email_channel":
+        outcome = "needs_approval"
+        ids |= {"untrusted-channel-needs-security"}
     assert_decision(
         "it_access",
         "iam.grant_access",
         {"email": proposed, "system": "wiki", "level": "read"},
         variables,
-        "allow" if kind == "same" else "deny",
+        outcome,
         ids,
         parse=(proposed, True),
     )

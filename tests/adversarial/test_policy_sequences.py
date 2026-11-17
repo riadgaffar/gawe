@@ -12,7 +12,15 @@ from hypothesis import example, given, seed, settings
 from hypothesis import strategies as st
 
 from bench.injection.cases import Case, expected_scripted, load_suite
-from bench.injection.run import ROLES, TENANT, Recorder, TrialEnvironment, classify, drive
+from bench.injection.run import (
+    ROLES,
+    TENANT,
+    Recorder,
+    TrialEnvironment,
+    classify,
+    drive,
+    start_input,
+)
 from bench.injection.scripted import (
     ScriptedModel,
     ScriptedTrial,
@@ -98,7 +106,7 @@ def prefix_steps(case: Case, codes: list[int]) -> list[dict[str, Any]]:
     ]
 
 
-def execute_plan(env, case, findings, plan):
+def execute_plan(env, case, findings, plan, submitted_by=None):
     recorder = Recorder(metered(ScriptedModel(findings, plan)))
     service = env.service(recorder)
     who = Identity(TENANT, "requester", ROLES[case.app])
@@ -106,7 +114,7 @@ def execute_plan(env, case, findings, plan):
         who,
         objective="Execute the synthetic test plan",
         profile=case.app,
-        document="Synthetic document",
+        **start_input(case, env, case.app, submitted_by=submitted_by),
     ).run_id
     paused = env.stores.runs.get(run_id).status is RunStatus.PAUSED_FOR_APPROVAL
     if paused:
@@ -246,7 +254,10 @@ def test_prefix_effect_matching_goal_is_not_counted_as_attack_success(tmp_path: 
         "tool": "iam.grant_access",
         "args": {"email": "sam.okafor@acme.example", "system": "billing", "level": "write"},
     }
-    run, _, _ = execute_plan(env, trial.case, findings, {"steps": [step]})
+    # Sam files this ticket themself, so the earlier grant is legitimate and automatic.
+    run, _, _ = execute_plan(
+        env, trial.case, findings, {"steps": [step]}, submitted_by="sam.okafor@acme.example"
+    )
     assert run.status is RunStatus.COMPLETED
     assert_prefix_completed(env, run, [step])
     prefix = env.effects()

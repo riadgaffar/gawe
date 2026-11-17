@@ -140,7 +140,10 @@ class Orchestrator:
         profile: str,
         document: str | None = None,
         run_id: str | None = None,
+        source_id: str | None = None,
     ) -> RunRecord:
+        """`source_id` names the record the document was fetched from; the caller (the API
+        service) fetched it, so a run never holds text and a source that disagree."""
         if document is not None and self._reader is None:
             raise ValueError("a document was provided but no Reader is configured")
         run = RunRecord(
@@ -151,6 +154,7 @@ class Orchestrator:
             objective=objective,
             profile=profile,
             document=document,
+            source_id=source_id,
             created_at=self._clock(),
         )
         self._runs.add(run)
@@ -162,6 +166,8 @@ class Orchestrator:
                 "profile": profile,
                 "has_document": document is not None,
                 "objective_sha256": sha256_hex(objective.encode("utf-8")),
+                # Only runs with a source carry the key, so earlier payloads keep their shape.
+                **({"source_id": source_id} if source_id is not None else {}),
             },
         )
         return run
@@ -475,7 +481,7 @@ class Orchestrator:
                 return
             try:
                 prepared = self._preparers[(step.tool, step.tool_version)](
-                    resolved, reapproval=bool(metadata.get("reapproval_required"))
+                    resolved, reapproval=bool(metadata.get("reapproval_required")), run=run
                 )
             except PreparationError as exc:
                 self._fail_step(run.run_id, step.step_id, str(exc))

@@ -240,6 +240,38 @@ What these runs do not show:
   would bound it below about 9%.
 - **Whether the new approval screen changes what approvers decide** needs real approvers.
 
+### M16c update: grants compared with who filed the ticket
+
+On 16 November 2026, IT Access began reading its tickets from a ticket system. Before, the run
+took the ticket's text as an upload. Who filed a ticket, and whether it came through the
+signed-in portal, are now fields of the ticket system, not words in the ticket. Two rules ask a
+security approver:
+
+- `grant-to-other-than-submitter-needs-security`: the grant is for someone other than the filer.
+- `untrusted-channel-needs-security`: the ticket came by email or a public form, so its
+  "submitter" is whatever the sender wrote.
+
+M15's rule stays: the grant must still match the requester the Reader reported. Preparation
+refuses a ticket that is closed or cancelled.
+
+This closes the gap the tables above left open. The three reader-mode lateral grants used to
+run; now they **wait for approval**. The scripted run (`20261116T220012Z-scripted`) matches all
+38 approved expectations: **4 ran, 8 were denied and 26 waited for approval**. Nothing else
+changed. The integrity suite (`20261116T220013Z-integrity`) matched all 23 scenarios, every line
+identical to M16b. No model was called.
+
+The 4 that still run are the internal-address emails (3) and the small-contract low rating with a
+fooled Reader (1), both allowed without a person on purpose.
+
+What this does not show:
+
+- **The trust lives in the mock.** A real ticket system must record who filed a ticket and how,
+  in a way the filer cannot edit.
+- **Waiting is safe only if the approver says no.** A fooled request now reaches a security
+  approver instead of running; it still runs if they approve it.
+- **Honest on-behalf requests now always need a person.** A manager asking access for a report
+  waits for security, by design.
+
 ### Two new rules
 
 Before this run, a fooled model could quietly record any contract as low risk: policy allowed

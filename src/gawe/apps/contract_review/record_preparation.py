@@ -11,13 +11,16 @@ from typing import Any
 from gawe.connectors.base import ConnectorError
 from gawe.connectors.mock_clm import MockCLM
 from gawe.core.preparation import PreparationError, PreparedAction
+from gawe.core.runs import RunRecord
 
 
 class ContractRecordPreparer:
     def __init__(self, clm: MockCLM) -> None:
         self.clm = clm
 
-    def __call__(self, args: Mapping[str, Any], *, reapproval: bool) -> PreparedAction:
+    def __call__(
+        self, args: Mapping[str, Any], *, reapproval: bool, run: RunRecord | None = None
+    ) -> PreparedAction:
         try:
             revision = self.clm.contract_version(args["contract_id"])
         except ConnectorError as exc:

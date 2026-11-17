@@ -41,7 +41,29 @@ rules:
     when:
       tool: iam.grant_access
       args:
-        email: {ne: $request.requester_email}
+        email: {ne: $request.reported_requester}
+
+  # Who filed the ticket comes from the ticket system, never from the ticket's text. A grant to
+  # anyone else (a ticket filed on another's behalf, or a fooled Reader) needs a person (M16c).
+  - id: grant-to-other-than-submitter-needs-security
+    effect: needs_approval
+    approver_role: security_admin
+    reason: The access is for someone other than the person who filed the ticket
+    when:
+      tool: iam.grant_access
+      args:
+        email: {not_in: $request.submitters}
+
+  # Only a ticket filed through the signed-in portal has a trusted submitter; an emailed or
+  # public-form ticket names whoever the sender wrote.
+  - id: untrusted-channel-needs-security
+    effect: needs_approval
+    approver_role: security_admin
+    reason: The ticket did not come through the signed-in portal
+    when:
+      tool: iam.grant_access
+      args:
+        email: {not_in: $request.portal_submitters}
 
   # Every grant expires. Preparation sets the end date; this denies a lifetime over the tenant
   # maximum in case preparation or configuration is ever wrong (defense in depth).

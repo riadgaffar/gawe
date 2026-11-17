@@ -69,6 +69,19 @@ def test_add_and_get_round_trip(store: RunStore) -> None:
     assert got.status is RunStatus.CREATED and got.plan is None and got.plan_version == 0
 
 
+def test_a_runs_source_id_round_trips_and_survives_updates(store: RunStore) -> None:
+    run = make_run(profile="it_access", document="ticket body", source_id="AR-2041")
+    store.add(run)
+    assert store.get(run.run_id).source_id == "AR-2041"
+    store.transition(run.run_id, expected=RunStatus.CREATED, to=RunStatus.PLANNING)
+    store.update(run.run_id, document=None)
+    assert store.get(run.run_id).source_id == "AR-2041"
+    assert store.get(run.run_id).document is None
+    plain = make_run()
+    store.add(plain)
+    assert store.get(plain.run_id).source_id is None
+
+
 def test_duplicate_and_unknown(store: RunStore) -> None:
     run = make_run()
     store.add(run)

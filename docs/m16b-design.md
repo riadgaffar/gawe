@@ -358,8 +358,9 @@ Limits carried into the threat model (T31–T35):
   so `inputs_changed` cannot say which value moved. It does not re-evaluate retired tool
   versions; their decisions still get the tampering, signature and action-hash checks.
 - **The sample key.** Anyone holding it can predict the draw; without it the sample is off.
-- **Duplicate audit events.** Two sweepers whose leases overlap can each write the same event. This
-  applies to read-back, grant-expiry and review events. The effect itself happens once.
+- **Duplicate audit events (fixed after M16).** Two sweepers whose leases overlapped could each
+  write the same read-back, grant-expiry or review event. Since the follow-up fix, these events are
+  recorded once: the write checks the chain for the same event inside the append's retry.
 - **No paging.** The overdue-grant alarm is a health signal; nothing pages anyone.
 
 Related problems found, not fixed here:

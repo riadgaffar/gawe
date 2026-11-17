@@ -48,6 +48,9 @@ class StaleRunError(Exception):
     """The run's status is not what the caller expected."""
 
 
+SOURCE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+
+
 class RunRecord(FrozenModel):
     run_id: str
     tenant_id: str
@@ -57,6 +60,9 @@ class RunRecord(FrozenModel):
     profile: str
     status: RunStatus = RunStatus.CREATED
     document: str | None = None
+    # The record the document came from (an IT-access ticket), when the profile has a source.
+    # Set once at creation; the server fetched the document from it.
+    source_id: str | None = Field(default=None, pattern=SOURCE_ID_PATTERN)
     findings_schema_id: str | None = None
     findings: dict[str, Any] | None = None
     plan: Plan | None = None

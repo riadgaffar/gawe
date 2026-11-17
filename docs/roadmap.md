@@ -23,6 +23,7 @@ adds. If verification fails twice on a milestone, stop and report instead of loo
 | M14  | Policy that cannot drift silently: rules checked at load against the input schema of every registered tool version, allow rules that cannot match a missing or unreadable value, and a property test that unreadable input never ends in allow | Done (2026-11-12: both shipped policies load cleanly; renaming `risk_level` now stops startup. The property test covers every shipped tool field, malformed addresses and policy variables, and every operator with the schema check removed. The per-check "unreadable" audit marker is deferred to a later milestone. See [m14-design.md](m14-design.md)) |
 | M15  | Policy edge cases: explicit address and rule boundary tests, grants only to the reported requester, variable sources checked against declared tool writes at startup, and sequence tests for policy drift after allowed actions | Done (2026-11-12: 1681 passed, 39 skipped; the scripted run matched all 38 expectations, 7 executed, 8 denied, 23 waiting for a person. Grants to a different requester are now denied. Within-app combination rules from the audit trail are split into their own milestone; cross-workflow combinations wait for a shared subject key from a system of record. See [m15-design.md](m15-design.md)) |
 | M16  | Execution integrity: email sent only to directory-expanded mailboxes and every write read back from the target's own record, with pending states and a scheduled sweep; approvals bound to the version of each referenced record; signed per-check "unreadable" markers on policy decisions; an approval screen with typed fields first and model-written text collapsed; automatic grants that expire; a next-day review with a keyed sample | Done (2026-11-16: 2145 passed, 74 skipped; the scripted run matched all 38 expectations, 7 executed, 8 denied, 23 waiting for a person, unchanged; the integrity suite matched 23 of 23. Encoded text in a message body sent to an allowed internal recipient is a documented gap, not blocked: policy judges recipients, not bodies. Revision checks, revocation and read-back are properties of the mock systems. Approve-once is split into its own milestone. See [m16a-design.md](m16a-design.md), [m16b-design.md](m16b-design.md) and [results.md](results.md#m16b-update-approvals-bound-to-records-grants-that-expire-a-next-day-review)) |
+| M16c | Trusted ticket submitter for IT access: runs start from a ticket id and the server fetches the text; who filed the ticket and through which channel come from the ticket system; a grant to anyone other than the filer, or from an emailed or public-form ticket, waits for a security approver; closed tickets are refused | Done (2026-11-16: 2191 passed, 76 skipped; the scripted run matched all 38 expectations, 4 executed, 8 denied, 26 waiting for a person. The three reader-mode lateral grants now wait instead of running. The trusted submitter is a property of the mock ticket system, and honest on-behalf requests always need a person. See [m16c-design.md](m16c-design.md) and [results.md](results.md#m16c-update-grants-compared-with-who-filed-the-ticket)) |
 
 Next: the low-risk decision: the liability over-flagging fix, a liability-language scan and
 approval volume on honest contracts.
@@ -34,6 +35,58 @@ M5.5 was not in the original plan; the orchestrator needs it before anything run
 database. UI and the IT-access fixture are the first things to cut if scope must shrink.
 
 ## After M13: candidates, not scheduled
+
+### Queued after M16, highest first
+
+Small items that close a measured gap go first; the first two went ahead of the low-risk decision.
+
+1. **A trusted ticket submitter for IT access** (done 2026-11-16 as M16c). The requester came
+   from the Reader, so the three reader-mode lateral grants still ran. Who filed a ticket, and
+   through which channel, now come from a mock ticket system; a grant to anyone else, or from an
+   emailed or public-form ticket, waits for a security approver (reader comment).
+2. **One audit event per sweep result** (done 2026-11-16). A sweeper that stalled past its lease
+   could let a second one write the same read-back, grant-expiry or review event. The event is now
+   written once: the append looks for the same event first, inside its retry.
+3. **The low-risk decision**, under Next above, then more measurement: generated attacks, more
+   clean documents, a live rerun and a Haiku comparison.
+4. **Replay of failed events with side effects, scoped to a tenant.** Several readers asked for it
+   (scope, duplicate billing, late callbacks). Fix the batch at preview, inside the hash; reuse
+   the original idempotency key or reconcile the original operation, never a fresh key; cap the
+   amount (policy already has `gt` and `lte`); take the tenant from the event record. It would
+   reuse M16's preparation, read-back and record binding (reader comments).
+5. **Combination rules within one app, from the audit trail.** Split out of M15. Needs its own
+   design, including the keyed subject hash and key management. Combinations across workflows
+   still need a shared subject key from a system of record.
+6. **An undo record written before each action.** Save the prior values before an eligible change
+   and bind undo to the original action and the record's revision, so undo stops if anything
+   changed since. Undo needs its own policy decision, idempotency and read-back, and never claims
+   to reverse an effect someone outside has already seen. Needs its own design (reader comment).
+7. **Block automation when the target cannot guarantee what policy needs.** An approval can go
+   stale while configuration stays the same, because operational state (a spend rate, a platform
+   cap) moves underneath it. Name the authoritative conditions and how fresh they must be. Reserve
+   cumulative limits atomically at the target, not with separate numeric checks. When a connector
+   cannot enforce a condition policy relies on, refuse automatic execution and record the race
+   that remains; a fresh human approval does not remove it (reader comments).
+8. **Action classes the engine only prepares.** Some users keep execution to themselves for good.
+   For a class configured that way, no passing test, plan, earlier approval or reusable
+   authorization may let the agent dispatch; preparing the action stays available. This is a
+   general boundary and needs no new connector (reader comments).
+9. **Credentials that match the action, and controls the agent cannot touch.** Where the target
+   supports it, a read credential cannot write: try a write with it and check the target refuses.
+   Tools exposed to the agent cannot change the policies, verifiers or credential settings that
+   constrain them, through any execution path. Link proposal, decision, approval, dispatch and
+   observed result for success, denial and unknown alike, and name the gaps in today's audit
+   links rather than adding a new audit system (reader comments).
+10. **An end date for grants made before M16.** They never expire today and are left for an
+    operator to review. A backfill would give each one an end date and an expiry job; it needs a
+    decision on what end date is fair.
+11. **A rendering test for the approval card.** The UI tests check the card's model and its
+    source, not a rendered page. A rendering test needs a DOM test dependency.
+12. **Follow-ups that wait for a real mail system and directory** (Pilot-ready): a directory change
+    marker per group, or none, since the sorted mailbox set is the real binding; mailboxes that
+    forward outside treated as external at expansion, if the directory exposes forwarding; and an
+    expansion cache only if the marker moves when anything under the group changes, including
+    nested groups and members' forwarding.
 
 - **Why the Reader over-flags `unlimited_liability`.** In the first run its precision on CUAD was
   33% (61 of 91 flags on contracts CUAD does not mark), against 69–74% for the other scored

@@ -181,6 +181,41 @@ def test_concurrent_workers_run_the_tool_once() -> None:
     assert len(flow.connector.calls) == 1
 
 
+@pytest.mark.parametrize("other_attempt", ["started", "failed"])
+def test_worker_that_passed_takeover_never_dispatches_after_another_workers_attempt(
+    other_attempt: str,
+) -> None:
+    # Worker B finds the step `executing` with no attempts, so takeover lets it through. Worker A,
+    # which claimed the step, then starts attempt 1 before B's own attempt loop reads the history.
+    # B must not treat A's attempt as its own and dispatch attempt 2.
+    flow = Flow(lease=timedelta(minutes=5))
+    decision = ready(flow)
+    step = flow.steps.get(RUN, "s1")
+    flow.steps.transition(RUN, "s1", expected=StepStatus.POLICY_CHECKED, to=StepStatus.EXECUTING)
+    real_load_output = flow.executions.load_output
+
+    def worker_a_starts_attempt_1(run_id: str, step_id: str):  # type: ignore[no-untyped-def]
+        if not flow.executions.attempts(run_id, step_id):
+            flow.executions.start(
+                RUN,
+                "s1",
+                attempt=1,
+                idempotency_key=idempotency_key(step.action_hash or ""),
+                now=flow.clock(),
+            )
+            if other_attempt == "failed":  # transient failure; A sleeps before its retry
+                flow.executions.finish(
+                    RUN, "s1", attempt=1, status="failed", now=flow.clock(), error="X"
+                )
+        return real_load_output(run_id, step_id)
+
+    flow.executions.load_output = worker_a_starts_attempt_1  # type: ignore[method-assign]
+    with pytest.raises(ConcurrentExecutionError):
+        flow.executor.execute(RUN, "s1", decision)
+    assert flow.connector.calls == []
+    assert [a.attempt for a in flow.executions.attempts(RUN, "s1")] == [1]
+
+
 def test_idempotency_key_depends_on_the_action() -> None:
     assert idempotency_key("a" * 64) == idempotency_key("a" * 64)
     assert idempotency_key("a" * 64) != idempotency_key("b" * 64)
