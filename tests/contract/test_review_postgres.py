@@ -2,6 +2,7 @@
 
 import threading
 import uuid
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,7 @@ from gawe.db.run_store import PostgresRunStore  # noqa: E402
 from gawe.llm.fake import FakeProvider  # noqa: E402
 from tests.contract.conftest import ALICE, BOB, TENANT, create_run  # noqa: E402
 from tests.contract.test_readback_postgres import PLAN, World  # noqa: E402
+from tests.unit.test_daily_review import rules_without_every_low  # noqa: E402
 
 T0 = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 DAY = date(2026, 1, 1)
@@ -141,15 +143,23 @@ def test_run_ids_with_a_type_in_a_window_and_tenant_ids(pg_engine: Any) -> None:
 # --- a whole review -----------------------------------------------------------------------------
 
 
+# A "low" rating, the review's candidate. Since M17 the shipped rules send every "low" to legal,
+# so this test runs them minus that rule, as the unit review tests do.
+LOW_PLAN = {
+    "steps": [{**PLAN["steps"][0], "args": {**PLAN["steps"][0]["args"], "risk_level": "low"}}]
+}
+
+
 class Reviewed(World):
     """The read-back World, with a review key and a rate that draws every candidate."""
 
     def load(self) -> Any:
+        bundle = contract_review.bundle(self.directory, clm=self.clm)
         service = assemble(
-            contract_review.bundle(self.directory, clm=self.clm),
+            replace(bundle, policy_rules=rules_without_every_low(self.directory)),
             stores=postgres_stores(self.engine),
             signer=self.signer,
-            provider=FakeProvider([PLAN]),
+            provider=FakeProvider([LOW_PLAN]),
             background=InlineBackground(),
             clock=self.clock,
             review_key=ReviewKey(bytes(range(100, 132))),

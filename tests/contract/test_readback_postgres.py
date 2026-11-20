@@ -27,7 +27,8 @@ PLAN = {
             "id": "write",
             "tool": "crm.write_assessment",
             "depends_on": [],
-            "args": {"contract_id": "C-1001", "risk_level": "low", "summary": "Review"},
+            # Not "low": since M17 every "low" waits for legal; these need an automatic write.
+            "args": {"contract_id": "C-1001", "risk_level": "medium", "summary": "Review"},
         }
     ]
 }

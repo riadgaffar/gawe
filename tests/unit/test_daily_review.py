@@ -8,6 +8,7 @@ from secrets import token_bytes, token_hex
 from typing import Any
 
 import pytest
+import yaml
 from tests.flow import Clock
 from tests.helpers import KEY, seal_v1, signer
 
@@ -46,8 +47,30 @@ def rate_step(args: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"id": "rate", "tool": "crm.write_assessment", "args": args or LOW, "depends_on": []}
 
 
+EVERY_LOW_RULE = "low-risk-needs-legal"
+
+
+def rules_without_every_low(path: Path) -> Path:
+    """The shipped contract-review rules minus M17's provisional every-low rule.
+
+    The review samples automatic "low" ratings; the shipped rules no longer let one execute
+    automatically, so the sampler's own behaviour is tested against the rules it was built for.
+    `test_the_shipped_rules_leave_no_automatic_low_to_draw` checks the shipped rules separately.
+    """
+    text = contract_review.HERE.joinpath("policies.yaml").read_text(encoding="utf-8")
+    start = text.index(f"  - id: {EVERY_LOW_RULE}\n")
+    end = text.find("\n  - id: ", start + 1)
+    trimmed = text[:start] + (text[end + 1 :] if end != -1 else "")
+    ids = [r["id"] for r in yaml.safe_load(trimmed)["rules"]]
+    assert EVERY_LOW_RULE not in ids and len(ids) == len(yaml.safe_load(text)["rules"]) - 1
+    target = path / "policies_without_every_low.yaml"
+    target.write_text(trimmed, encoding="utf-8")  # same layout, so tests can append rules
+    return target
+
+
 class Desk:
-    """Contract review over memory stores, with a review key and an anchor sink."""
+    """Contract review over memory stores, with a review key and an anchor sink. Unless a policy
+    is given, it runs the shipped rules minus the every-low rule (see above)."""
 
     def __init__(
         self,
@@ -64,7 +87,8 @@ class Desk:
         self.mail = MockEmail(ledger)
         self.esign = MockESign(ledger, self.clm)
         self.sink = FileAnchorSink(path / "anchors.jsonl")
-        self.key, self.rate, self.policy = key, rate, policy
+        self.key, self.rate = key, rate
+        self.policy = policy or rules_without_every_low(path)
         self.provider = FakeProvider([])
         self.service = self.restart()
         self.count = 0
@@ -75,7 +99,7 @@ class Desk:
             b,
             tools=implementations(self.clm, self.mail, self.esign),
             readbacks=contract_review.readbacks(self.clm, self.esign, self.mail),
-            policy_rules=self.policy or b.policy_rules,
+            policy_rules=self.policy,
         )
 
     def restart(self, **changes: Any) -> ApiService:
@@ -439,6 +463,25 @@ def test_only_low_ratings_with_nothing_flagged_are_candidates(tmp_path: Path) ->
     d.stores.runs.update(
         flagged, findings={"flagged_clauses": [{"kind": "other", "severity": "low"}]}
     )
+    d.review()
+    assert d.items() == []
+
+
+def test_the_shipped_rules_leave_no_automatic_low_to_draw(tmp_path: Path) -> None:
+    d = Desk(tmp_path, key=key(), rate=ALWAYS, policy=contract_review.HERE / "policies.yaml")
+    d.provider._script.append({"steps": [rate_step()]})
+    orch = d.service._orch
+    orch.start_run(
+        tenant_id=ALICE.tenant_id,
+        acting_user_id=ALICE.user_id,
+        roles=tuple(ALICE.roles),
+        objective="Rate the contract",
+        profile="contract_review",
+        run_id="run-low",
+    )
+    run = orch.advance("run-low")
+    assert run.status is RunStatus.PAUSED_FOR_APPROVAL  # M17: every "low" waits for legal
+    assert EVERY_LOW_RULE in run.decisions["rate"].rule_ids
     d.review()
     assert d.items() == []
 

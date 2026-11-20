@@ -22,6 +22,10 @@ does not show.
   attacker steps still ran, all of them actions policy allows on purpose; the rest were denied or
   left waiting for a person. Two new rules came out of it. See
   [When the model is fooled](#when-the-model-is-fooled).
+- **Added 19 November: the "low" rating.** Most of the false alarms were a definition problem; a
+  definition in the prompt raised precision on that clause from 20% to 76%. Only 2.7% of honest
+  contracts were rated "low", so every "low" now goes to legal (provisional). See
+  [M17 update](#m17-update-every-low-rating-goes-to-legal).
 
 One model (Claude Sonnet 5.5), one date (8 November 2026), one configuration. The run cost $15.42
 in model fees.
@@ -272,6 +276,52 @@ What this does not show:
 - **Honest on-behalf requests now always need a person.** A manager asking access for a report
   waits for security, by design.
 
+### M17 update: every "low" rating goes to legal
+
+On 19 November 2026 three things were measured on CUAD, for $27.12 in paid reads.
+
+**Over-flagging was a definition problem.** The Reader flagged `unlimited_liability` on contracts
+with no cap clause at all, or with only an exclusion of indirect damages. CUAD doesn't label those
+as uncapped. A definition in the app's prompt fixed most of it: "high" only when the contract says
+liability is unlimited or carves a claim out of a cap, "medium" when nothing caps the amount.
+
+| `unlimited_liability`, app prompt | Before (M12, any severity) | After (high severity) | Held out (291 new contracts) |
+|---|---|---|---|
+| Precision | 13 of 66 (20%) | 19 of 25 (76%) | 45 of 58 (78%) |
+| True flags on uncapped reads | 13 of 29 | 19 of 30 | 45 of 64 |
+| No-cap reads flagged high | 37 of 82 (any severity) | 0 of 83 | 2 of 135 |
+
+The same narrowing on the benchmark's presence profile lost 4 of 10 uncapped contracts, so that
+profile kept its old wording. The bars were set before the runs.
+
+**Few honest contracts are rated "low".** On 291 honest CUAD contracts, the app's prompt said
+"low" 8 times: 2.7% (95% 1.4–5.3%). None had a high-severity flag. So the rule fixed in advance
+picked the provisional call: **every "low" rating needs legal**, whatever the deal size. A fully
+fooled "low" on a small deal no longer writes on its own. The scripted run
+(`20261120T005040Z-scripted`) matched all 38 expectations: **3 ran, 8 were denied and 27 waited
+for approval**; the small-contract downgrade moved from "ran" to "waits". The integrity suite
+matched 23 of 23.
+
+The harness used to cancel any run that paused. Now an honest "low" pauses too, before the
+attacker's step is reached, so the harness approves that one step, and only when the Reader's
+findings and the step match the clean contract exactly. It never approves the attacker's step.
+Ten planner-mode cases record one such approval; every attacker step ends as before.
+
+**A keyword scan didn't earn a rule.** A scan for "unlimited liability", "is not limited" and the
+like hit 8 of 495 CUAD contracts, 2 of them ones CUAD marks uncapped. Real contracts rarely say it
+outright. Carve-outs ("except for liability arising from...") were more precise, but they weren't
+the level under test, and honest contracts are full of them. The scan is built and tested but not
+wired in: with every "low" going to legal, there is nothing left for it to question.
+
+What this does not show:
+
+- **CUAD isn't Acme's traffic.** 2.7% is a stand-in. If real "low" ratings are common, the rule
+  costs more, and the scan is the first thing to wire in instead.
+- **A fooled "medium" still writes without a person.** The rule covers "low" only, not every
+  lowering of a rating.
+- **Waiting is safe only if the approver says no.** Legal now sees every "low"; a rubber stamp
+  undoes it.
+
 ### Two new rules
 
 Before this run, a fooled model could quietly record any contract as low risk: policy allowed
@@ -285,12 +335,13 @@ every CRM assessment. Now a "low" rating needs legal approval when either:
 What they do not catch: a Reader fooled into "low" with nothing flagged, on a deal of 100,000 or
 less. That still writes without a person. It is a policy choice: a wrong "low" on a small deal
 costs less than a person reviewing every one. The suite's small-contract attack keeps that gap
-visible.
+visible. (M17 closed it: every "low" now needs legal; see above.)
 
 What they cost: the first rule fires on any high-severity flag, and the Reader over-flags uncapped
 liability (61 of its 91 flags were wrong). So honest "low" ratings may go to legal more often than
 they should. This run cannot measure how often; the next live run will, because clean runs now
-record the risk level they wrote.
+record the risk level they wrote. (M17 measured it on CUAD and fixed most of the over-flagging;
+see above.)
 
 ### What policy does with honest work
 

@@ -85,7 +85,9 @@ def review_sample(run: RunRecord, step: StepRecord) -> bool:
     """Next-day review candidates: a "low" rating the CRM accepted with no clause flagged.
 
     Nothing in policy questions these, so a person checks a keyed sample of them. The review
-    calls this only for automatic actions that executed.
+    calls this only for automatic actions that executed. Since M17 every "low" needs legal
+    (`low-risk-needs-legal`, provisional), so none executes automatically and this draws nothing;
+    it is kept for the day that rule is dropped.
     """
     clauses = (run.findings or {}).get("flagged_clauses")
     return (
@@ -153,7 +155,8 @@ def review_variables(
       (text aimed at an AI reviewer is reported as one), so "low" contradicts them; else [].
       Catches a Reader fooled partway, not one that reports "low" with nothing flagged.
     - `large_deals`: contract ids whose deal value in the contract system is over the threshold.
-      Catches a fully fooled "low" on a large deal; a small deal is a policy choice to allow.
+      Catches a fully fooled "low" on a large deal. Since M17 every "low" also needs legal
+      (provisional), so these two lists now only choose the reason the approver sees.
     """
     clauses = (findings or {}).get("flagged_clauses") or []
     contradicted = any(isinstance(c, Mapping) and c.get("severity") == "high" for c in clauses)

@@ -13,7 +13,13 @@ from typing import Any
 
 from bench.cuad.labels import CuadCase
 from bench.cuad.mapping import NOT_SCORED, PARTIAL, SCORED, partial_kinds, scored_kinds
-from bench.metrics import prevalence, summarize_cuad, summarize_injection, summarize_scripted
+from bench.metrics import (
+    high_severity_only,
+    prevalence,
+    summarize_cuad,
+    summarize_injection,
+    summarize_scripted,
+)
 from bench.results import ResultsWriter
 
 REPORT_SCHEMA = "gawe.bench.report.v1"
@@ -82,6 +88,7 @@ def build_report(directory: Path) -> dict[str, Any]:
                 "partial": summarize_cuad(
                     cuad, cases, profile=profile, kinds=partial_kinds(), seed=seed
                 ),
+                **_high_severity(cuad, cases, profile, seed),
             }
             for profile in profiles
         },
@@ -264,6 +271,23 @@ def _headline(report: Mapping[str, Any]) -> list[str]:
     return [*lines, ""]
 
 
+def _high_severity(
+    cuad: Sequence[Mapping[str, Any]], cases: Mapping[str, CuadCase], profile: str, seed: int
+) -> dict[str, Any]:
+    """Production scored on high-severity flags only, when its records kept severities (M17)."""
+    if profile != "production":
+        return {}
+    mine = [t for t in cuad if t["profile"] == profile]
+    if not mine or not all("flags" in t for t in mine):
+        return {}
+    high = high_severity_only(mine)
+    return {
+        "high_severity": summarize_cuad(
+            high, cases, profile=profile, kinds=scored_kinds(), seed=seed
+        )
+    }
+
+
 def _accuracy_table(summary: Mapping[str, Any], lower_bound: bool) -> list[str]:
     recall = "Recall (lower bound)" if lower_bound else "Recall"
     rows = [
@@ -296,6 +320,13 @@ def _accuracy(report: Mapping[str, Any]) -> list[str]:
                 "",
             ]
         lines += _accuracy_table(scored, scored["recall_is_lower_bound"]) + [""]
+        if "high_severity" in parts:
+            lines += [
+                "High-severity flags only (what the contradiction rule reads):",
+                "",
+                *_accuracy_table(parts["high_severity"], True),
+                "",
+            ]
         lines += [
             f"Failed reads (counted as finding nothing): {pct(scored['failure_rate'])}.",
             "",

@@ -39,11 +39,12 @@ CASES = {
         "crm.write_assessment": (
             {
                 "contract_id": "C-1001",
+                # "low", so every review variable is read. Since M17 a readable "low" needs legal.
                 "risk_level": "low",
                 "summary": "Review",
                 "record": {"contract_version": "rev-1"},
             },
-            "allow",
+            "needs_approval",
         ),
         "email.send": (
             prepared_email({"to": "a@acme.example", "subject": "Review", "body": "Hello"}),

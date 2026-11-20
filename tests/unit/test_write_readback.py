@@ -28,7 +28,8 @@ from gawe.llm.fake import FakeProvider
 
 ALICE = Identity("t1", "alice", frozenset({"case_manager", "it_agent"}))
 BOB = Identity("t1", "bob", frozenset({"legal_reviewer", "security_admin"}))
-CRM = {"contract_id": "C-1001", "risk_level": "low", "summary": "Private review text"}
+# Not "low": since M17 every "low" waits for legal, and these tests need an automatic write.
+CRM = {"contract_id": "C-1001", "risk_level": "medium", "summary": "Private review text"}
 IAM = {"email": "dana.ortiz@acme.example", "system": "wiki", "level": "read"}
 MAIL = {"to": "legal@acme.example", "subject": "Private subject", "body": "Private body"}
 SIGN = {"contract_id": "C-1001", "signer_email": "vendor@outside.example", "deal_value": 45000}

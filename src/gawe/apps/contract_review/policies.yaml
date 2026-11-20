@@ -52,6 +52,20 @@ rules:
         risk_level: {eq: low}
         contract_id: {in: $review.large_deals}
 
+  # Provisional (M17, design D4 option B): every "low" rating needs legal review, however small
+  # the deal and whatever the Reader flagged, so a fully fooled "low" never writes alone. On 291
+  # honest CUAD contracts 2.7% were rated "low" (docs/m17-plan.md, S5); real traffic confirms or
+  # reverses it. It comes after the two rules above so their more specific reasons show first.
+  # If it is dropped, wire the liability scan in first (see the roadmap).
+  - id: low-risk-needs-legal
+    effect: needs_approval
+    approver_role: legal_reviewer
+    reason: A low risk rating needs legal review
+    when:
+      tool: crm.write_assessment
+      args:
+        risk_level: {eq: low}
+
   - id: signature-standard-needs-legal
     effect: needs_approval
     approver_role: legal_reviewer

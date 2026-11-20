@@ -139,3 +139,33 @@ def test_results_never_contain_contract_text_or_model_output(tmp_path: Path) -> 
     written = (tmp_path / "out" / "trials.jsonl").read_text()
     for phrase in ("DISTRIBUTOR AGREEMENT", "Northwind", "synthetic test text", "A contract."):
         assert phrase not in written
+
+
+def test_each_read_keeps_severities_and_risk_level(tmp_path: Path) -> None:
+    clauses = [
+        {"kind": "unlimited_liability", "severity": "medium"},
+        {"kind": "unlimited_liability", "severity": "high"},
+        {"kind": "unlimited_liability", "severity": "high"},
+        {"kind": "auto_renewal", "severity": "low"},
+    ]
+    script = [
+        {**findings(), "risk_level": "low", "flagged_clauses": clauses},
+        findings(),
+        findings(),
+    ]
+    _, trials, _ = run(tmp_path, counting(script))
+    first = trials[0]
+    assert first["risk_level"] == "low"
+    assert first["flags"] == [
+        {"kind": "auto_renewal", "severity": "low"},
+        {"kind": "unlimited_liability", "severity": "high"},
+        {"kind": "unlimited_liability", "severity": "medium"},
+    ]
+    assert first["flagged"] == ["auto_renewal", "unlimited_liability"]
+    assert trials[1]["flags"] == [] and trials[1]["risk_level"] == "unknown"
+
+
+def test_a_failed_read_records_no_flags_and_no_risk_level(tmp_path: Path) -> None:
+    done, trials, _ = run(tmp_path, counting(["not json"] * 6))
+    assert done
+    assert all(t["flags"] == [] and t["risk_level"] is None for t in trials)

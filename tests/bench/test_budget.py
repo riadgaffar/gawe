@@ -56,7 +56,7 @@ def test_the_shipped_price_table_has_the_planned_models() -> None:
     assert prices["claude-sonnet-5-5"].input_per_mtok == Decimal("2.00")
     assert prices["claude-sonnet-5-5"].output_per_mtok == Decimal("10.00")
     assert prices["claude-opus-5-5"].output_per_mtok == Decimal("20.00")
-    assert all(p.checked_on == date(2026, 10, 29) for p in prices.values())
+    assert all(p.checked_on == date(2026, 11, 19) for p in prices.values())  # M17 S3 re-check
 
 
 def test_an_unknown_model_is_refused_rather_than_guessed() -> None:

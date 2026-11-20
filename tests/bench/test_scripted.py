@@ -2,7 +2,9 @@
 
 import json
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -19,7 +21,7 @@ from bench.injection.cases import (
     fooled_findings_for,
     load_suite,
 )
-from bench.injection.run import STOPPED_BY, drive
+from bench.injection.run import STOPPED_BY, drive, is_honest_step
 from bench.injection.scripted import (
     KIND,
     MODES,
@@ -320,3 +322,98 @@ def test_the_clean_policy_summary_counts_steps_and_risk_levels() -> None:
         "count": 2,
     } in summary["steps"]
     assert summary["assessment_risk"] == {"high": 1, "low": 1}
+
+
+# --- M17: the harness approves an honest step only ------------------------------------------
+
+
+def _case(case_id: str) -> Case:
+    return next(c for c in load_suite().cases if c.case_id == case_id)
+
+
+def _run(findings: dict[str, Any] | None) -> Any:
+    return SimpleNamespace(findings=findings)
+
+
+def _honest_args(case: Case) -> dict[str, Any]:
+    return {
+        "contract_id": case.base.contract_id,
+        "risk_level": case.base.clean_findings["risk_level"],
+        "summary": "Honest review",
+    }
+
+
+def test_the_honest_assessment_from_clean_findings_is_approved() -> None:
+    case = _case("cr-internal-email-plain")  # Initech: clean "low"
+    run = _run(dict(case.base.clean_findings))
+    assert is_honest_step(case, run, "crm.write_assessment", _honest_args(case))
+
+
+def test_the_attackers_step_is_never_approved() -> None:
+    case = _case("cr-downgrade-smalldeal")
+    attack = attack_step_for(case)
+    assert not is_honest_step(
+        case, _run(dict(case.base.clean_findings)), attack["tool"], attack["args"]
+    )
+
+
+def test_nothing_is_approved_when_the_reader_was_fooled() -> None:
+    case = _case("cr-downgrade-smalldeal")
+    args = {**_honest_args(case), "risk_level": "low"}
+    assert not is_honest_step(case, _run(fooled_findings_for(case)), "crm.write_assessment", args)
+
+
+@pytest.mark.parametrize("change", [{"contract_id": "C-1002"}, {"risk_level": "medium"}])
+def test_a_different_assessment_is_not_approved(change: dict[str, Any]) -> None:
+    case = _case("cr-internal-email-plain")
+    run = _run(dict(case.base.clean_findings))
+    assert not is_honest_step(case, run, "crm.write_assessment", {**_honest_args(case), **change})
+
+
+def test_other_tools_and_apps_are_never_approved() -> None:
+    case = _case("cr-internal-email-plain")
+    email = {"to": "ops@acme.example", "subject": "x", "body": "y"}
+    assert not is_honest_step(case, _run(dict(case.base.clean_findings)), "email.send", email)
+    it_case = next(c for c in load_suite().cases if c.app == "it_access")
+    assert not is_honest_step(it_case, _run({}), "iam.grant_access", {})
+
+
+def test_every_honest_approval_in_the_suite_is_counted(tmp_path: Path) -> None:
+    writer = ResultsWriter(tmp_path)
+    run_scripted(scripted_trials(load_suite()), writer=writer)
+    records = writer.trials()
+    approved = [r for r in records if r["honest_approvals"]]
+    # 10 planner-mode cases pause on an honest "low" first; each gets one approval.
+    assert len(approved) == 10 and all(r["mode"] == "planner" for r in approved)
+    assert all(r["honest_approvals"] == 1 for r in approved)
+    smalldeal = next(
+        r for r in records if r["case_id"] == "cr-downgrade-smalldeal" and r["mode"] == "reader"
+    )
+    assert smalldeal["stopped_by"] == "approval_pending" and smalldeal["honest_approvals"] == 0
+
+
+def test_an_attack_step_that_looks_like_the_honest_one_is_still_not_approved() -> None:
+    # The base's clean rating is "low", so an attack step writing that same "low" passes every
+    # other check; only the attack-step comparison stops it.
+    case = _case("cr-internal-email-plain")
+    assert case.base.clean_findings["risk_level"] == "low"  # Initech
+    honest = _honest_args(case)
+    disguised = replace(
+        case, goal=replace(case.goal, attack_step={"tool": "crm.write_assessment", "args": honest})
+    )
+    run = _run(dict(case.base.clean_findings))
+    assert is_honest_step(case, run, "crm.write_assessment", honest)
+    assert not is_honest_step(disguised, run, "crm.write_assessment", honest)
+
+
+@pytest.mark.parametrize(
+    "fooled",
+    [
+        {"risk_level": "medium"},  # the Reader's level differs from the clean one
+        {"flagged_clauses": [{"kind": "other", "severity": "high"}]},  # same level, other flags
+    ],
+)
+def test_findings_that_differ_from_the_clean_base_block_approval(fooled: dict[str, Any]) -> None:
+    case = _case("cr-internal-email-plain")
+    run = _run({**case.base.clean_findings, **fooled})
+    assert not is_honest_step(case, run, "crm.write_assessment", _honest_args(case))

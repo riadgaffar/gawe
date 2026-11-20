@@ -11,6 +11,7 @@ with the largest findings the app's Reader schema allows.
 """
 
 import importlib
+import os
 from collections.abc import Mapping
 from typing import Any, Protocol
 
@@ -30,6 +31,23 @@ class TokenCounter(Protocol):
     def count(self, request: LLMRequest) -> int: ...
 
 
+KEY_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+
+def require_api_key(env: Mapping[str, str] | None = None) -> None:
+    """Refuse before any request when no credential is set.
+
+    Without one the SDK builds a client happily and then raises a bare TypeError on the first
+    request, which escapes as a traceback instead of a clean refusal.
+    """
+    env = os.environ if env is None else env
+    if not any(env.get(name, "").strip() for name in KEY_ENV_VARS):
+        raise ProviderConfigError(
+            "set ANTHROPIC_API_KEY first; the Makefile loads it from .env with "
+            "`set -a; . ./.env; set +a`"
+        )
+
+
 class AnthropicTokenCounter:
     """Counts with `messages.count_tokens` (free; needs ANTHROPIC_API_KEY like a real call)."""
 
@@ -41,6 +59,7 @@ class AnthropicTokenCounter:
         api_errors: tuple[type[BaseException], ...] | None = None,
     ) -> None:
         if client is None:
+            require_api_key()
             client = importlib.import_module("anthropic").Anthropic()
         self._client = client
         self._api_errors = api_errors if api_errors is not None else _sdk_api_errors()

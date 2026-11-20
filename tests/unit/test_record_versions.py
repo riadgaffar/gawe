@@ -29,7 +29,7 @@ SEED = contract_review.HERE / "samples/clm_seed.json"
 IAM_SEED = it_access.HERE / "samples/iam_seed.json"
 # Proposals that need an approval, so there is a gap between approval and execution.
 GATED = {
-    "crm": {**CRM, "contract_id": "C-1002"},  # low rating on a large deal: legal review
+    "crm": {**CRM, "contract_id": "C-1002", "risk_level": "low"},  # needs legal review
     "esign": SIGN,  # every signature request needs legal review
     "iam": {**IAM, "level": "admin"},  # admin access needs security review
 }

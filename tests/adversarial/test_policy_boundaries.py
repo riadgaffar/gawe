@@ -37,6 +37,7 @@ BOUNDARIES = {
             "assessment",
             "Low on a listed large deal needs legal.",
         ),
+        "low-risk-needs-legal": ("assessment", "Every low rating needs legal (M17)."),
         "signature-standard-needs-legal": ("signature", "Values at or below 100,000 need legal."),
         "signature-high-value-needs-finance": ("signature", "Values above 100,000 need finance."),
     },
@@ -258,6 +259,8 @@ def test_assessment_boundaries(level: str, unsupported: bool, large: bool, contr
         ids.add("low-risk-contradicted-needs-legal")
     if large and level == "low":
         ids.add("low-risk-large-deal-needs-legal")
+    if level == "low":
+        ids.add("low-risk-needs-legal")
     assert_decision(
         "contract_review",
         "crm.write_assessment",
@@ -481,7 +484,8 @@ def test_numeric_and_enum_invalid_boundaries(
 @GENERATED
 @given(token=TOKEN)
 def test_review_variable_boundaries(variable: str, kind: str, token: str) -> None:
-    args = deepcopy(CASES["contract_review"]["crm.write_assessment"][0])
+    # "low", so both review variables are read; since M17 a readable "low" still needs legal.
+    args = {**deepcopy(CASES["contract_review"]["crm.write_assessment"][0]), "risk_level": "low"}
     variables = deepcopy(VARIABLES["contract_review"])
     if kind == "absent":
         del variables["review"][variable]
@@ -492,8 +496,10 @@ def test_review_variable_boundaries(variable: str, kind: str, token: str) -> Non
         "crm.write_assessment",
         args,
         variables,
-        "allow" if kind == "nonmatching" else "deny",
-        {"crm-assessment-allowed"} if kind == "nonmatching" else {"engine.error"},
+        "needs_approval" if kind == "nonmatching" else "deny",
+        {"crm-assessment-allowed", "low-risk-needs-legal"}
+        if kind == "nonmatching"
+        else {"engine.error"},
     )
 
 

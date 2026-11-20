@@ -16,6 +16,8 @@ from gawe.llm.reader import ReaderProfile
 SCHEMA_ID = "cuad_presence_v1"
 
 _DEFINITIONS = {
+    # M12's wording. M17's narrower definition lost 4 of the 10 uncapped contracts in the D1
+    # check (docs/m17-plan.md, S3), so by the rule fixed before the run it went back.
     "unlimited_liability": "a party's liability is uncapped, or excluded from a cap, for some "
     "breach or claim",
     "non_compete": "a party may not compete, or may not operate in some field, territory or line "

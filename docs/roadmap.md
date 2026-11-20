@@ -25,9 +25,11 @@ adds. If verification fails twice on a milestone, stop and report instead of loo
 | M16a | Recipients and read-back: email sent only to the mailboxes a directory expands, checked by policy and bound into the approval; every write read back from the target's own record, with pending states, a deadline and a scheduled sweep with heartbeats; poisoned tool output and encoded short-field tests | Done (2026-11-15: 1929 passed, 64 skipped; the scripted run matched all 38 expectations, 7 executed, 8 denied, 23 waiting for a person, unchanged; the new integrity suite matched 23 of 23. Encoded text in a message body sent to an allowed internal recipient is a documented gap, not blocked: policy judges recipients, not bodies. The directory, mail server and read-back are properties of the mock systems. See [m16a-design.md](m16a-design.md) and [results.md](results.md#m16a-update-recipients-checked-at-the-mail-server-writes-read-back)) |
 | M16b | Approval integrity: approvals bound to the version of each referenced record; signed per-check "unreadable" markers on policy decisions; an approval screen with typed fields first and model-written text collapsed; automatic grants that expire; a next-day review with a keyed sample | Done (2026-11-16: 2145 passed, 74 skipped; the scripted run matched all 38 expectations, 7 executed, 8 denied, 23 waiting for a person, unchanged; the integrity suite matched 23 of 23. Revision checks and revocation are properties of the mock systems. Approve-once is split into its own milestone. See [m16b-design.md](m16b-design.md) and [results.md](results.md#m16b-update-approvals-bound-to-records-grants-that-expire-a-next-day-review)) |
 | M16c | Trusted ticket submitter for IT access: runs start from a ticket id and the server fetches the text; who filed the ticket and through which channel come from the ticket system; a grant to anyone other than the filer, or from an emailed or public-form ticket, waits for a security approver; closed tickets are refused | Done (2026-11-16: 2191 passed, 76 skipped; the scripted run matched all 38 expectations, 4 executed, 8 denied, 26 waiting for a person. The three reader-mode lateral grants now wait instead of running. The trusted submitter is a property of the mock ticket system, and honest on-behalf requests always need a person. See [m16c-design.md](m16c-design.md) and [results.md](results.md#m16c-update-grants-compared-with-who-filed-the-ticket)) |
+| M17  | The low-risk decision: a definition of `unlimited_liability` for the Reader, a liability-language scan gated on CUAD, approval volume on 300 honest CUAD contracts, and provisional calls on approval by change and on internal email | Done (2026-11-19: 2264 passed, 76 skipped; 116 Postgres tests pass; paid runs $27.12 against $27 planned. Production high-severity precision on `unlimited_liability` rose from 20% to 76%, and 78% on 291 held-out contracts. Only 2.7% of honest contracts were rated "low", so every "low" now needs legal (provisional). The scan's express level failed its gate and is not wired in. The scripted run matched all 38 expectations, 3 executed, 8 denied, 27 waiting for a person. See [m17-design.md](m17-design.md) and [results.md](results.md#m17-update-every-low-rating-goes-to-legal)) |
 
-Next: the low-risk decision: the liability over-flagging fix, a liability-language scan and
-approval volume on honest contracts.
+Next: more measurement: generated attacks, more clean documents, the live rerun and the Haiku
+comparison. Haiku 5.5 costs more for prompts over 100,000 tokens, and some CUAD reads exceed that,
+so its price row needs both tiers.
 
 Planned, not scheduled: **Pilot-ready** (OIDC sign-in and the first real connector against a sandbox
 account). It starts when there is a design partner or a sandbox to connect to, and gets a number then.
@@ -40,6 +42,8 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 ### Queued after M16, highest first
 
 Small items that close a measured gap go first; the first two went ahead of the low-risk decision.
+Re-ranked 2026-11-19: the two small items (prepare-only classes, end dates for old grants) move
+ahead of replay, and the connector-guarantee and credential items are merged.
 
 1. **A trusted ticket submitter for IT access** (done 2026-11-16 as M16c). The requester came
    from the Reader, so the three reader-mode lateral grants still ran. Who filed a ticket, and
@@ -48,42 +52,45 @@ Small items that close a measured gap go first; the first two went ahead of the 
 2. **One audit event per sweep result** (done 2026-11-16). A sweeper that stalled past its lease
    could let a second one write the same read-back, grant-expiry or review event. The event is now
    written once: the append looks for the same event first, inside its retry.
-3. **The low-risk decision**, under Next above, then more measurement: generated attacks, more
-   clean documents, a live rerun and a Haiku comparison.
-4. **Replay of failed events with side effects, scoped to a tenant.** Several readers asked for it
+3. **The low-risk decision** (done 2026-11-19 as M17), then more measurement: generated attacks,
+   more clean documents, a live rerun and a Haiku comparison.
+4. **Action classes the engine only prepares.** Some users keep execution to themselves for good.
+   For a class configured that way, no passing test, plan, earlier approval or reusable
+   authorization may let the agent dispatch; preparing the action stays available. This is a
+   general boundary and needs no new connector (reader comments).
+5. **An end date for grants made before M16.** They never expire today and are left for an
+   operator to review. A backfill would give each one an end date and an expiry job; it needs a
+   decision on what end date is fair.
+6. **Replay of failed events with side effects, scoped to a tenant.** Several readers asked for it
    (scope, duplicate billing, late callbacks). Fix the batch at preview, inside the hash; reuse
    the original idempotency key or reconcile the original operation, never a fresh key; cap the
    amount (policy already has `gt` and `lte`); take the tenant from the event record. It would
    reuse M16's preparation, read-back and record binding (reader comments).
-5. **Combination rules within one app, from the audit trail.** Split out of M15. Needs its own
+7. **What the target guarantees, and what the agent cannot touch.** Two reader requirements,
+   merged 2026-11-19: both ask what the connector or target actually enforces and what the engine
+   only assumes.
+   - Block automation when the target cannot guarantee what policy needs. An approval can go
+     stale while configuration stays the same, because operational state (a spend rate, a platform
+     cap) moves underneath it. Name the authoritative conditions and how fresh they must be. Reserve
+     cumulative limits atomically at the target, not with separate numeric checks. When a connector
+     cannot enforce a condition policy relies on, refuse automatic execution and record the race
+     that remains; a fresh human approval does not remove it (reader comments).
+   - Credentials that match the action, and controls the agent cannot touch. Where the target
+     supports it, a read credential cannot write: try a write with it and check the target refuses.
+     Tools exposed to the agent cannot change the policies, verifiers or credential settings that
+     constrain them, through any execution path. Link proposal, decision, approval, dispatch and
+     observed result for success, denial and unknown alike, and name the gaps in today's audit
+     links rather than adding a new audit system (reader comments).
+8. **Combination rules within one app, from the audit trail.** Split out of M15. Needs its own
    design, including the keyed subject hash and key management. Combinations across workflows
    still need a shared subject key from a system of record.
-6. **An undo record written before each action.** Save the prior values before an eligible change
+9. **An undo record written before each action.** Save the prior values before an eligible change
    and bind undo to the original action and the record's revision, so undo stops if anything
    changed since. Undo needs its own policy decision, idempotency and read-back, and never claims
    to reverse an effect someone outside has already seen. Needs its own design (reader comment).
-7. **Block automation when the target cannot guarantee what policy needs.** An approval can go
-   stale while configuration stays the same, because operational state (a spend rate, a platform
-   cap) moves underneath it. Name the authoritative conditions and how fresh they must be. Reserve
-   cumulative limits atomically at the target, not with separate numeric checks. When a connector
-   cannot enforce a condition policy relies on, refuse automatic execution and record the race
-   that remains; a fresh human approval does not remove it (reader comments).
-8. **Action classes the engine only prepares.** Some users keep execution to themselves for good.
-   For a class configured that way, no passing test, plan, earlier approval or reusable
-   authorization may let the agent dispatch; preparing the action stays available. This is a
-   general boundary and needs no new connector (reader comments).
-9. **Credentials that match the action, and controls the agent cannot touch.** Where the target
-   supports it, a read credential cannot write: try a write with it and check the target refuses.
-   Tools exposed to the agent cannot change the policies, verifiers or credential settings that
-   constrain them, through any execution path. Link proposal, decision, approval, dispatch and
-   observed result for success, denial and unknown alike, and name the gaps in today's audit
-   links rather than adding a new audit system (reader comments).
-10. **An end date for grants made before M16.** They never expire today and are left for an
-    operator to review. A backfill would give each one an end date and an expiry job; it needs a
-    decision on what end date is fair.
-11. **A rendering test for the approval card.** The UI tests check the card's model and its
+10. **A rendering test for the approval card.** The UI tests check the card's model and its
     source, not a rendered page. A rendering test needs a DOM test dependency.
-12. **Follow-ups that wait for a real mail system and directory** (Pilot-ready): a directory change
+11. **Follow-ups that wait for a real mail system and directory** (Pilot-ready): a directory change
     marker per group, or none, since the sorted mailbox set is the real binding; mailboxes that
     forward outside treated as external at expansion, if the directory exposes forwarding; and an
     expansion cache only if the marker moves when anything under the group changes, including
@@ -96,6 +103,10 @@ Small items that close a measured gap go first; the first two went ahead of the 
   Since M13 this also sets how often legal is asked to approve an honest "low" rating: the rule
   for contradicted ratings fires on any high-severity flag, so over-flagging becomes needless
   approvals, not just a wrong number.
+  **M17:** a definition mismatch, not misreading: most false flags were on contracts with no cap
+  clause or only an indirect-damages exclusion. A definition in the production prompt, with a
+  medium level for no cap, raised high-severity precision from 20% to 76% (78% held out) without
+  losing true flags. The same narrowing on the presence profile lost recall and was reverted.
 - **Approval by what an action changes, not by deal size.** A reader's principle: any action that
   changes what anyone can do later (access, risk ratings, approval thresholds, the policy itself)
   always goes to a person, however small, because lowering the bar is usually an attacker's first
@@ -105,6 +116,9 @@ Small items that close a measured gap go first; the first two went ahead of the 
   whether it lowers the bar (a lower risk rating, wider access) and require approval for those
   only, perhaps per tenant, replacing the 100,000 deal-size line with a principle. Decide with
   the approval volume from the next live run in hand.
+  **M17, provisional:** for risk ratings, every "low" now needs legal; 2.7% of 291 honest CUAD
+  contracts were rated "low". A downgrade to "medium" still writes without a person. Confirm or
+  reverse with real traffic.
 - **Policy never reads state the agent can write.** Today every rule judges a step on its own
   arguments plus inputs no earlier action can change: fixed tenant settings, the deal value in the
   contract system (no tool writes it), and the Reader's findings for that run only. So a series of
@@ -146,6 +160,25 @@ Small items that close a measured gap go first; the first two went ahead of the 
   internal address that forwards outside looks internal to policy. Look-alike domains already
   fall into review (the domain must match exactly), so the safer option may be allowing specific
   internal recipients rather than the whole domain. (Raised by readers.)
+  **M17, provisional:** stays allowed. Since M16a every resulting mailbox is checked and an outside
+  member sends the email to review; no clean run has sent email, so there is nothing to weigh yet.
+  The recipient allowlist waits for a real tenant to choose it.
+  Judge the mailboxes, not the label: a group or alias address passes as internal and then fans
+  out to whoever is behind it, possibly outside the company. Have the connector expand the
+  recipient through the directory before the approval hash is computed, so policy checks every
+  resulting mailbox and the approval binds the expanded set, plus the directory's own version or
+  change marker if it has one. Re-expand at send time and compare the actual set with the
+  approved one; if membership changed, the send fails and needs a fresh approval. Record the
+  lookup time alongside for audit, not inside the hash (with the time in the hash every
+  re-expansion would differ even when nothing changed), and let approval expiry stop a stale
+  expansion being sent days later. Block, not warn, on any mismatch between
+  the approved set and what is sent. Send to the expanded mailboxes, never the group address:
+  otherwise the mail server expands the group after the check and its record shows only the
+  group. The To: header may still name the group for readers. If membership cannot be read
+  (hidden or unresolvable nested groups), block the send; never fall back to the group address.
+  An external list cannot be expanded and need not be: policy already treats it as one
+  external recipient. A mock directory with groups and aliases makes this testable
+  now; expansion against a real mail system waits for a real connector.
   Judge the mailboxes, not the label: a group or alias address passes as internal and then fans
   out to whoever is behind it, possibly outside the company. Have the connector expand the
   recipient through the directory before the approval hash is computed, so policy checks every
@@ -176,6 +209,13 @@ Small items that close a measured gap go first; the first two went ahead of the 
   whatever the Reader reports. Use it as one more signal for the "low" rules, not as a judge:
   paraphrase defeats keywords, and a counterparty who wrote the whole contract controls the
   wording. (Suggested by a reader.)
+  M17 built it (`apps/contract_review/liability_scan.py`) and gated it on 495 CUAD contracts: the
+  express level failed (2 of 8 hits matched CUAD), the carve-out level looked precise. It is not
+  wired into the engine, because M17's provisional rule sends every "low" to legal, so nothing
+  is left for it to question. **Trigger:** if that rule is dropped after real traffic, wire the
+  scan in first: run it before the Reader, store the result on the run, give policy a source for
+  it. A rule on the carve-out pattern `except_for_liability` (19 uncapped, 0 others on CUAD)
+  would need its own decision and a check on contracts it was not chosen on.
 - **Check state, not just the tool's reply.** Post-conditions today compare a tool's own reply
   with what was asked ("the assessment I wrote says low for C-1002"). For writes, read the record
   back from the system with a separate call and check that instead, and let that read set the
@@ -317,9 +357,10 @@ Reader suggestions weighed and not adopted, with the reason:
 
 ## Decisions in force
 
-- A "low" CRM risk rating needs legal approval when the Reader's findings flag a high-severity
-  clause or the deal in the contract system is over 100,000 (M13). A fooled "low" with nothing
-  flagged on a smaller deal is allowed, on purpose.
+- Every "low" CRM risk rating needs legal approval (M17, provisional: 2.7% of 291 honest CUAD
+  contracts were rated "low"; real traffic confirms or reverses it). The M13 rules still match
+  and give the reason when the Reader's findings flag a high-severity clause or the deal in the
+  contract system is over 100,000. A fooled "medium" still writes without a person.
 - Internal email and non-admin, non-production access grants to company accounts run without
   approval (decided in M13): approval on every one would be clicked through. Revisit with real
   traffic. Internal email is under review (see "After M13"): no clean run sent any email.

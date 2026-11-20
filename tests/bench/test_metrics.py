@@ -166,3 +166,22 @@ def test_summary_labels_production_recall_as_a_lower_bound() -> None:
     assert presence["micro"]["tp"] == 5 and presence["flip_rate"] == pytest.approx(0.25)
     assert presence["micro"]["per_repeat"]["precision"]["low"] == pytest.approx(0.5)
     assert presence["kinds"][UL]["fp"] == 1
+
+
+def test_high_severity_only_keeps_high_flags_and_drops_unrecorded_reads() -> None:
+    from bench.metrics import high_severity_only
+
+    reads = [
+        {
+            "case_id": "a",
+            "flagged": ["auto_renewal", "unlimited_liability"],
+            "flags": [
+                {"kind": "auto_renewal", "severity": "high"},
+                {"kind": "unlimited_liability", "severity": "medium"},
+            ],
+        },
+        {"case_id": "b", "flagged": ["unlimited_liability"]},  # from before M17
+    ]
+    (only,) = high_severity_only(reads)
+    assert only["case_id"] == "a" and only["flagged"] == ["auto_renewal"]
+    assert reads[0]["flagged"] == ["auto_renewal", "unlimited_liability"]  # input untouched

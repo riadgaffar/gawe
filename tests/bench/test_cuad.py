@@ -419,3 +419,26 @@ def test_an_archive_that_expands_too_far_is_refused(
         fetch(tmp_path, pinned=None, download=zenodo)
     with pytest.raises(FetchError, match="expands"):
         fetch(tmp_path, pinned=caught.value.sha256, download=zenodo)
+
+
+# M12's profile fingerprints (bench-results/20261108T212410Z/manifest.json). M17 changed the
+# production wording; the presence wording went back to M12's after the D1 check failed recall.
+M12_SHA256 = {
+    "presence": "7042eac3573ec28ed0045fb88b8bccd868aa493d29e929813652afff055d7c69",
+    "production": "3a842c7dba303b96557004cd4259e6db8a74eec6ab7f3296c00a48e07e0f9296",
+}
+
+
+def test_production_changed_since_m12_and_presence_is_back_to_m12() -> None:
+    assert profile_sha256(PROFILES["production"]) != M12_SHA256["production"]
+    assert profile_sha256(PROFILES["presence"]) == M12_SHA256["presence"]
+    for profile in PROFILES.values():
+        assert profile.schema is SCHEMA
+
+
+def test_production_defines_unlimited_liability_with_a_medium_level_for_no_cap() -> None:
+    text = PROFILES["production"].instructions
+    assert '"unlimited_liability" has a fixed meaning' in text
+    assert 'severity "high" when the contract states that\n  liability is unlimited' in text
+    assert 'severity "medium" when nothing caps the amount of liability' in text
+    assert "there is no cap clause" in text and "excludes indirect, consequential" in text

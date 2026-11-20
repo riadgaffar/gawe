@@ -4,6 +4,9 @@ Order inside a run follows the design's priorities (section 5.3): the `presence`
 then the injection suite, then the `production` profile. If the budget runs out, what is missing
 is the second column, never the main number or the injection evidence.
 
+Since M17 a run may leave a suite out (`suites`) and leave out the contracts an earlier run
+sampled (`exclude`), so a second CUAD run can be disjoint from the first.
+
 Everything that touches the outside world (the data, the model, the token counter, git, the
 clock, the confirmation prompt) comes in through `Deps`, so tests run the whole flow offline.
 """
@@ -27,14 +30,14 @@ from bench.budget import (
     estimate_input_tokens,
     start_decision,
 )
-from bench.count import AnthropicTokenCounter, TokenCounter
+from bench.count import AnthropicTokenCounter, TokenCounter, require_api_key
 from bench.cuad import fetch as cuad_fetch
 from bench.cuad.labels import CuadCase, CuadCorpus, load_corpus
 from bench.cuad.mapping import partial_kinds, scored_kinds
 from bench.cuad.profile import PROFILES, profile_sha256
 from bench.cuad.run import plan_trials as plan_cuad
 from bench.cuad.run import run_cuad
-from bench.cuad.sample import Sample, stratified_sample
+from bench.cuad.sample import Sample, sample_ids_sha256, stratified_sample
 from bench.estimate import (
     RunPlan,
     Unit,
@@ -60,6 +63,24 @@ from gawe.llm.provider import LLMProvider, LLMRequest, ProviderConfigError
 from gawe.llm.reader import DEFAULT_MAX_DOCUMENT_CHARS
 
 DEFAULT_SEED = 20261029
+SUITES = ("cuad", "injection")
+
+
+class ExcludeRunError(ValueError):
+    """The run named by --exclude-run has no readable sample."""
+
+
+def excluded_ids(run_dir: Path) -> frozenset[str]:
+    """The contract ids an earlier run sampled, read from its manifest."""
+    path = run_dir / "manifest.json"
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        ids = frozenset(str(c["case_id"]) for c in manifest["sample"]["cases"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ExcludeRunError(f"{run_dir} has no readable CUAD sample ({exc})") from exc
+    if not ids:
+        raise ExcludeRunError(f"{run_dir} sampled no contracts")
+    return ids
 
 
 @dataclass(frozen=True)
@@ -73,6 +94,9 @@ class Settings:
     cuad_repeats: int = 3
     injection_repeats: int = 5
     profiles: tuple[str, ...] = ("presence", "production")
+    suites: tuple[str, ...] = SUITES
+    exclude: frozenset[str] = frozenset()
+    exclude_run: str | None = None  # where `exclude` came from, for the manifest
 
 
 def _git() -> tuple[str, bool]:
@@ -89,6 +113,7 @@ def _git() -> tuple[str, bool]:
 def _provider(model: str) -> LLMProvider:
     from gawe.llm.anthropic_provider import AnthropicProvider
 
+    require_api_key()
     return AnthropicProvider(model=model)
 
 
@@ -126,17 +151,17 @@ def prepare(settings: Settings, deps: Deps) -> Prepared:
     root = deps.data_root()
     corpus = load_corpus(root, max_chars=DEFAULT_MAX_DOCUMENT_CHARS)
     sample = stratified_sample(
-        corpus.cases,
+        [c for c in corpus.cases if c.case_id not in settings.exclude],
         seed=settings.seed,
         size=settings.contracts,
         min_positives=settings.min_positives,
     )
     suite = load_suite()
     plan = RunPlan(
-        cuad_cases=sample.cases,
+        cuad_cases=sample.cases if "cuad" in settings.suites else (),
         profiles=settings.profiles,
         cuad_repeats=settings.cuad_repeats,
-        injection_cases=suite.cases,
+        injection_cases=suite.cases if "injection" in settings.suites else (),
         injection_repeats=settings.injection_repeats,
     )
     fingerprint = {
@@ -194,7 +219,7 @@ def run_estimate(
         budget = Budget(cap=settings.cap, price=settings.price)
         provider = CountingProvider(deps.provider(settings.model), budget, input_tokens=exact)
         writer = ResultsWriter(deps.results_dir / f"trial-{_stamp(deps)}")
-        contracts = trial_contracts(prepared.sample.cases)
+        contracts = trial_contracts(prepared.plan.cuad_cases)
         run_cuad(
             prepared.root,
             plan_cuad(contracts, settings.profiles, 1),
@@ -203,7 +228,11 @@ def run_estimate(
             writer=writer,
             sleep=deps.sleep,
         )
-        twins = [next(t for t in prepared.suite.twins if t.app == app) for app in _apps(prepared)]
+        twins = (
+            [next(t for t in prepared.suite.twins if t.app == app) for app in _apps(prepared)]
+            if prepared.plan.injection_cases
+            else []
+        )
         run_injection(plan_injection(twins, 1), provider=provider, writer=writer, sleep=deps.sleep)
         stats = trial_stats(
             provider.history,
@@ -243,9 +272,9 @@ def _print_estimate(
 ) -> None:
     calls = sum(u.repeats for u in units)
     print(
-        f"{len(prepared.sample.cases)} contracts x {len(settings.profiles)} profiles x "
-        f"{settings.cuad_repeats} repeats, and {len(prepared.suite.cases)} injection cases x "
-        f"{settings.injection_repeats} repeats: {calls} requests before retries",
+        f"{len(prepared.plan.cuad_cases)} contracts x {len(settings.profiles)} profiles x "
+        f"{settings.cuad_repeats} repeats, and {len(prepared.plan.injection_cases)} injection "
+        f"cases x {settings.injection_repeats} repeats: {calls} requests before retries",
         file=out,
     )
     print(f"input cost (exact count + 5%): ${estimate.input_usd:.4f}", file=out)
@@ -330,7 +359,7 @@ def run_benchmark(
             complete = run_cuad(
                 prepared.root,
                 todo(
-                    plan_cuad(prepared.sample.cases, ("presence",), settings.cuad_repeats),
+                    plan_cuad(prepared.plan.cuad_cases, ("presence",), settings.cuad_repeats),
                     _cuad_key,
                 ),
                 provider=provider,
@@ -341,7 +370,8 @@ def run_benchmark(
         if complete:
             complete = run_injection(
                 todo(
-                    plan_injection(prepared.suite.cases, settings.injection_repeats), _injection_key
+                    plan_injection(prepared.plan.injection_cases, settings.injection_repeats),
+                    _injection_key,
                 ),
                 provider=provider,
                 writer=writer,
@@ -351,7 +381,7 @@ def run_benchmark(
             complete = run_cuad(
                 prepared.root,
                 todo(
-                    plan_cuad(prepared.sample.cases, ("production",), settings.cuad_repeats),
+                    plan_cuad(prepared.plan.cuad_cases, ("production",), settings.cuad_repeats),
                     _cuad_key,
                 ),
                 provider=provider,
@@ -420,6 +450,8 @@ _RESUME_CHECKS = (
     ("repeats", lambda m: dict(m["repeats"])),
     ("attack corpus", lambda m: m["injection"]["corpus_sha256"]),
     ("prices", lambda m: dict(m["price"])),
+    ("suites", lambda m: list(m.get("suites", SUITES))),
+    ("excluded contracts", lambda m: m["sample"].get("excluded_ids_sha256")),
 )
 
 
@@ -489,6 +521,7 @@ def build_manifest(
         "max_usd": settings.cap,
         "repeats": {"cuad": settings.cuad_repeats, "injection": settings.injection_repeats},
         "profiles": list(settings.profiles),
+        "suites": list(settings.suites),
         "profile_sha256": {name: profile_sha256(p) for name, p in PROFILES.items()},
         "dataset": {
             "archive_sha256": deps.archive_sha256(),
@@ -503,6 +536,11 @@ def build_manifest(
             "ids_sha256": sample.ids_sha256,
             "topped_up": sample.topped_up,
             "shortfall": sample.shortfall,
+            "excluded_run": settings.exclude_run,
+            "excluded": len(settings.exclude),
+            "excluded_ids_sha256": (
+                sample_ids_sha256(settings.exclude) if settings.exclude else None
+            ),
             "cases": [_case_json(c) for c in sample.cases],
         },
         "injection": {

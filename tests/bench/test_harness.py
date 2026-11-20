@@ -620,3 +620,126 @@ def test_the_counter_works_without_the_anthropic_sdk(monkeypatch: pytest.MonkeyP
             return type("Count", (), {"input_tokens": 7})()
 
     assert AnthropicTokenCounter(MODEL, client=Client()).count(reader_request(PRESENCE, "x")) == 7
+
+
+# ------------------------------------------------------------------- M17: suites and exclusion
+
+CUAD_ONLY = ["--min-positives", "0", "--cuad-repeats", "1", "--suites", "cuad"]
+
+
+def test_a_cuad_only_run_reads_no_injection_case(tmp_path: Path) -> None:
+    deps = make_deps(tmp_path)
+    code, out, _ = cli(deps, "run", "--max-usd", "5", "--yes", "--contracts", "3", *CUAD_ONLY)
+    assert code == EXIT_OK, out
+    (directory,) = run_dirs(deps)
+    trials = ResultsWriter(directory).trials()
+    assert trials and all(t["kind"] == "cuad" for t in trials)
+    assert "and 0 injection cases" in out
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["suites"] == ["cuad"] and manifest["sample"]["excluded"] == 0
+
+
+def test_an_unknown_suite_is_refused(tmp_path: Path) -> None:
+    code, _, err = cli(make_deps(tmp_path), "estimate", "--max-usd", "1", "--suites", "cuad,x")
+    assert code == EXIT_REFUSED and "--suites" in err
+
+
+def test_exclude_run_leaves_out_every_contract_the_earlier_run_sampled(tmp_path: Path) -> None:
+    deps = make_deps(tmp_path)
+    cli(deps, "run", "--max-usd", "5", "--yes", "--contracts", "1", *CUAD_ONLY)
+    (first,) = run_dirs(deps)
+    first_sample = json.loads((first / "manifest.json").read_text())["sample"]
+    taken = {c["case_id"] for c in first_sample["cases"]}
+    code, out, _ = cli(
+        deps,
+        "run",
+        "--max-usd",
+        "5",
+        "--yes",
+        "--contracts",
+        "3",
+        *CUAD_ONLY,
+        "--exclude-run",
+        str(first),
+    )
+    assert code == EXIT_OK, out
+    second = next(d for d in run_dirs(deps) if d != first)
+    manifest = json.loads((second / "manifest.json").read_text())
+    ids = {c["case_id"] for c in manifest["sample"]["cases"]}
+    assert ids and not ids & taken
+    assert len(ids) == 3 - len(taken)  # the fixture has 3 contracts
+    assert manifest["sample"]["excluded_run"] == str(first)
+    assert manifest["sample"]["excluded"] == len(taken)
+    assert all(t["case_id"] in ids for t in ResultsWriter(second).trials())
+
+
+def test_exclusion_gives_the_same_sample_for_the_same_seed(tmp_path: Path) -> None:
+    deps = make_deps(tmp_path)
+    cli(deps, "run", "--max-usd", "5", "--yes", "--contracts", "1", *CUAD_ONLY)
+    (first,) = run_dirs(deps)
+    args = ["--contracts", "1", *CUAD_ONLY, "--exclude-run", str(first)]
+    cli(deps, "run", "--max-usd", "5", "--yes", *args)
+    cli(deps, "run", "--max-usd", "5", "--yes", *args)
+    later = [d for d in run_dirs(deps) if d != first]
+    hashes = {json.loads((d / "manifest.json").read_text())["sample"]["ids_sha256"] for d in later}
+    assert len(later) == 2 and len(hashes) == 1
+
+
+def test_an_unreadable_exclude_run_is_refused(tmp_path: Path) -> None:
+    code, _, err = cli(
+        make_deps(tmp_path), "estimate", "--max-usd", "1", "--exclude-run", str(tmp_path)
+    )
+    assert code == EXIT_REFUSED and "no readable CUAD sample" in err
+
+
+def test_resume_refuses_a_different_exclusion(tmp_path: Path) -> None:
+    deps = make_deps(tmp_path, provider=lambda model: RunsOutOfCredit(1))
+    cli(deps, "run", "--max-usd", "5", "--yes", "--contracts", "1", *CUAD_ONLY)
+    (first,) = run_dirs(deps)
+    cli(
+        deps,
+        "run",
+        "--max-usd",
+        "5",
+        "--yes",
+        "--contracts",
+        "2",
+        *CUAD_ONLY,
+        "--exclude-run",
+        str(first),
+    )
+    second = next(d for d in run_dirs(deps) if d != first)
+    code, _, err = cli(
+        make_deps(tmp_path),
+        "run",
+        "--max-usd",
+        "5",
+        "--yes",
+        "--resume",
+        str(second),
+        "--contracts",
+        "2",
+        *CUAD_ONLY,
+    )
+    assert code == EXIT_REFUSED and "excluded contracts" in err
+
+
+def test_a_missing_api_key_is_refused_before_any_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bench.count import require_api_key
+
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(ProviderConfigError, match="ANTHROPIC_API_KEY"):
+        require_api_key()
+    require_api_key({"ANTHROPIC_AUTH_TOKEN": "t"})  # either credential is enough
+    with pytest.raises(ProviderConfigError):
+        require_api_key({"ANTHROPIC_API_KEY": "  "})
+
+    deps = make_deps(tmp_path, counter=lambda model: AnthropicTokenCounter(model))
+    for argv in (["estimate"], ["run", "--yes"]):
+        code, _, err = cli(deps, *argv, "--max-usd", "1", *CUAD_ONLY)
+        assert code == EXIT_REFUSED and "set ANTHROPIC_API_KEY first" in err
+        assert "Traceback" not in err
+    assert run_dirs(deps) == []  # refused before a run directory was written

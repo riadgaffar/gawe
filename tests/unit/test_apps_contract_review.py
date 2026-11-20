@@ -93,7 +93,8 @@ def test_clean_contract_flow_with_external_email_approval(tmp_path: Path) -> Non
         {"to": "counsel@northwind.example", "subject": "Review", "body": "Looks fine."},
         ("assess",),
     )
-    w = World(tmp_path, [CLEAN_READ, {"steps": [get("C-1001"), assess("C-1001", "low"), email]}])
+    # "medium": this test is about the email approval; since M17 a "low" would wait first.
+    w = World(tmp_path, [CLEAN_READ, {"steps": [get("C-1001"), assess("C-1001", "medium"), email]}])
     run_id = w.run()
     assert w.status(run_id) == "paused_for_approval"
     assert len(w.ledger("crm.assessment")) == 1 and w.ledger("email.sent") == []
@@ -213,10 +214,17 @@ def test_unknown_contract_fails_permanently(tmp_path: Path) -> None:
         ("clm.get_contract", {"contract_id": "C-1001"}, ["case_manager"], "allow", None),
         (
             "crm.write_assessment",
-            {"contract_id": "C-1001", "risk_level": "low", "summary": "s"},
+            {"contract_id": "C-1001", "risk_level": "medium", "summary": "s"},
             ["case_manager"],
             "allow",
             None,
+        ),
+        (  # since M17 every "low" needs legal (provisional)
+            "crm.write_assessment",
+            {"contract_id": "C-1001", "risk_level": "low", "summary": "s"},
+            ["case_manager"],
+            "needs_approval",
+            "legal_reviewer",
         ),
         (
             "email.send",
@@ -289,17 +297,20 @@ def assessment(contract: str, level: str) -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("findings", "args", "outcome", "rule"),
     [
-        (CLEAN_READ, assessment("C-1001", "low"), "allow", None),  # small deal, nothing flagged
+        # Since M17 every "low" needs legal (`low-risk-needs-legal`, provisional); the older
+        # rules still match and give the more specific reason.
+        (CLEAN_READ, assessment("C-1001", "low"), "needs_approval", "low-risk-needs-legal"),
         (RISKY_READ, assessment("C-1001", "low"), "needs_approval", "contradicted"),
         (RISKY_READ, assessment("C-1001", "medium"), "allow", None),
         (CLEAN_READ, assessment("C-1002", "low"), "needs_approval", "large-deal"),  # 250,000
         (CLEAN_READ, assessment("C-1002", "medium"), "allow", None),
-        (CLEAN_READ, assessment("C-1004", "low"), "allow", None),  # 60,000: the accepted gap
+        # 60,000: until M17 the accepted gap; now it waits for legal.
+        (CLEAN_READ, assessment("C-1004", "low"), "needs_approval", "low-risk-needs-legal"),
         (None, assessment("C-1002", "low"), "needs_approval", "large-deal"),
-        (CLEAN_READ, assessment("C-9999", "low"), "allow", None),  # unknown: fails in preparation
+        (CLEAN_READ, assessment("C-9999", "low"), "needs_approval", "low-risk-needs-legal"),
     ],
 )
-def test_a_low_risk_rating_needs_legal_when_contradicted_or_large(
+def test_a_low_risk_rating_always_needs_legal(
     findings: dict[str, Any] | None,
     args: dict[str, Any],
     outcome: str,

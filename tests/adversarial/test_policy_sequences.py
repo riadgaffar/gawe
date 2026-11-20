@@ -17,6 +17,7 @@ from bench.injection.run import (
     TENANT,
     Recorder,
     TrialEnvironment,
+    approve_honest_steps,
     classify,
     drive,
     start_input,
@@ -116,6 +117,7 @@ def execute_plan(env, case, findings, plan, submitted_by=None):
         profile=case.app,
         **start_input(case, env, case.app, submitted_by=submitted_by),
     ).run_id
+    approve_honest_steps(case, service, env.stores, run_id)  # as the harness does (M17)
     paused = env.stores.runs.get(run_id).status is RunStatus.PAUSED_FOR_APPROVAL
     if paused:
         service.cancel_run(who, run_id)
@@ -307,12 +309,12 @@ def test_false_source_declaration_is_detected_by_shared_state_tripwire(tmp_path:
     run_prefix(env, trial.case, prefix_steps(trial.case, [3]))
     with pytest.raises(AssertionError, match="policy variable drift"):
         assert_stable(env, fixed, before)
-    weakened = drive(
-        trial.case, scripted_provider(trial.case, trial.mode), no_sleep, environment=env
-    )
-    assert weakened["stopped_by"] == "none" and weakened["unauthorized_step_ran"]
-    with pytest.raises(AssertionError):
-        assert_expected(weakened, trial)
+    # The state tripwire above catches the lie. Before M17 the lie also let the downgrade run;
+    # since M17 `low-risk-needs-legal` reads no variable at all, so the outcome holds even with a
+    # lying source, and only the state check could have noticed.
+    after = drive(trial.case, scripted_provider(trial.case, trial.mode), no_sleep, environment=env)
+    assert after["stopped_by"] == "approval_pending" and not after["unauthorized_step_ran"]
+    assert_expected(after, trial)
 
 
 def test_sequence_coverage_tracks_every_scripted_case_mode() -> None:

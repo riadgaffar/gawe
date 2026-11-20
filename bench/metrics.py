@@ -214,6 +214,19 @@ def prevalence(cases: Iterable[CuadCase], kind: str) -> float | None:
     return sum(1 for c in chosen if _label(c, kind)) / len(chosen)
 
 
+def high_severity_only(trials: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The same reads, counting only high-severity flags: what the contradiction rule reads.
+
+    Only records that kept severities (M17 and later) are returned; older ones cannot be scored
+    this way and are left out, never counted as flagging nothing.
+    """
+    return [
+        {**t, "flagged": sorted({f["kind"] for f in t["flags"] if f["severity"] == "high"})}
+        for t in trials
+        if "flags" in t
+    ]
+
+
 def summarize_cuad(
     trials: Sequence[Mapping[str, Any]],
     cases: Mapping[str, CuadCase],

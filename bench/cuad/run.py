@@ -4,12 +4,13 @@ Trials run `presence` first, every repeat, then `production`: if the budget runs
 number is complete and the second column is what is missing (design section 5.3).
 
 Each read goes through the shipped Reader (same sanitizing, fence, schema and retries) on a
-metered provider. A record keeps the flagged kinds, token counts and cost; never the contract
-text or the model's answer.
+metered provider. A record keeps the flagged kinds, each flag's severity, the risk level, token
+counts and cost; never the contract text, the summary or the parties. Severity and risk level
+(since M17) are what the approval rules read, so approval volume can be worked out offline.
 """
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -65,12 +66,14 @@ def run_cuad(
         provider.take_records()  # attribute only this trial's calls to it
         started = clock()
         text = read_text(root, trial.case)
-        status, flagged, attempts = _read(readers[trial.profile], text, sleep)
+        status, flags, risk_level, attempts = _read(readers[trial.profile], text, sleep)
         calls = provider.take_records()
         return {
             **_ids(trial),
             "status": status,
-            "flagged": flagged,
+            "flagged": sorted({f["kind"] for f in flags}),
+            "flags": flags,
+            "risk_level": risk_level,
             "attempts": attempts,
             "calls": len(calls),
             "input_tokens": sum(c.input_tokens for c in calls),
@@ -82,7 +85,13 @@ def run_cuad(
         }
 
     def stopped(trial: Trial) -> dict[str, Any]:
-        return {**_ids(trial), "status": STATUS_BUDGET_STOPPED, "flagged": []}
+        return {
+            **_ids(trial),
+            "status": STATUS_BUDGET_STOPPED,
+            "flagged": [],
+            "flags": [],
+            "risk_level": None,
+        }
 
     return run_trials(trials, run_one, writer=writer, kind=KIND, stopped=stopped)
 
@@ -91,20 +100,39 @@ def _ids(trial: Trial) -> dict[str, Any]:
     return {"case_id": trial.case.case_id, "profile": trial.profile, "repeat": trial.repeat}
 
 
-def _read(reader: Reader, text: str, sleep: Callable[[float], None]) -> tuple[str, list[str], int]:
+Flag = dict[str, str]  # {"kind": ..., "severity": ...}
+
+
+def _read(
+    reader: Reader, text: str, sleep: Callable[[float], None]
+) -> tuple[str, list[Flag], str | None, int]:
     for attempt in range(UNAVAILABLE_RETRIES + 1):
         try:
             result = reader.read(text)
         except LLMUnavailableError:
             if attempt == UNAVAILABLE_RETRIES:
-                return "unavailable", [], 0
+                return "unavailable", [], None, 0
             sleep(2.0 * 2**attempt)
             continue
         except DocumentTooLargeError:
-            return "too_large", [], 0
+            return "too_large", [], None, 0
         except ReaderError:
-            return "reader_error", [], 0
-        clauses = result.findings.data.get("flagged_clauses", [])
-        flagged = sorted({str(c["kind"]) for c in clauses})
-        return "ok", flagged, result.attempts
+            return "reader_error", [], None, 0
+        data = result.findings.data
+        return "ok", flags_of(data.get("flagged_clauses", [])), _risk(data), result.attempts
     raise AssertionError("unreachable")
+
+
+SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
+
+
+def flags_of(clauses: Sequence[Mapping[str, Any]]) -> list[Flag]:
+    """Each distinct (kind, severity) pair, sorted. The schema bounds both to enumerations."""
+    pairs = {(str(c["kind"]), str(c["severity"])) for c in clauses}
+    ordered = sorted(pairs, key=lambda p: (p[0], SEVERITY_RANK.get(p[1], 9)))
+    return [{"kind": kind, "severity": severity} for kind, severity in ordered]
+
+
+def _risk(data: Mapping[str, Any]) -> str | None:
+    value = data.get("risk_level")
+    return str(value) if value is not None else None

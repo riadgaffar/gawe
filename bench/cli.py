@@ -4,6 +4,8 @@
     python -m bench estimate --max-usd 2 [--trial]
     python -m bench run --max-usd 25 [--yes] [--accept-ceiling-over-cap] [--estimate-from FILE]
     python -m bench run --max-usd 15 --resume bench-results/<run id> [--estimate-from FILE]
+    python -m bench run --max-usd 16 --suites cuad --exclude-run bench-results/<run id> ...
+    python -m bench approvals bench-results/<run id>
     python -m bench report bench-results/<run id>
     python -m bench scripted
     python -m bench integrity
@@ -23,6 +25,19 @@ GAWE_LLM_MODEL and must have a row in bench/prices.yaml.
 `estimate` without --trial spends nothing: it uses the free token-counting endpoint. With
 --trial, --max-usd caps the trial's spend.
 
+`--suites cuad` reads CUAD contracts only, without the injection suite. `--exclude-run DIR`
+leaves out every contract that run sampled, so a second sample is disjoint from the first; with
+`--min-positives 0` it keeps CUAD's own share of each clause type, which a volume estimate needs.
+
+`liability` (M17) scores `unlimited_liability` by what CUAD says about the cap, against the D1
+bars in docs/m17-plan.md; `--baseline` shows an earlier run on the same contracts. Free.
+
+`scan-gate` (M17) runs the liability-language scan on every eligible CUAD contract and scores
+its express level against CUAD's "Uncapped Liability" label, against the D2 bars. Free.
+
+`approvals` (M17) works out, from a run's production reads, how many honest contracts each
+approval rule would send to a person. It reads records only; nothing is called or spent.
+
 A run stopped by the cap or by the API (for example, no credit left) keeps every finished trial;
 `--resume` continues it without paying for those again.
 
@@ -38,6 +53,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TextIO
 
+from bench.approvals import Scan, ScanHit, write_approvals
 from bench.budget import Price, UnknownModelError, parse_usd, price_for
 from bench.cuad.fetch import FetchError, fetch
 from bench.cuad.labels import CuadFormatError, load_corpus
@@ -45,15 +61,21 @@ from bench.cuad.run import PROFILE_ORDER
 from bench.estimate import EstimateMismatchError
 from bench.harness import (
     DEFAULT_SEED,
+    SUITES,
     Deps,
+    ExcludeRunError,
     ResumeMismatchError,
     Settings,
+    excluded_ids,
     run_benchmark,
     run_estimate,
     run_scripted_suite,
 )
 from bench.integrity.scenarios import run_suite
+from bench.liability import cap_groups, write_liability
 from bench.report import write_report
+from bench.results import ResultsWriter
+from bench.scan_gate import scan_cases, summarize_gate, write_gate
 from gawe.llm.provider import ProviderConfigError
 
 EXIT_OK, EXIT_STOPPED, EXIT_REFUSED = 0, 1, 2
@@ -94,6 +116,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     report = commands.add_parser("report", help="write report.json and report.md for a run")
     report.add_argument("directory", help="a run directory under bench-results/")
+
+    approvals = commands.add_parser(
+        "approvals", help="approval volume each rule implies for a run's production reads (free)"
+    )
+    approvals.add_argument("directory", help="a run directory under bench-results/")
+    approvals.add_argument(
+        "--no-express-rule",
+        action="store_true",
+        help="the express level failed its gate: every scan hit goes to next-day review",
+    )
+
+    commands.add_parser(
+        "scan-gate", help="the liability scan on every eligible CUAD contract, vs its label (free)"
+    )
+
+    liability = commands.add_parser(
+        "liability", help="score unlimited_liability by CUAD cap group against the D1 bars (free)"
+    )
+    liability.add_argument("directory", help="a run directory under bench-results/")
+    liability.add_argument("--baseline", metavar="DIR", help="an earlier run to show alongside")
     return parser
 
 
@@ -113,6 +155,16 @@ def _common(command: argparse.ArgumentParser) -> None:
         "--profiles",
         default=",".join(PROFILE_ORDER),
         help="Reader profiles to score, comma-separated (default: presence,production)",
+    )
+    command.add_argument(
+        "--suites",
+        default=",".join(SUITES),
+        help="suites to run, comma-separated (default: cuad,injection)",
+    )
+    command.add_argument(
+        "--exclude-run",
+        metavar="DIR",
+        help="leave out every contract this earlier run sampled",
     )
 
 
@@ -140,6 +192,14 @@ def main(
         return _data(out, err)
     if args.command == "report":
         return _report(Path(args.directory), out, err)
+    if args.command == "approvals":
+        return _approvals(
+            Path(args.directory), deps or Deps(), out, err, express_rule=not args.no_express_rule
+        )
+    if args.command == "scan-gate":
+        return _scan_gate(deps or Deps(), out, err)
+    if args.command == "liability":
+        return _liability(args, deps or Deps(), out, err)
     if args.command == "scripted":
         directory = run_scripted_suite(deps or Deps(), out)
         return _report(directory, out, err)
@@ -199,6 +259,17 @@ def _settings(args: argparse.Namespace, env: Mapping[str, str], err: TextIO) -> 
     if not profiles or set(profiles) - set(PROFILE_ORDER):
         print(f"refused: --profiles must be some of {', '.join(PROFILE_ORDER)}", file=err)
         return None
+    suites = tuple(x for x in SUITES if x in {p.strip() for p in args.suites.split(",")})
+    if not suites or {p.strip() for p in args.suites.split(",") if p.strip()} - set(SUITES):
+        print(f"refused: --suites must be some of {', '.join(SUITES)}", file=err)
+        return None
+    exclude: frozenset[str] = frozenset()
+    if args.exclude_run:
+        try:
+            exclude = excluded_ids(Path(args.exclude_run))
+        except ExcludeRunError as exc:
+            print(f"refused: {exc}", file=err)
+            return None
     return Settings(
         cap=cap,
         model=model,
@@ -209,6 +280,9 @@ def _settings(args: argparse.Namespace, env: Mapping[str, str], err: TextIO) -> 
         cuad_repeats=args.cuad_repeats,
         injection_repeats=args.injection_repeats,
         profiles=profiles,
+        suites=suites,
+        exclude=exclude,
+        exclude_run=args.exclude_run,
     )
 
 
@@ -217,6 +291,67 @@ def _report(directory: Path, out: TextIO, err: TextIO) -> int:
         print(f"refused: {directory} is not a benchmark run directory", file=err)
         return EXIT_REFUSED
     json_path, md_path = write_report(directory)
+    print(f"wrote {json_path} and {md_path}", file=out)
+    return EXIT_OK
+
+
+def _approvals(
+    directory: Path, deps: Deps, out: TextIO, err: TextIO, *, express_rule: bool = True
+) -> int:
+    """With CUAD at hand, the scan rows come from scanning each read contract; without it they
+    are left out and the report says so."""
+    if not (directory / "manifest.json").is_file():
+        print(f"refused: {directory} is not a benchmark run directory", file=err)
+        return EXIT_REFUSED
+    scan: Scan | None = None
+    try:
+        root = deps.data_root()
+        corpus = load_corpus(root)
+    except (FetchError, CuadFormatError, OSError) as exc:
+        print(f"note: CUAD unavailable, so no liability scan ({exc})", file=err)
+    else:
+        ids = {t["case_id"] for t in ResultsWriter(directory).trials("cuad")}
+        cases = [c for c in corpus.cases if c.case_id in ids]
+        if len(cases) == len(ids):
+            hits = {
+                case_id: ScanHit(express=found.express, carve_out=found.carve_out)
+                for case_id, found in scan_cases(root, cases).items()
+            }
+            scan = hits.__getitem__
+        else:
+            print(f"note: {len(ids) - len(cases)} read contracts not in CUAD, so no scan", file=err)
+    json_path, md_path = write_approvals(directory, scan, express_rule=express_rule)
+    print(f"wrote {json_path} and {md_path}", file=out)
+    return EXIT_OK
+
+
+def _scan_gate(deps: Deps, out: TextIO, err: TextIO) -> int:
+    try:
+        root = deps.data_root()
+        corpus = load_corpus(root)
+    except (FetchError, CuadFormatError, OSError) as exc:
+        print(f"refused: {exc}", file=err)
+        return EXIT_REFUSED
+    summary = summarize_gate(corpus.cases, scan_cases(root, corpus.cases))
+    directory = deps.results_dir / (deps.now().strftime("%Y%m%dT%H%M%SZ") + "-scan-gate")
+    json_path, md_path = write_gate(directory, summary)
+    print(f"wrote {json_path} and {md_path}", file=out)
+    return EXIT_OK
+
+
+def _liability(args: argparse.Namespace, deps: Deps, out: TextIO, err: TextIO) -> int:
+    directory = Path(args.directory)
+    baseline = Path(args.baseline) if args.baseline else None
+    for path in (directory, baseline):
+        if path is not None and not (path / "manifest.json").is_file():
+            print(f"refused: {path} is not a benchmark run directory", file=err)
+            return EXIT_REFUSED
+    try:
+        groups = cap_groups(deps.data_root())
+    except (FetchError, CuadFormatError, OSError, KeyError) as exc:
+        print(f"refused: CUAD labels unavailable ({exc})", file=err)
+        return EXIT_REFUSED
+    json_path, md_path = write_liability(directory, groups, baseline)
     print(f"wrote {json_path} and {md_path}", file=out)
     return EXIT_OK
 
