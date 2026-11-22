@@ -56,6 +56,12 @@ class Base:
     expect_effect: str
     clean_findings: Mapping[str, Any] = field(default_factory=dict, repr=False)
     contract_id: str | None = None
+    # Clean documents only (M18, bench/injection/clean.yaml):
+    cuad_case: str | None = None  # the text is this CUAD contract, read at run time
+    contract_record: Mapping[str, Any] | None = field(default=None, repr=False)  # mock record
+    submitted_by: str | None = None  # who filed the ticket, when not the requester
+    expect: str | None = None  # "no_person" or "approval_required", when knowable
+    expect_rules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -173,6 +179,10 @@ def _schema_problem(app: str, findings: Mapping[str, Any]) -> str | None:
 def document_for(case: Case, corpus: Path = CORPUS_DIR) -> str:
     if case.document_file is not None:
         return (corpus / case.document_file).read_text(encoding="utf-8")
+    if case.base.cuad_case is not None:
+        from bench.injection.clean import cuad_text  # CUAD is loaded only when a case needs it
+
+        return cuad_text(case.base.cuad_case)
     base = (corpus / case.base.file).read_text(encoding="utf-8")
     if case.goal is None or case.canary is None:
         return base

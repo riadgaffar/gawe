@@ -22,6 +22,10 @@ does not show.
   attacker steps still ran, all of them actions policy allows on purpose; the rest were denied or
   left waiting for a person. Two new rules came out of it. See
   [When the model is fooled](#when-the-model-is-fooled).
+- **Added 22 November: more attacks, more honest documents, and Haiku.** 64 distinct attacks,
+  none fooled Sonnet (95% upper bound 5.7%). Of 43 honest documents, 33 needed no person and
+  none was denied. Haiku isn't good enough yet as the Reader or the Planner. See
+  [M18 update](#m18-update-more-attacks-more-honest-documents-and-haiku).
 - **Added 19 November: the "low" rating.** Most of the false alarms were a definition problem; a
   definition in the prompt raised precision on that clause from 20% to 76%. Only 2.7% of honest
   contracts were rated "low", so every "low" now goes to legal (provisional). See
@@ -321,6 +325,71 @@ What this does not show:
   lowering of a rating.
 - **Waiting is safe only if the approver says no.** Legal now sees every "low"; a rubber stamp
   undoes it.
+
+### M18 update: more attacks, more honest documents, and Haiku
+
+On 22 November 2026 four things were measured live, for $6.07 in model fees.
+
+**The attack suite again, with every rule since M13 in place** (`20261122T175712Z`, Sonnet 5.5,
+26 attacks × 5): no run fooled the Reader or the Planner, and no attacker step ran. The Reader
+flagged the planted text in 84 of 85 judged contract runs. 10 runs couldn't be judged; see "The
+Reader's summary limit" below.
+
+**40 more attacks, written by hand** (`20261122T200151Z`). The plan was to have a model write
+attacks from each last outcome, but Sonnet declined to play the attacker, and the benchmark
+doesn't try to get round a refusal. So 40 were written by hand instead, 5 per goal, each a
+different framing: a forwarded email thread, an instruction written as a defined term, a fake
+earlier assistant turn, a pre-filled assessment form, an incident escalation, and so on. None of
+39 judged ones fooled the model. With the suite, that is **64 distinct attacks and none fooled
+Sonnet: a 95% upper bound of 5.7%**, against about 13% for the 25 templates before.
+
+Every one of them stopped at the first layer: the model ignored the payload. So these runs say
+nothing new about policy. The scripted run, which fools the model on purpose, is still the
+evidence for what happens when the model falls for it.
+
+**How often policy stops honest work, per document.** 36 new clean documents (12 hand-written
+tickets, 24 CUAD contracts with made-up deal values) joined the suite's 7, each counted once
+however often it ran:
+
+| Outcome | Documents | 95% interval |
+|---|---|---|
+| Needed no person | 33 of 43 | 62–87% |
+| Needed a person | 9 of 43 | 11–35% |
+| Denied | 0 of 43 | 0–8% |
+| Failed | 1 of 43 | 0–12% |
+
+The 9 that needed a person did so by rules written for them: admin or production-database access,
+a ticket filed on someone's behalf, and an honest "low" rating (every "low" goes to legal since
+M17). The failure was a CUAD contract whose Reader reply was rejected.
+
+**Haiku 5.5 against Sonnet 5.5, paired on the same 51 contracts and the same attacks**
+(`20261122T202436Z`):
+
+| | Haiku | Sonnet | Difference (95% interval) |
+|---|---|---|---|
+| Reader F1 (presence) | 62.0% | 65.9% | −3.9 points (−8.5 to +0.2) |
+| Reader recall on high-severity flags (production) | 12.9% | 30.1% | −17.2 points (−33.3 to −2.7) |
+| Attack runs that fooled it | 0 of 90 judged | 0 of 120 judged | |
+| Reader errors, attack runs | 40 of 130 | 10 of 130 | |
+
+By the bars set before the run, Haiku isn't good enough as the Reader. As the Planner it was never
+fooled, but it failed to plan 5 of 15 honest IT-access runs, where Sonnet failed none. Most of the
+Reader gap is Reader errors, which count as finding nothing.
+
+**The Reader's summary limit.** The contract Reader's summary is capped at 300 characters, and its
+prompt asks for the contract's main risk plus a note on any text aimed at AI reviewers. A
+one-sided contract with planted text doesn't fit, so both attempts are rejected and the run ends
+with nothing written. It fails safe, but it fails: the small-contract downgrade attack failed 5 of
+5 times, so its live outcome is still unmeasured, and an honest contract failed once. A fix is
+queued for straight after M18, and the Haiku comparison should be run again after it.
+
+What this does not show:
+
+- **Hand-written attacks are ours.** A determined outsider, or an attacker model built for it,
+  would try things we didn't think of.
+- **43 documents bound the intervention rates, not more finely than the intervals say.** The
+  tickets are ours and the contracts aren't Acme's.
+- **The Haiku comparison is one date and one prompt,** and the prompt is about to change.
 
 ### Two new rules
 

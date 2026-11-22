@@ -25,12 +25,17 @@ GAWE_LLM_MODEL and must have a row in bench/prices.yaml.
 `estimate` without --trial spends nothing: it uses the free token-counting endpoint. With
 --trial, --max-usd caps the trial's spend.
 
-`--suites cuad` reads CUAD contracts only, without the injection suite. `--exclude-run DIR`
-leaves out every contract that run sampled, so a second sample is disjoint from the first; with
-`--min-positives 0` it keeps CUAD's own share of each clause type, which a volume estimate needs.
+`--suites cuad` reads CUAD contracts only, without the injection suite. `--suites clean` (M18)
+adds the clean documents in bench/injection/clean.yaml, run as twins `--clean-repeats` times.
+`--exclude-run DIR` leaves out every contract that run sampled, so a second sample is disjoint
+from the first; with `--min-positives 0` it keeps CUAD's own share of each clause type, which a
+volume estimate needs.
 
 `liability` (M17) scores `unlimited_liability` by what CUAD says about the cap, against the D1
 bars in docs/m17-plan.md; `--baseline` shows an earlier run on the same contracts. Free.
+
+`adaptive` (M18) writes each attack from the last one's outcome with an attacker model and runs it
+through the engine, per goal; it costs money, needs --max-usd, and reports end-point diversity.
 
 `scan-gate` (M17) runs the liability-language scan on every eligible CUAD contract and scores
 its express level against CUAD's "Uncapped Liability" label, against the D2 bars. Free.
@@ -55,22 +60,27 @@ from typing import TextIO
 
 from bench.approvals import Scan, ScanHit, write_approvals
 from bench.budget import Price, UnknownModelError, parse_usd, price_for
+from bench.compare import write_compare
 from bench.cuad.fetch import FetchError, fetch
 from bench.cuad.labels import CuadFormatError, load_corpus
 from bench.cuad.run import PROFILE_ORDER
 from bench.estimate import EstimateMismatchError
 from bench.harness import (
     DEFAULT_SEED,
+    DEFAULT_SUITES,
     SUITES,
     Deps,
     ExcludeRunError,
     ResumeMismatchError,
     Settings,
+    UnknownCasesError,
     excluded_ids,
+    run_adaptive_attacks,
     run_benchmark,
     run_estimate,
     run_scripted_suite,
 )
+from bench.injection.cases import load_suite
 from bench.integrity.scenarios import run_suite
 from bench.liability import cap_groups, write_liability
 from bench.report import write_report
@@ -127,6 +137,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="the express level failed its gate: every scan hit goes to next-day review",
     )
 
+    adaptive = commands.add_parser(
+        "adaptive", help="attacks written from the last attack's outcome (M18; costs money)"
+    )
+    adaptive.add_argument(
+        "--max-usd", required=True, metavar="DOLLARS", help="spend cap for this command (required)"
+    )
+    adaptive.add_argument("--model", help="target and attacker model (default: GAWE_LLM_MODEL)")
+    adaptive.add_argument("--rounds", type=_positive_int, default=20, help="attacks per goal")
+    adaptive.add_argument("--goals", help="comma-separated goal names (default: every goal)")
+    adaptive.add_argument(
+        "--yes", action="store_true", help="start without asking for confirmation"
+    )
+
+    compare = commands.add_parser(
+        "compare", help="pair a run's reads and attacks with another model's (M18; free)"
+    )
+    compare.add_argument("directory", help="the run to compare (model A)")
+    compare.add_argument("--presence-baseline", required=True, metavar="DIR")
+    compare.add_argument("--production-baseline", required=True, metavar="DIR")
+    compare.add_argument("--suite-baseline", required=True, metavar="DIR")
+
     commands.add_parser(
         "scan-gate", help="the liability scan on every eligible CUAD contract, vs its label (free)"
     )
@@ -158,8 +189,20 @@ def _common(command: argparse.ArgumentParser) -> None:
     )
     command.add_argument(
         "--suites",
-        default=",".join(SUITES),
-        help="suites to run, comma-separated (default: cuad,injection)",
+        default=",".join(DEFAULT_SUITES),
+        help="comma-separated: cuad, injection, clean, handwritten (default: cuad,injection)",
+    )
+    command.add_argument(
+        "--cases", help="only these injection or clean cases, comma-separated ids (M18)"
+    )
+    command.add_argument(
+        "--clean-repeats", type=_positive_int, default=1, help="reads of each clean document"
+    )
+    command.add_argument(
+        "--handwritten-repeats",
+        type=_positive_int,
+        default=1,
+        help="runs of each hand-written attack (M18)",
     )
     command.add_argument(
         "--exclude-run",
@@ -196,6 +239,27 @@ def main(
         return _approvals(
             Path(args.directory), deps or Deps(), out, err, express_rule=not args.no_express_rule
         )
+    if args.command == "adaptive":
+        return _adaptive(args, env, deps or Deps(), out, err)
+    if args.command == "compare":
+        paths = [
+            Path(p)
+            for p in (
+                args.directory,
+                args.presence_baseline,
+                args.production_baseline,
+                args.suite_baseline,
+            )
+        ]
+        missing = [str(p) for p in paths if not (p / "manifest.json").is_file()]
+        if missing:
+            print(f"refused: not run directories: {', '.join(missing)}", file=err)
+            return EXIT_REFUSED
+        json_path, md_path = write_compare(
+            paths[0], presence=paths[1], production=paths[2], suite_baseline=paths[3]
+        )
+        print(f"wrote {json_path} and {md_path}", file=out)
+        return EXIT_OK
     if args.command == "scan-gate":
         return _scan_gate(deps or Deps(), out, err)
     if args.command == "liability":
@@ -233,6 +297,7 @@ def main(
         CuadFormatError,
         EstimateMismatchError,
         ResumeMismatchError,
+        UnknownCasesError,
         ProviderConfigError,
     ) as exc:
         print(f"refused: {exc}", file=err)
@@ -279,6 +344,11 @@ def _settings(args: argparse.Namespace, env: Mapping[str, str], err: TextIO) -> 
         min_positives=args.min_positives,
         cuad_repeats=args.cuad_repeats,
         injection_repeats=args.injection_repeats,
+        clean_repeats=args.clean_repeats,
+        handwritten_repeats=args.handwritten_repeats,
+        cases=frozenset(c.strip() for c in args.cases.split(",") if c.strip())
+        if args.cases
+        else None,
         profiles=profiles,
         suites=suites,
         exclude=exclude,
@@ -325,6 +395,47 @@ def _approvals(
     return EXIT_OK
 
 
+def _adaptive(
+    args: argparse.Namespace, env: Mapping[str, str], deps: Deps, out: TextIO, err: TextIO
+) -> int:
+    try:
+        cap = parse_usd(args.max_usd)
+    except ValueError as exc:
+        print(f"refused: {exc}", file=err)
+        return EXIT_REFUSED
+    model = (args.model or env.get("GAWE_LLM_MODEL", "")).strip()
+    if not model:
+        print("refused: choose a model with --model or GAWE_LLM_MODEL", file=err)
+        return EXIT_REFUSED
+    try:
+        price = price_for(model)
+    except UnknownModelError as exc:
+        print(f"refused: {exc}", file=err)
+        return EXIT_REFUSED
+    known = list(load_suite().goals)
+    goals = [g.strip() for g in (args.goals or ",".join(known)).split(",") if g.strip()]
+    if not goals or set(goals) - set(known):
+        print(f"refused: --goals must be some of {', '.join(known)}", file=err)
+        return EXIT_REFUSED
+    _describe("adaptive", cap, price, out)
+    try:
+        code = run_adaptive_attacks(
+            cap=cap,
+            model=model,
+            price=price,
+            rounds=args.rounds,
+            goals=goals,
+            deps=deps,
+            yes=args.yes,
+            out=out,
+            err=err,
+        )
+    except ProviderConfigError as exc:
+        print(f"refused: {exc}", file=err)
+        return EXIT_REFUSED
+    return {0: EXIT_OK, 1: EXIT_STOPPED}.get(code, EXIT_REFUSED)
+
+
 def _scan_gate(deps: Deps, out: TextIO, err: TextIO) -> int:
     try:
         root = deps.data_root()
@@ -357,9 +468,16 @@ def _liability(args: argparse.Namespace, deps: Deps, out: TextIO, err: TextIO) -
 
 
 def _describe(command: str, cap: Decimal, price: Price, out: TextIO) -> None:
+    tier = price.long_prompt
+    long = (
+        f"; ${tier.input_per_mtok}/${tier.output_per_mtok} for prompts over "
+        f"{tier.over_tokens:,} tokens"
+        if tier is not None
+        else ""
+    )
     print(
         f"{command}: model {price.model} at ${price.input_per_mtok}/${price.output_per_mtok} per "
-        f"million input/output tokens (prices checked {price.checked_on}), cap ${cap}",
+        f"million input/output tokens{long} (prices checked {price.checked_on}), cap ${cap}",
         file=out,
     )
 

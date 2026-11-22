@@ -26,10 +26,11 @@ adds. If verification fails twice on a milestone, stop and report instead of loo
 | M16b | Approval integrity: approvals bound to the version of each referenced record; signed per-check "unreadable" markers on policy decisions; an approval screen with typed fields first and model-written text collapsed; automatic grants that expire; a next-day review with a keyed sample | Done (2026-11-16: 2145 passed, 74 skipped; the scripted run matched all 38 expectations, 7 executed, 8 denied, 23 waiting for a person, unchanged; the integrity suite matched 23 of 23. Revision checks and revocation are properties of the mock systems. Approve-once is split into its own milestone. See [m16b-design.md](m16b-design.md) and [results.md](results.md#m16b-update-approvals-bound-to-records-grants-that-expire-a-next-day-review)) |
 | M16c | Trusted ticket submitter for IT access: runs start from a ticket id and the server fetches the text; who filed the ticket and through which channel come from the ticket system; a grant to anyone other than the filer, or from an emailed or public-form ticket, waits for a security approver; closed tickets are refused | Done (2026-11-16: 2191 passed, 76 skipped; the scripted run matched all 38 expectations, 4 executed, 8 denied, 26 waiting for a person. The three reader-mode lateral grants now wait instead of running. The trusted submitter is a property of the mock ticket system, and honest on-behalf requests always need a person. See [m16c-design.md](m16c-design.md) and [results.md](results.md#m16c-update-grants-compared-with-who-filed-the-ticket)) |
 | M17  | The low-risk decision: a definition of `unlimited_liability` for the Reader, a liability-language scan gated on CUAD, approval volume on 300 honest CUAD contracts, and provisional calls on approval by change and on internal email | Done (2026-11-19: 2264 passed, 76 skipped; 116 Postgres tests pass; paid runs $27.12 against $27 planned. Production high-severity precision on `unlimited_liability` rose from 20% to 76%, and 78% on 291 held-out contracts. Only 2.7% of honest contracts were rated "low", so every "low" now needs legal (provisional). The scan's express level failed its gate and is not wired in. The scripted run matched all 38 expectations, 3 executed, 8 denied, 27 waiting for a person. See [m17-design.md](m17-design.md) and [results.md](results.md#m17-update-every-low-rating-goes-to-legal)) |
+| M18  | Measurement: the live rerun with every rule since M13, 36 more clean documents counted per document, 40 hand-written attacks (the attacker model declined to write them), and Haiku 5.5 paired against Sonnet 5.5 | Done (2026-11-22: 2435 passed, 76 skipped; 116 Postgres tests pass; paid runs $6.07 against about $9 planned. 64 distinct attacks, none fooled Sonnet, 95% upper bound 5.7%; every one stopped at the model, so policy is still evidenced by the scripted run. Of 43 honest documents, 33 needed no person, 9 a person by the rules meant for them, 0 denied, 1 failed. Haiku is not good enough yet as Reader (F1 −3.9 points, lower end −8.5) or Planner (failed 5 of 15 honest IT runs). The Reader's 300-character summary makes both models fail closed on some documents; fix queued. The scripted run matched all 38 expectations, unchanged. See [m18-design.md](m18-design.md) and [results.md](results.md#m18-update-more-attacks-more-honest-documents-and-haiku)) |
 
-Next: more measurement: generated attacks, more clean documents, the live rerun and the Haiku
-comparison. Haiku 5.5 costs more for prompts over 100,000 tokens, and some CUAD reads exceed that,
-so its price row needs both tiers.
+Next: **the Reader's summary limit** (item 4 in the queue below): state the 300-character limit in
+the contract Reader's prompt, or allow a longer summary, then re-measure the Reader-error rate and
+re-run the Haiku comparison. Then the rest of the queue.
 
 Planned, not scheduled: **Pilot-ready** (OIDC sign-in and the first real connector against a sandbox
 account). It starts when there is a design partner or a sandbox to connect to, and gets a number then.
@@ -41,7 +42,7 @@ database. UI and the IT-access fixture are the first things to cut if scope must
 
 ### Queued after M16, highest first
 
-Small items that close a measured gap go first; the first two went ahead of the low-risk decision.
+Small items that close a measured gap go first; the first two went ahead of the low-risk decision; item 4 comes right after M18.
 Re-ranked 2026-11-19: the two small items (prepare-only classes, end dates for old grants) move
 ahead of replay, and the connector-guarantee and credential items are merged.
 
@@ -52,21 +53,30 @@ ahead of replay, and the connector-guarantee and credential items are merged.
 2. **One audit event per sweep result** (done 2026-11-16). A sweeper that stalled past its lease
    could let a second one write the same read-back, grant-expiry or review event. The event is now
    written once: the append looks for the same event first, inside its retry.
-3. **The low-risk decision** (done 2026-11-19 as M17), then more measurement: generated attacks,
-   more clean documents, a live rerun and a Haiku comparison.
-4. **Action classes the engine only prepares.** Some users keep execution to themselves for good.
+3. **The low-risk decision** (done 2026-11-19 as M17), then more measurement (done 2026-11-22 as
+   M18): a live rerun, more clean documents, hand-written attacks and a Haiku comparison.
+4. **The Reader's summary limit** (found in M18, 2026-11-22). The contract Reader's summary is
+   capped at 300 characters, and its prompt asks for the contract's main risk plus a mention of any
+   text aimed at AI reviewers. On a one-sided contract with planted text that doesn't fit, so both
+   attempts fail and the run ends with no findings: `cr-downgrade-smalldeal` failed 5 of 5 live in
+   M18 (`summary:maxLength`), an honest CUAD contract failed once, and M17's volume run had 9
+   Reader errors in 300. It fails closed, but attacks end "undecided" and honest work fails. Fix:
+   state the limit in the prompt (or allow a longer summary), then re-measure the Reader-error rate
+   and re-read the Sonnet side of any paired comparison, since the wording changes. Kept out of M18
+   so its Haiku comparison pairs against reads with today's wording.
+5. **Action classes the engine only prepares.** Some users keep execution to themselves for good.
    For a class configured that way, no passing test, plan, earlier approval or reusable
    authorization may let the agent dispatch; preparing the action stays available. This is a
    general boundary and needs no new connector (reader comments).
-5. **An end date for grants made before M16.** They never expire today and are left for an
+6. **An end date for grants made before M16.** They never expire today and are left for an
    operator to review. A backfill would give each one an end date and an expiry job; it needs a
    decision on what end date is fair.
-6. **Replay of failed events with side effects, scoped to a tenant.** Several readers asked for it
+7. **Replay of failed events with side effects, scoped to a tenant.** Several readers asked for it
    (scope, duplicate billing, late callbacks). Fix the batch at preview, inside the hash; reuse
    the original idempotency key or reconcile the original operation, never a fresh key; cap the
    amount (policy already has `gt` and `lte`); take the tenant from the event record. It would
    reuse M16's preparation, read-back and record binding (reader comments).
-7. **What the target guarantees, and what the agent cannot touch.** Two reader requirements,
+8. **What the target guarantees, and what the agent cannot touch.** Two reader requirements,
    merged 2026-11-19: both ask what the connector or target actually enforces and what the engine
    only assumes.
    - Block automation when the target cannot guarantee what policy needs. An approval can go
@@ -81,16 +91,16 @@ ahead of replay, and the connector-guarantee and credential items are merged.
      constrain them, through any execution path. Link proposal, decision, approval, dispatch and
      observed result for success, denial and unknown alike, and name the gaps in today's audit
      links rather than adding a new audit system (reader comments).
-8. **Combination rules within one app, from the audit trail.** Split out of M15. Needs its own
+9. **Combination rules within one app, from the audit trail.** Split out of M15. Needs its own
    design, including the keyed subject hash and key management. Combinations across workflows
    still need a shared subject key from a system of record.
-9. **An undo record written before each action.** Save the prior values before an eligible change
+10. **An undo record written before each action.** Save the prior values before an eligible change
    and bind undo to the original action and the record's revision, so undo stops if anything
    changed since. Undo needs its own policy decision, idempotency and read-back, and never claims
    to reverse an effect someone outside has already seen. Needs its own design (reader comment).
-10. **A rendering test for the approval card.** The UI tests check the card's model and its
+11. **A rendering test for the approval card.** The UI tests check the card's model and its
     source, not a rendered page. A rendering test needs a DOM test dependency.
-11. **Follow-ups that wait for a real mail system and directory** (Pilot-ready): a directory change
+12. **Follow-ups that wait for a real mail system and directory** (Pilot-ready): a directory change
     marker per group, or none, since the sorted mailbox set is the real binding; mailboxes that
     forward outside treated as external at expansion, if the directory exposes forwarding; and an
     expansion cache only if the marker moves when anything under the group changes, including
@@ -261,6 +271,8 @@ ahead of replay, and the connector-guarantee and credential items are merged.
   runs are 6 documents repeated 5 times, so the honest unit is the document and 0 of 6 still
   allows a high rate; add more clean documents rather than more repeats. The first run had no
   interventions on clean runs, but that predates the M13 rules. (Raised by a reader.)
+  **M18:** reported per document in every live report. 43 documents: 33 needed no person (62–87%),
+  9 a person by the rules meant for them, 0 denied (0–8%), 1 failed on a Reader error.
 - **Fuzz arguments against the rules, property-based.** An attacker who knows the rule file aims
   at its broad allows, which is where all 10 scripted attacker steps that ran landed. Some edge
   cases are tested already (a comma-joined recipient list is not judged by its first address);
@@ -312,6 +324,11 @@ ahead of replay, and the connector-guarantee and credential items are merged.
   (what was denied, by which rule, what was stored), as an adaptive attacker would, and measure
   diversity by which rule or layer each attack ends at, not by how different the text looks:
   fifty attacks that die at the same rule are one attack. (Raised by a reader.)
+  **M18:** a model attacker driven by outcomes was built, but Sonnet declined the role, and the
+  benchmark doesn't get round refusals. 40 hand-written attacks, each a different framing, took
+  the count to 64 distinct: none fooled Sonnet (95% upper bound 5.7%). All stopped at the model,
+  so diversity by end point was two points. The attacker loop stays, unused, for a model that
+  accepts the role.
 - **A bigger contract sample, if paired comparison is not enough.** Treated as independent
   samples, two setups 5 points apart need about 330 items each to tell apart (12% of answers
   change between repeats); the current sample has 153 (51 contracts, 3 clause types), enough for
@@ -320,6 +337,8 @@ ahead of replay, and the connector-guarantee and credential items are merged.
   (contract, clause type), with the interval from resampling whole contracts as the existing
   intervals already do, may be enough. Grow the sample only if that interval is too wide. CUAD
   has 495 usable contracts, at about $0.04 per read.
+  **M18:** not needed: the paired interval on presence precision had a half-width of 4.5 points,
+  under the 10-point rule.
 - **A Haiku 5.5 comparison run** on the same attacks and contracts, to see whether a cheaper model
   is good enough for the Reader or Planner. Compare the paired difference, not each model's
   interval: a permutation test over contracts (swap a whole contract's answers between the two
@@ -340,6 +359,10 @@ ahead of replay, and the connector-guarantee and credential items are merged.
 
 Reader suggestions weighed and not adopted, with the reason:
 
+  **M18:** done, paired as described. Haiku's Reader F1 was 3.9 points lower (95% −8.5 to +0.2),
+  failing the bar; its Reader failed on 79 of 306 CUAD reads and 40 of 130 attack runs, mostly the
+  summary limit; its Planner was never fooled but failed 5 of 15 honest IT runs. Re-run after the
+  summary fix.
 - **A confidence score from the Reader to prioritise reviews.** The confidence comes from the model
   an attacker is trying to fool, so "low risk, high confidence" costs the attacker nothing. Reviews
   are prioritised on values the document cannot change instead.

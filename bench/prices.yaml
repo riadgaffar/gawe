@@ -1,6 +1,8 @@
 # USD per million tokens, Claude API first-party rates. Re-check against the source page before
 # every paid run and update `checked_on`; the row used is copied into each run's manifest.
 # A model missing here cannot be benchmarked: the harness refuses to guess a price.
+# `long_prompt` (optional): higher prices for a request whose prompt is over `over_tokens`; each
+# request is priced on its own.
 checked_on: 2026-11-19
 source: https://platform.claude.com/docs/en/about-claude/pricing
 models:
@@ -10,3 +12,10 @@ models:
   claude-opus-5-5:
     input: "4.00"
     output: "20.00"
+  claude-haiku-5-5:
+    input: "0.10"
+    output: "0.50"
+    long_prompt:
+      over_tokens: 100000
+      input: "0.50"
+      output: "2.50"

@@ -11,6 +11,7 @@ from bench.budget import (
     BudgetExceededError,
     CountingProvider,
     Estimate,
+    LongPromptTier,
     Price,
     UnknownModelError,
     estimate_input_tokens,
@@ -19,6 +20,7 @@ from bench.budget import (
     price_for,
     start_decision,
 )
+from bench.estimate import Unit, build_estimate
 from gawe.llm.fake import FakeProvider
 from gawe.llm.provider import LLMRequest, LLMResponse, LLMUnavailableError
 from gawe.llm.reader import Reader, ReaderError
@@ -210,3 +212,91 @@ def test_start_decision_follows_the_design(
 
 def test_the_input_margin_is_five_percent() -> None:
     assert Decimal("1.05") == INPUT_MARGIN
+
+
+# --- M18: a long-prompt tier, priced per request -----------------------------------------------
+
+HAIKU = Price(
+    "haiku",
+    Decimal("0.10"),
+    Decimal("0.50"),
+    date(2026, 11, 19),
+    "test",
+    LongPromptTier(100_000, Decimal("0.50"), Decimal("2.50")),
+)
+
+
+def test_the_shipped_table_has_haiku_with_both_tiers() -> None:
+    haiku = load_prices()["claude-haiku-5-5"]
+    assert (haiku.input_per_mtok, haiku.output_per_mtok) == (Decimal("0.10"), Decimal("0.50"))
+    assert haiku.long_prompt == LongPromptTier(100_000, Decimal("0.50"), Decimal("2.50"))
+    assert load_prices()["claude-sonnet-5-5"].long_prompt is None
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        (
+            100_000,
+            Decimal("100000") * Decimal("0.10") / 10**6 + Decimal("1000") * Decimal("0.50") / 10**6,
+        ),
+        (
+            100_001,
+            Decimal("100001") * Decimal("0.50") / 10**6 + Decimal("1000") * Decimal("2.50") / 10**6,
+        ),
+    ],
+)
+def test_a_request_is_priced_by_its_own_prompt_length(prompt: int, expected: Decimal) -> None:
+    assert HAIKU.cost(prompt, 1000) == expected  # the threshold itself is still the base tier
+
+
+def test_the_worst_case_check_uses_the_long_tier() -> None:
+    # 150,000 tokens with full output: about $0.016 at base prices, $0.080 at the long tier.
+    budget = Budget(cap=Decimal("0.05"), price=HAIKU)
+    assert HAIKU.rates(80_000)[0] == Decimal("0.10")
+    budget.check(80_000, 2048)
+    with pytest.raises(BudgetExceededError):
+        budget.check(150_000, 2048)
+
+
+def test_the_manifest_records_the_tier_and_one_tier_rows_keep_their_shape() -> None:
+    row = HAIKU.as_manifest()
+    assert row["long_prompt_over_tokens"] == "100000"
+    assert row["long_prompt_input_per_mtok"] == "0.50"
+    assert set(PRICE.as_manifest()) == {
+        "model",
+        "input_per_mtok",
+        "output_per_mtok",
+        "checked_on",
+        "source",
+    }
+
+
+@pytest.mark.parametrize(
+    "tier",
+    [
+        "long_prompt: 5",
+        "long_prompt: {over_tokens: 0, input: '1', output: '1'}",
+        "long_prompt: {over_tokens: true, input: '1', output: '1'}",
+        "long_prompt: {over_tokens: 100, input: '0', output: '1'}",
+    ],
+)
+def test_a_bad_long_prompt_row_is_refused(tmp_path: Path, tier: str) -> None:
+    path = tmp_path / "prices.yaml"
+    path.write_text(
+        "checked_on: 2026-11-19\nsource: x\nmodels:\n  m:\n    input: '1'\n    output: '1'\n    "
+        + tier
+        + "\n"
+    )
+    with pytest.raises(ValueError):
+        load_prices(path)
+
+
+def test_the_estimate_prices_a_long_prompt_at_its_tier() -> None:
+    def unit(tokens: int) -> Unit:
+        return Unit("cuad", "c", "presence", "read", tokens, 2048, 1, 1)
+
+    near = build_estimate([unit(98_000)], HAIKU)  # padded by 5%, so over 100,000
+    far = build_estimate([unit(50_000)], HAIKU)
+    assert near.input_usd == Decimal(98_000) * Decimal("1.05") * Decimal("0.50") / 10**6
+    assert far.input_usd == Decimal(50_000) * Decimal("1.05") * Decimal("0.10") / 10**6

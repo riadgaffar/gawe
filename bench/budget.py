@@ -52,29 +52,57 @@ class BudgetExceededError(Exception):
 
 
 @dataclass(frozen=True)
+class LongPromptTier:
+    """Higher prices for a request whose prompt is over `over_tokens` (Haiku 5.5 since M18).
+
+    Each request is priced on its own: a prompt over the threshold pays these prices for all of
+    its input and output, as the pricing page says.
+    """
+
+    over_tokens: int
+    input_per_mtok: Decimal
+    output_per_mtok: Decimal
+
+
+@dataclass(frozen=True)
 class Price:
     model: str
     input_per_mtok: Decimal
     output_per_mtok: Decimal
     checked_on: date
     source: str
+    long_prompt: LongPromptTier | None = None
+
+    def rates(self, input_tokens: int | Decimal) -> tuple[Decimal, Decimal]:
+        """Input and output prices per million tokens for a request with this prompt length."""
+        tier = self.long_prompt
+        if tier is not None and input_tokens > tier.over_tokens:
+            return tier.input_per_mtok, tier.output_per_mtok
+        return self.input_per_mtok, self.output_per_mtok
 
     def cost(self, input_tokens: int, output_tokens: int) -> Decimal:
         if input_tokens < 0 or output_tokens < 0:
             raise ValueError("token counts cannot be negative")
+        input_rate, output_rate = self.rates(input_tokens)
         return (
-            Decimal(input_tokens) * self.input_per_mtok
-            + Decimal(output_tokens) * self.output_per_mtok
+            Decimal(input_tokens) * input_rate + Decimal(output_tokens) * output_rate
         ) / _MILLION
 
     def as_manifest(self) -> dict[str, str]:
-        return {
+        row = {
             "model": self.model,
             "input_per_mtok": str(self.input_per_mtok),
             "output_per_mtok": str(self.output_per_mtok),
             "checked_on": self.checked_on.isoformat(),
             "source": self.source,
         }
+        if self.long_prompt is not None:  # one-tier rows keep their old shape, so resumes match
+            row |= {
+                "long_prompt_over_tokens": str(self.long_prompt.over_tokens),
+                "long_prompt_input_per_mtok": str(self.long_prompt.input_per_mtok),
+                "long_prompt_output_per_mtok": str(self.long_prompt.output_per_mtok),
+            }
+        return row
 
 
 def load_prices(path: Path = PRICES_FILE) -> dict[str, Price]:
@@ -95,8 +123,24 @@ def load_prices(path: Path = PRICES_FILE) -> dict[str, Price]:
             output_per_mtok=_positive(row.get("output"), f"{model} output"),
             checked_on=checked_on,
             source=source,
+            long_prompt=_long_prompt(row.get("long_prompt"), f"{path.name}: {model}"),
         )
     return prices
+
+
+def _long_prompt(value: Any, where: str) -> LongPromptTier | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{where} long_prompt must have over_tokens, input and output")
+    over = value.get("over_tokens")
+    if isinstance(over, bool) or not isinstance(over, int) or over <= 0:
+        raise ValueError(f"{where} long_prompt over_tokens must be a positive whole number")
+    return LongPromptTier(
+        over_tokens=over,
+        input_per_mtok=_positive(value.get("input"), f"{where} long_prompt input"),
+        output_per_mtok=_positive(value.get("output"), f"{where} long_prompt output"),
+    )
 
 
 def price_for(model: str, prices: Mapping[str, Price] | None = None) -> Price:

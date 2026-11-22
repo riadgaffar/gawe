@@ -387,7 +387,41 @@ def _injection(report: Mapping[str, Any]) -> list[str]:
         f"- Trial outcomes: {_counts(injection['statuses'])}.",
         "",
     ]
-    return lines + _clean_policy(injection.get("clean_policy"))
+    return (
+        lines
+        + _clean_policy(injection.get("clean_policy"))
+        + _interventions(injection.get("interventions"))
+    )
+
+
+_OUTCOME_NAMES = {
+    "no_person": "Completed, no person",
+    "approval_required": "Needed a person (approval required)",
+    "denied": "A step denied",
+    "failed": "Failed",
+}
+
+
+def _interventions(summary: Mapping[str, Any] | None) -> list[str]:
+    if not summary:
+        return []
+    lines = [
+        "How often policy stepped in on honest work, per document (repeats of one document count "
+        "once; its worst run decides):",
+        "",
+        "| Outcome | Documents | 95% interval |",
+        "|---|---|---|",
+    ]
+    for name, share in summary["shares"].items():
+        interval = span(share["wilson_95"])
+        lines.append(f"| {_OUTCOME_NAMES[name]} | {share['k']} of {share['n']} | {interval} |")
+    lines += ["", "| Document | Runs | Outcome | Rules |", "|---|---|---|---|"]
+    for doc in summary["documents"]:
+        rules = ", ".join(f"`{r}`" for r in doc["rules"]) or "-"
+        lines.append(
+            f"| `{doc['case_id']}` | {doc['runs']} | {_OUTCOME_NAMES[doc['outcome']]} | {rules} |"
+        )
+    return [*lines, ""]
 
 
 def _clean_policy(clean: Mapping[str, Any] | None) -> list[str]:

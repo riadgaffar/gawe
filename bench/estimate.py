@@ -59,6 +59,10 @@ class RunPlan:
     cuad_repeats: int
     injection_cases: tuple[Case, ...]
     injection_repeats: int
+    clean_cases: tuple[Case, ...] = ()  # M18: clean documents, run as twins
+    clean_repeats: int = 1
+    handwritten_cases: tuple[Case, ...] = ()  # M18: hand-written attacks, run live only
+    handwritten_repeats: int = 1
 
     def fingerprint(self, *, price: Price, corpus_sha256: str) -> dict[str, Any]:
         return {
@@ -69,6 +73,23 @@ class RunPlan:
             "cuad_repeats": self.cuad_repeats,
             "injection_cases": sorted(c.case_id for c in self.injection_cases),
             "injection_repeats": self.injection_repeats,
+            # Only when clean documents run, so earlier estimates keep their fingerprints.
+            **(
+                {
+                    "clean_cases": sorted(c.case_id for c in self.clean_cases),
+                    "clean_repeats": self.clean_repeats,
+                }
+                if self.clean_cases
+                else {}
+            ),
+            **(
+                {
+                    "handwritten_cases": sorted(c.case_id for c in self.handwritten_cases),
+                    "handwritten_repeats": self.handwritten_repeats,
+                }
+                if self.handwritten_cases
+                else {}
+            ),
             "corpus_sha256": corpus_sha256,
         }
 
@@ -93,7 +114,12 @@ def count_units(plan: RunPlan, counter: TokenCounter, *, cuad_root: Path) -> lis
             )
     with tempfile.TemporaryDirectory(prefix="gawe-bench-count-") as tmp:
         apps = {app: build(Path(tmp) / app) for app, build in BUNDLES.items()}
-        for item in plan.injection_cases:
+        batches = (
+            (plan.injection_cases, plan.injection_repeats),
+            (plan.clean_cases, plan.clean_repeats),
+            (plan.handwritten_cases, plan.handwritten_repeats),
+        )
+        for item, repeats in ((c, r) for cases, r in batches for c in cases):
             bundle = apps[item.app]
             assert bundle.reader_profile is not None
             read = reader_request(bundle.reader_profile, document_for(item))
@@ -116,7 +142,7 @@ def count_units(plan: RunPlan, counter: TokenCounter, *, cuad_root: Path) -> lis
                         input_tokens=counter.count(request),
                         max_output_tokens=request.max_output_tokens,
                         attempts=attempts,
-                        repeats=plan.injection_repeats,
+                        repeats=repeats,
                     )
                 )
     return units
@@ -178,9 +204,12 @@ def build_estimate(
     expected: Decimal | None = Decimal(0) if trial is not None else None
     for unit in units:
         tokens_in = Decimal(unit.input_tokens) * INPUT_MARGIN
-        per_attempt_in = tokens_in * price.input_per_mtok / 1_000_000
+        # The tier is chosen from the margin-padded count, so a prompt near the threshold is
+        # priced at the higher tier: an estimate may overstate, never understate.
+        input_rate, output_rate = price.rates(tokens_in)
+        per_attempt_in = tokens_in * input_rate / 1_000_000
         input_usd += unit.repeats * per_attempt_in
-        worst_out = unit.max_output_tokens * price.output_per_mtok / 1_000_000
+        worst_out = unit.max_output_tokens * output_rate / 1_000_000
         ceiling += unit.repeats * unit.attempts * (per_attempt_in + worst_out)
         if trial is not None and expected is not None:
             stats = trial.by_purpose.get(unit.purpose)
@@ -190,7 +219,7 @@ def build_estimate(
                 if stats and stats.calls
                 else Decimal(unit.max_output_tokens)
             )
-            out_usd = output * price.output_per_mtok / 1_000_000
+            out_usd = output * output_rate / 1_000_000
             expected += unit.repeats * attempts * (per_attempt_in + out_usd)
     if trial is not None and expected is not None:
         expected += trial.spent_usd  # the trial's own spend counts toward the cap

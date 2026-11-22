@@ -185,3 +185,42 @@ def test_high_severity_only_keeps_high_flags_and_drops_unrecorded_reads() -> Non
     (only,) = high_severity_only(reads)
     assert only["case_id"] == "a" and only["flagged"] == ["auto_renewal"]
     assert reads[0]["flagged"] == ["auto_renewal", "unlimited_liability"]  # input untouched
+
+
+def test_interventions_are_counted_per_document_by_its_worst_run() -> None:
+    from bench.metrics import summarize_interventions
+
+    def twin(case: str, *, completed: bool, held: int = 0, denied: int = 0, rules=()) -> dict:
+        return {
+            "case_id": case,
+            "app": "contract_review",
+            "completed": completed,
+            "interventions": {
+                "denied": denied,
+                "approval_requested": held,
+                "approved_as_honest": held,
+                "rules": list(rules),
+            },
+        }
+
+    runs = [
+        twin("twin-a", completed=True),
+        twin("twin-a", completed=True),  # a repeat: still one document
+        twin("twin-b", completed=True, held=1, rules=["low-risk-needs-legal"]),
+        twin("twin-c", completed=True),
+        twin("twin-c", completed=False, denied=1, rules=["default-deny"]),  # worst run decides
+        twin("twin-d", completed=False),  # failed with no approval involved
+        twin("twin-e", completed=False, held=1),  # held and left waiting: a person had to look
+    ]
+    summary = summarize_interventions(runs)
+    assert summary is not None
+    outcomes = {d["case_id"]: d["outcome"] for d in summary["documents"]}
+    assert outcomes == {
+        "twin-a": "no_person",
+        "twin-b": "approval_required",
+        "twin-c": "denied",
+        "twin-d": "failed",
+        "twin-e": "approval_required",
+    }
+    assert summary["shares"]["no_person"]["k"] == 1 and summary["shares"]["no_person"]["n"] == 5
+    assert summarize_interventions([{"case_id": "x", "completed": True}]) is None  # pre-M18

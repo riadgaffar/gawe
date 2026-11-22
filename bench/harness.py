@@ -15,7 +15,7 @@ import hashlib
 import json
 import subprocess
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -24,6 +24,7 @@ from typing import Any, TextIO
 
 from bench.budget import (
     Budget,
+    BudgetExceededError,
     CountingProvider,
     Estimate,
     Price,
@@ -50,7 +51,10 @@ from bench.estimate import (
     trial_contracts,
     trial_stats,
 )
+from bench.injection import adaptive
 from bench.injection.cases import Suite, corpus_sha256, load_suite
+from bench.injection.clean import clean_sha256, load_clean
+from bench.injection.handwritten import handwritten_sha256, load_handwritten
 from bench.injection.run import plan_trials as plan_injection
 from bench.injection.run import run_injection
 from bench.injection.scripted import KIND as SCRIPTED_KIND
@@ -63,7 +67,12 @@ from gawe.llm.provider import LLMProvider, LLMRequest, ProviderConfigError
 from gawe.llm.reader import DEFAULT_MAX_DOCUMENT_CHARS
 
 DEFAULT_SEED = 20261029
-SUITES = ("cuad", "injection")
+SUITES = ("cuad", "injection", "clean", "handwritten")
+DEFAULT_SUITES = ("cuad", "injection")  # `clean` (M18) runs only when asked for
+
+
+class UnknownCasesError(ValueError):
+    """--cases named a case that isn't in the chosen suites."""
 
 
 class ExcludeRunError(ValueError):
@@ -94,7 +103,10 @@ class Settings:
     cuad_repeats: int = 3
     injection_repeats: int = 5
     profiles: tuple[str, ...] = ("presence", "production")
-    suites: tuple[str, ...] = SUITES
+    suites: tuple[str, ...] = DEFAULT_SUITES
+    clean_repeats: int = 1
+    handwritten_repeats: int = 1
+    cases: frozenset[str] | None = None  # M18: only these injection or clean cases, by id
     exclude: frozenset[str] = frozenset()
     exclude_run: str | None = None  # where `exclude` came from, for the manifest
 
@@ -157,12 +169,29 @@ def prepare(settings: Settings, deps: Deps) -> Prepared:
         min_positives=settings.min_positives,
     )
     suite = load_suite()
+    injection_cases = suite.cases if "injection" in settings.suites else ()
+    clean_cases = load_clean() if "clean" in settings.suites else ()
+    handwritten_cases = load_handwritten(suite=suite) if "handwritten" in settings.suites else ()
+    if settings.cases is not None:
+        known = {c.case_id for c in (*injection_cases, *clean_cases, *handwritten_cases)}
+        unknown = settings.cases - known
+        if unknown:
+            raise UnknownCasesError(
+                f"no such case in the chosen suites: {', '.join(sorted(unknown))}"
+            )
+        injection_cases = tuple(c for c in injection_cases if c.case_id in settings.cases)
+        clean_cases = tuple(c for c in clean_cases if c.case_id in settings.cases)
+        handwritten_cases = tuple(c for c in handwritten_cases if c.case_id in settings.cases)
     plan = RunPlan(
         cuad_cases=sample.cases if "cuad" in settings.suites else (),
         profiles=settings.profiles,
         cuad_repeats=settings.cuad_repeats,
-        injection_cases=suite.cases if "injection" in settings.suites else (),
+        injection_cases=injection_cases,
         injection_repeats=settings.injection_repeats,
+        clean_cases=clean_cases,
+        clean_repeats=settings.clean_repeats,
+        handwritten_cases=handwritten_cases,
+        handwritten_repeats=settings.handwritten_repeats,
     )
     fingerprint = {
         "model": settings.model,
@@ -273,8 +302,10 @@ def _print_estimate(
     calls = sum(u.repeats for u in units)
     print(
         f"{len(prepared.plan.cuad_cases)} contracts x {len(settings.profiles)} profiles x "
-        f"{settings.cuad_repeats} repeats, and {len(prepared.plan.injection_cases)} injection "
-        f"cases x {settings.injection_repeats} repeats: {calls} requests before retries",
+        f"{settings.cuad_repeats} repeats, {len(prepared.plan.injection_cases)} injection "
+        f"cases x {settings.injection_repeats} repeats, and {len(prepared.plan.clean_cases)} clean "
+        f"documents x {settings.clean_repeats}, {len(prepared.plan.handwritten_cases)} "
+        f"hand-written attacks x {settings.handwritten_repeats}: {calls} requests before retries",
         file=out,
     )
     print(f"input cost (exact count + 5%): ${estimate.input_usd:.4f}", file=out)
@@ -377,6 +408,26 @@ def run_benchmark(
                 writer=writer,
                 sleep=deps.sleep,
             )
+        if complete and prepared.plan.clean_cases:
+            complete = run_injection(
+                todo(
+                    plan_injection(prepared.plan.clean_cases, settings.clean_repeats),
+                    _injection_key,
+                ),
+                provider=provider,
+                writer=writer,
+                sleep=deps.sleep,
+            )
+        if complete and prepared.plan.handwritten_cases:
+            complete = run_injection(
+                todo(
+                    plan_injection(prepared.plan.handwritten_cases, settings.handwritten_repeats),
+                    _injection_key,
+                ),
+                provider=provider,
+                writer=writer,
+                sleep=deps.sleep,
+            )
         if complete and "production" in settings.profiles:
             complete = run_cuad(
                 prepared.root,
@@ -450,7 +501,7 @@ _RESUME_CHECKS = (
     ("repeats", lambda m: dict(m["repeats"])),
     ("attack corpus", lambda m: m["injection"]["corpus_sha256"]),
     ("prices", lambda m: dict(m["price"])),
-    ("suites", lambda m: list(m.get("suites", SUITES))),
+    ("suites", lambda m: list(m.get("suites", DEFAULT_SUITES))),
     ("excluded contracts", lambda m: m["sample"].get("excluded_ids_sha256")),
 )
 
@@ -519,9 +570,19 @@ def build_manifest(
         },
         "price": settings.price.as_manifest(),
         "max_usd": settings.cap,
-        "repeats": {"cuad": settings.cuad_repeats, "injection": settings.injection_repeats},
+        "repeats": {
+            "cuad": settings.cuad_repeats,
+            "injection": settings.injection_repeats,
+            **({"clean": settings.clean_repeats} if "clean" in settings.suites else {}),
+            **(
+                {"handwritten": settings.handwritten_repeats}
+                if "handwritten" in settings.suites
+                else {}
+            ),
+        },
         "profiles": list(settings.profiles),
         "suites": list(settings.suites),
+        **({"cases": sorted(settings.cases)} if settings.cases is not None else {}),
         "profile_sha256": {name: profile_sha256(p) for name, p in PROFILES.items()},
         "dataset": {
             "archive_sha256": deps.archive_sha256(),
@@ -548,6 +609,22 @@ def build_manifest(
             "twins": len(prepared.suite.twins),
             "corpus_sha256": corpus_sha256(),
             "policy_by_goal": {name: g.policy for name, g in prepared.suite.goals.items()},
+            **(
+                {
+                    "clean_documents": len(prepared.plan.clean_cases),
+                    "clean_sha256": clean_sha256(),
+                }
+                if prepared.plan.clean_cases
+                else {}
+            ),
+            **(
+                {
+                    "handwritten_attacks": len(prepared.plan.handwritten_cases),
+                    "handwritten_sha256": handwritten_sha256(),
+                }
+                if prepared.plan.handwritten_cases
+                else {}
+            ),
         },
     }
 
@@ -598,3 +675,94 @@ def _case_json(case: CuadCase) -> dict[str, Any]:
         "labels": dict(case.labels),
         "partial_labels": dict(case.partial_labels),
     }
+
+
+def run_adaptive_attacks(
+    *,
+    cap: Decimal,
+    model: str,
+    price: Price,
+    rounds: int,
+    goals: Sequence[str],
+    deps: Deps,
+    yes: bool,
+    out: TextIO,
+    err: TextIO,
+) -> int:
+    """`python -m bench adaptive` (M18, design D4): attacks written from the last one's outcome.
+
+    There is no free count: each prompt depends on the last outcome. The rough estimate uses M12's
+    tokens per attack plus the attacker's own call; the per-call budget check still holds the cap.
+    Exit codes as `run`: 0 done, 1 stopped (cap or API), 2 refused.
+    """
+    suite = load_suite()
+    estimate = adaptive.rough_estimate(price, rounds, len(goals))
+    print(
+        f"{len(goals)} goals x {rounds} rounds: about ${estimate:.2f} (rough: M12's tokens per "
+        "attack plus the attacker's call)",
+        file=out,
+    )
+    if estimate > cap:
+        print(f"refused: the rough estimate is over the ${cap} cap", file=err)
+        return 2
+    if not yes and not deps.confirm(f"Start the generated attacks under a ${cap} cap? [y/N] "):
+        print("not started; nothing was spent", file=err)
+        return 2
+    run_id = _stamp(deps) + "-adaptive"
+    writer = ResultsWriter(deps.results_dir / run_id)
+    commit, dirty = deps.git()
+    writer.write_manifest(
+        {
+            "schema": "gawe.bench.adaptive.v1",
+            "kind": "adaptive",
+            "bench_run_id": run_id,
+            "started_at": deps.now().isoformat(),
+            "git_commit": commit,
+            "git_dirty": dirty,
+            "model": model,
+            "attacker_model": model,
+            "price": price.as_manifest(),
+            "max_usd": cap,
+            "rounds": rounds,
+            "goals": list(goals),
+            "corpus_sha256": corpus_sha256(),
+        }
+    )
+    budget = Budget(cap=cap, price=price)
+    provider = CountingProvider(deps.provider(model), budget)
+    records: list[dict[str, Any]] = []
+
+    def record(trial: dict[str, Any], payload: str) -> None:
+        writer.append(adaptive.KIND, trial)
+        adaptive.write_payload(writer.directory, str(trial["case_id"]), payload)
+        records.append(trial)
+
+    complete, reason = True, None
+    try:
+        for goal in goals:
+            try:
+                adaptive.run_goal(
+                    suite, goal, rounds, provider=provider, record=record, sleep=deps.sleep
+                )
+            except adaptive.AttackerRefusedError as exc:
+                # A refusal ends the whole run: no rewording, and no asking again for other goals.
+                print(f"stopped at goal {goal}: {exc}", file=err)
+                complete, reason = False, f"the attacker model declined at goal {goal} ({exc})"
+                break
+            except adaptive.AttackerError as exc:
+                print(f"goal {goal} stopped early: {exc}", file=err)
+                reason = f"the attacker failed on {goal}: {exc}"
+    except BudgetExceededError:
+        complete, reason = False, "the spend cap was reached"
+    except ProviderConfigError as exc:
+        complete, reason = False, f"the Anthropic API refused a request ({str(exc)[:240]})"
+    finally:
+        writer.finish(
+            complete=complete,
+            reason=reason,
+            spent_usd=budget.spent,
+            extra={"calls": budget.calls, "attacks": len(records)},
+        )
+    _, md = adaptive.write_diversity(writer.directory, records)
+    print(f"spent ${budget.spent:.4f} of ${cap}; {len(records)} attacks; report: {md}", file=out)
+    return 0 if complete else 1

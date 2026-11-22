@@ -634,7 +634,7 @@ def test_a_cuad_only_run_reads_no_injection_case(tmp_path: Path) -> None:
     (directory,) = run_dirs(deps)
     trials = ResultsWriter(directory).trials()
     assert trials and all(t["kind"] == "cuad" for t in trials)
-    assert "and 0 injection cases" in out
+    assert ", 0 injection cases" in out and "0 clean documents" in out
     manifest = json.loads((directory / "manifest.json").read_text())
     assert manifest["suites"] == ["cuad"] and manifest["sample"]["excluded"] == 0
 
@@ -743,3 +743,77 @@ def test_a_missing_api_key_is_refused_before_any_request(
         assert code == EXIT_REFUSED and "set ANTHROPIC_API_KEY first" in err
         assert "Traceback" not in err
     assert run_dirs(deps) == []  # refused before a run directory was written
+
+
+def test_a_live_report_counts_interventions_per_document(tmp_path: Path) -> None:
+    deps = make_deps(tmp_path)
+    code, out, _ = cli(deps, "run", "--max-usd", "5", "--yes", *SMALL)
+    assert code == EXIT_OK, out
+    (directory,) = run_dirs(deps)
+    report = json.loads((directory / "report.json").read_text())
+    summary = report["injection"]["interventions"]
+    # The fake model rates every contract "medium" (no person needed) and grants Dana's wiki
+    # access on every ticket, so Lee's and Sam's tickets grant to someone who didn't file them.
+    outcomes = {d["case_id"]: d["outcome"] for d in summary["documents"]}
+    assert set(outcomes) == {t.case_id for t in load_suite().twins}
+    held = {"twin-lee_crm", "twin-sam_wiki"}
+    assert all(outcomes[k] == "approval_required" for k in held)
+    assert all(v == "no_person" for k, v in outcomes.items() if k not in held)
+    lee = next(d for d in summary["documents"] if d["case_id"] == "twin-lee_crm")
+    assert "grant-to-other-than-submitter-needs-security" in lee["rules"]
+    assert "per document" in (directory / "report.md").read_text()
+
+
+def test_the_clean_suite_runs_each_document_once_as_a_twin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import bench.injection.clean as clean_module
+
+    monkeypatch.setattr(clean_module, "cuad_text", lambda case_id: "SERVICES AGREEMENT\n1. Fees.\n")
+    deps = make_deps(tmp_path)
+    args = ["--suites", "injection,clean", "--injection-repeats", "1", "--contracts", "1"]
+    code, out, _ = cli(deps, "run", "--max-usd", "20", "--yes", *args)  # ceiling about $9
+    assert code == EXIT_OK, out
+    assert "36 clean documents x 1" in out
+    (directory,) = run_dirs(deps)
+    clean = [t for t in ResultsWriter(directory).trials() if t["case_id"].startswith("clean-")]
+    assert len(clean) == 36 and all(t["twin"] and t["repeat"] == 1 for t in clean)
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["repeats"]["clean"] == 1 and manifest["injection"]["clean_documents"] == 36
+    report = json.loads((directory / "report.json").read_text())
+    assert len(report["injection"]["interventions"]["documents"]) == 36 + len(load_suite().twins)
+
+
+def test_cases_picks_only_the_named_cases(tmp_path: Path) -> None:
+    deps = make_deps(tmp_path)
+    args = ["--suites", "injection", "--injection-repeats", "1", "--contracts", "1"]
+    code, out, _ = cli(
+        deps,
+        "run",
+        "--max-usd",
+        "5",
+        "--yes",
+        *args,
+        "--cases",
+        "cr-exfil-blocked-plain,twin-initech",
+    )
+    assert code == EXIT_OK, out
+    (directory,) = run_dirs(deps)
+    ids = {t["case_id"] for t in ResultsWriter(directory).trials()}
+    assert ids == {"cr-exfil-blocked-plain", "twin-initech"}
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["cases"] == ["cr-exfil-blocked-plain", "twin-initech"]
+
+
+def test_an_unknown_case_is_refused(tmp_path: Path) -> None:
+    code, _, err = cli(
+        make_deps(tmp_path),
+        "estimate",
+        "--max-usd",
+        "1",
+        "--suites",
+        "injection",
+        "--cases",
+        "nope",
+    )
+    assert code == EXIT_REFUSED and "no such case" in err
