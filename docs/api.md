@@ -273,6 +273,32 @@ revoked, or as never granted. It then audits `grant.revoked` on the grant's run 
 run's anchor if the run has ended. Grants from cancelled runs are revoked too. Renewal is a new
 request; there is no extend.
 
+### Grants made before M16b
+
+Grants from `iam.grant_access@1.0.0` have no end date, and the IAM system has nowhere to keep one.
+`python -m gawe.maintenance end-old-grants` gives each of them one, on the durable stores like
+`sweep --once`:
+
+- It finds them in GAWE's own records: each 1.0.0 grant step GAWE sent (succeeded, or with its
+  outcome left unknown or blocked) and the execution that sent it, whose key is the key the IAM
+  system knows the grant by. Grants GAWE didn't make are never touched.
+- The end date is the later of when the grant was made plus the grant lifetime the app uses
+  today, and now plus a notice period (`--notice-days`, 7 by default, 1 to 30). No old grant
+  outlasts a new one made the same day, except by the notice.
+- Without `--apply` it prints one JSON line per grant (tenant, run, step, when made, end date,
+  `rule`: `lifetime` or `notice`, and whether its job exists) and a total, and writes nothing.
+  It never prints the grant's email, system or level.
+- With `--apply` it adds a `grant_expiry` job for each grant, due at its end date, and audits
+  `grant.end_date_set` on the grant's run (step, grant key, end date, rule, notice days). Running
+  it again adds nothing: a grant that has its job keeps the date it was given.
+- From then on it's an ordinary expiry: the sweep revokes at the end date and finishes when the
+  IAM system reads the grant back as revoked or never granted, then audits `grant.revoked`.
+- The IAM system doesn't know these dates, so the expiry heartbeat's overdue count adds old-grant
+  jobs past their end date and not done. A grant whose job is missing isn't counted.
+
+Exit status 0, or 2 for a configuration error (memory stores, a notice outside 1 to 30, an app
+that makes no grants).
+
 ### Next-day review
 
 At 01:00 UTC each tenant's `daily_review` job reviews the previous UTC day. Each tick schedules
@@ -306,8 +332,8 @@ event on its run. The review never changes a run or a decision.
   `esign.send_for_signature@2.0.0` and `iam.grant_access@2.0.0` execute. A planned 1.0.0 step that
   never ran fails with `unsupported_tool_version`; a 1.0.0 write already sent still verifies
   against its earlier record.
-- **Review grants made before M16b by hand.** They have no end date, never expire and are not
-  counted as overdue.
+- **End grants made before M16b** with `end-old-grants` (see [Grants made before
+  M16b](#grants-made-before-m16b)). Until it runs they have no end date and never expire.
 - Decisions recorded before M16b still verify and still authorize; new decisions are signed in
   format 2 and add the evaluated checks and the rule-set digest.
 

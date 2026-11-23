@@ -332,3 +332,15 @@ def test_a_hand_off_round_trips_through_its_states(backend: Backend) -> None:
         backend.steps.transition(
             backend.run_id, "s1", expected=StepStatus.DONE_BY_PERSON, to=StepStatus.EXECUTING
         )
+
+
+def test_steps_are_listed_by_tool_version(backend: Backend) -> None:
+    # M21: finding grants made before M16b. Only the named version, ordered by step.
+    add_step(backend, "s2", tool="iam.grant_access", tool_version="1.0.0")
+    add_step(backend, "s1", tool="iam.grant_access", tool_version="1.0.0")
+    add_step(backend, "s3", tool="iam.grant_access", tool_version="2.0.0")
+    add_step(backend, "s4")
+    listed = backend.steps.list_for_tool("iam.grant_access", "1.0.0")
+    assert [s.step_id for s in listed] == ["s1", "s2"]
+    assert listed[0] == backend.steps.get(backend.run_id, "s1")
+    assert backend.steps.list_for_tool("iam.grant_access", "9.9.9") == []

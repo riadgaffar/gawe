@@ -8,7 +8,9 @@ Grants from `iam.grant_access@1.0.0` stay in `iam-system.sqlite3`, read only to 
 Expiry, as the system's own rule: a grant is inactive at or after its `expires_at`, whether or not
 anything revoked it. Revocation is a separate, idempotent record keyed by the grant, so revoking
 twice records once, and a revocation that arrives before a delayed grant still applies to it.
-Grants from before M16b have no end date and never expire here.
+Grants from before M16b have no end date and never expire here. They live in two older places:
+the 1.0.0 store (M16a to M16b) and, before that, only the ledger (M9 to M15). Revocation applies
+to them by key all the same (M21), so GAWE can end them on a date it sets itself.
 """
 
 import json
@@ -150,13 +152,21 @@ class MockIAM:
 
         record, revoked = self.database.transaction(read)
         if record is None:
-            return "absent"
+            if not self._old_grant(grant_key):
+                return "absent"
+            return "revoked" if revoked else "active"  # no end date of its own
         if revoked:
             return "revoked"
         end = _end(json.loads(record))
         if end is not None and now >= end and not self.ignore_expiry:
             return "expired"
         return "active"
+
+    def _old_grant(self, grant_key: str) -> bool:
+        """A grant from before M16b: in the 1.0.0 store, or only in the ledger."""
+        if self.legacy_operations.has(grant_key):
+            return True
+        return any(r["key"] == grant_key for r in self._ledger.records("iam.grant"))
 
     def revocations(self) -> list[dict[str, str]]:
         def read(conn: sqlite3.Connection) -> list[dict[str, str]]:

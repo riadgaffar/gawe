@@ -246,3 +246,43 @@ def test_a_crash_after_revoking_is_finished_once_by_a_new_process(
     beat = expiry(runner(g.load()).tick())
     assert beat.outcomes["revoked"] == 1 and beat.overdue_active == 0
     assert len(g.iam.revocations()) == 1 and g.revoked_events() == 1
+
+
+def test_an_old_grant_job_is_overdue_until_revoked_on_postgres(
+    pg_engine: Any, tmp_path: Path
+) -> None:
+    # M21: a grant from before M16b, ended on a date GAWE set. Planted: the mock's ledger record
+    # (how M9-M15 recorded a grant) and its job, bound to this run's step.
+    from gawe.core.old_grants import OldGrant, old_grant_job
+
+    g = Grants(pg_engine, tmp_path)
+    g.service._orch.advance(g.run_id)
+    step = g.service._orch._steps.get(g.run_id, "grant")
+    Ledger(tmp_path / "ledger.jsonl").record_once("iam.grant", "old-key", lambda: {"level": "read"})
+    iam = MockIAM.from_seed(
+        it_access.HERE / "samples/iam_seed.json", Ledger(tmp_path / "ledger.jsonl")
+    )
+    g.iam = iam  # a sweeper that sees the ledger record
+    end = g.clock.now + timedelta(days=7)
+    grant = OldGrant(
+        tenant_id=TENANT,
+        run_id=g.run_id,
+        step_id="grant",
+        tool="iam.grant_access",
+        version="1.0.0",
+        grant_key="old-key",
+        made_at=g.clock.now - timedelta(days=30),
+        step_status="succeeded",
+        action_hash=str(step.action_hash),
+        plan_version=1,
+    )
+    jobs = g.service._maintenance
+    assert jobs.add(old_grant_job(grant, end=end, rule="notice", notice_days=7, now=g.clock.now))
+    iam.ignore_revokes = True
+    g.clock.now = end + timedelta(minutes=1)
+    assert expiry(runner(g.load()).tick()).overdue_active >= 1
+    iam.ignore_revokes = False
+    g.clock.advance(seconds=60)
+    beats = runner(g.load()).tick()
+    assert iam.grant_state("old-key", g.clock.now) == "revoked"
+    assert expiry(beats).overdue_active == 0

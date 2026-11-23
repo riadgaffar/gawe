@@ -391,7 +391,7 @@ def test_grants_from_before_m16b_have_no_end_date(tmp_path: Path) -> None:
     now = datetime.fromisoformat("2026-11-15T00:00:00+00:00")
     iam.operations.accept("old", {"email": DANA, "system": "wiki", "level": "read"})
     assert iam.grant_state("old", now + timedelta(days=3650)) == "active"
-    assert iam.overdue(now + timedelta(days=3650)) == 0  # listed for operator review instead
+    assert iam.overdue(now + timedelta(days=3650)) == 0  # GAWE counts them from its jobs (M21)
 
 
 # --- startup -------------------------------------------------------------------------------------

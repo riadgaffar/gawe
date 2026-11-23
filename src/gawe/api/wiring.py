@@ -7,7 +7,7 @@ two kinds: in-memory (local demos and tests) and Postgres (everything survives a
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +84,9 @@ class AppBundle:
     # (tool, version) -> the role that marks it done. The engine prepares these actions and a
     # person carries them out; nothing ever lets the agent dispatch them (M20). Empty by default.
     prepare_only: Mapping[tuple[str, str], str] = field(default_factory=dict)
+    # How long a grant lasts when the app makes one today. A grant made before end dates existed
+    # is ended as if made that way, after a notice period (M21). None: the app grants nothing.
+    grant_lifetime: timedelta | None = None
 
 
 def load_app_rules(bundle: AppBundle) -> tuple[Rule, ...]:
@@ -117,11 +120,21 @@ def load_app_rules(bundle: AppBundle) -> tuple[Rule, ...]:
         and m.side_effect_class != "read"
         and "expires_at" in m.input_schema.get("required", ())
     }
-    if expiring != set(bundle.revokers):
+    # A retired write of the same tool may have a revoker too: its grants had no end date, and
+    # GAWE ends them on one it sets (M21). Nothing else may.
+    retired_kin = {
+        (m.name, m.version)
+        for m in bundle.manifests
+        if m.retired
+        and m.side_effect_class != "read"
+        and any(name == m.name for name, _ in expiring)
+    }
+    unexpected = set(bundle.revokers) - expiring - retired_kin
+    if not expiring <= set(bundle.revokers) or unexpected:
         raise ValueError(
             "every write with an end date needs a revoker, and only those: "
             f"missing {sorted(expiring - set(bundle.revokers))}, "
-            f"unexpected {sorted(set(bundle.revokers) - expiring)}"
+            f"unexpected {sorted(unexpected)}"
         )
     # Retired versions never reach policy: their undispatched steps fail closed.
     rules = load_rules(
@@ -262,7 +275,13 @@ def build_engine(
         audit=audit,
         clock=clock,
         window=settings.deadline,
-        expiring=frozenset(bundle.revokers),
+        # Expiry jobs at dispatch only for current versions; a retired one's revoker is there
+        # for grants GAWE ends on a date it sets (M21).
+        expiring=frozenset(
+            k
+            for k in bundle.revokers
+            if k in {(m.name, m.version) for m in bundle.manifests if not m.retired}
+        ),
     )
     executor = Executor(
         steps=stores.steps,

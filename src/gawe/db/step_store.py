@@ -39,6 +39,14 @@ _CURRENT = (
 )
 
 _SELECT = text(f"SELECT {_COLUMNS} {_CURRENT}")
+# Every run's current plan (plans only ever have version 1 today), for one tool version.
+_FOR_TOOL = text(
+    f"SELECT {_COLUMNS} FROM steps s "
+    "JOIN runs r ON r.id = s.run_id "
+    "JOIN plans p ON p.id = s.plan_id AND p.version = r.current_plan_version "
+    "WHERE s.tool_name = :tool AND s.tool_version = :version "
+    "ORDER BY CAST(s.run_id AS text), s.step_key"
+)
 _SELECT_LOCKED = text(f"SELECT s.id, {_COLUMNS} {_CURRENT} FOR UPDATE OF s")
 _PLAN = text(
     "SELECT p.id FROM plans p "
@@ -127,6 +135,11 @@ class PostgresStepStore:
         if row is None:
             raise StepNotFoundError(f"no step {step_id} in run {run_id}")
         return _to_record(row)
+
+    def list_for_tool(self, tool: str, version: str) -> list[StepRecord]:
+        with connection_for(self._bind) as conn:
+            rows = conn.execute(_FOR_TOOL, {"tool": tool, "version": version}).mappings().all()
+        return [_to_record(row) for row in rows]
 
     def transition(
         self,

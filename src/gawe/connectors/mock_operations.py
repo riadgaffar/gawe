@@ -121,6 +121,21 @@ class MockOperations:
 
         return dict(self.database.transaction(save))
 
+    def has(self, key: str) -> bool:
+        """Whether an operation with this key was ever accepted (no visibility delay, no faults):
+        the system's own record, for its own rules such as revocation."""
+        if not self.database.exists():
+            return False
+
+        def read(conn: sqlite3.Connection) -> bool:
+            row = conn.execute(
+                f"SELECT 1 FROM {self._table} WHERE operation_key=?", (key,)
+            ).fetchone()
+            return row is not None
+
+        found: bool = self.database.transaction(read)
+        return found
+
     def read(self, key: str, now: datetime) -> dict[str, Any] | None:
         if self.read_failures:
             self.read_failures -= 1

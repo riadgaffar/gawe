@@ -385,7 +385,7 @@ def _legacy_bundle(e: Env, system: str) -> Any:
     preparers = {k: v for k, v in e.bundle.preparers.items() if k != (name, "2.0.0")}
     readbacks = {k: v for k, v in e.bundle.readbacks.items() if k != (name, "2.0.0")}
     conditional = frozenset(w for w in e.bundle.conditional_writes if w[0] != name)
-    revokers = {k: v for k, v in e.bundle.revokers.items() if k != (name, "2.0.0")}
+    revokers = {k: v for k, v in e.bundle.revokers.items() if k[0] != name}  # none before M16b
 
     def legacy_write(args: Any, call: ToolCall) -> Any:
         e.calls.append(call)

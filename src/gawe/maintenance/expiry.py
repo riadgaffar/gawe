@@ -12,16 +12,19 @@ matter: grants from cancelled or failed runs are revoked too.
 """
 
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 
 from gawe.core.anchor import Anchorer
 from gawe.core.audit import AuditLog
 from gawe.core.expiry import KIND, Revoker
 from gawe.core.maintenance import MaintenanceJob, MaintenanceStore, run_target
+from gawe.core.old_grants import is_old_grant_job
 from gawe.core.runs import RunStore
 from gawe.core.statemachine import RUN_TERMINAL
 
 ACTOR = "gawe.maintenance"
+_PAGE = 500
+_EVERYTHING = datetime(9999, 12, 31, tzinfo=UTC)  # due() bound that lists every pending job
 _DONE = {"revoked": "revoked", "absent": "not_granted"}
 
 
@@ -44,9 +47,28 @@ class GrantExpiryJobs:
 
     def overdue(self, now: datetime) -> int:
         """Grants past their end date that nothing revoked, read from each target system (not
-        from the jobs, so a grant whose job is missing is counted too)."""
+        from the jobs, so a grant whose job is missing is counted too), plus grants made before
+        M16b past the date GAWE gave them (M21). The system doesn't know those dates, so they
+        are read from their jobs: due and not yet done."""
         unique = {id(r): r for r in self._revokers.values()}
-        return sum(r.overdue(now) for r in unique.values())
+        return sum(r.overdue(now) for r in unique.values()) + self._old_grants_overdue(now)
+
+    def _old_grants_overdue(self, now: datetime) -> int:
+        """Old-grant jobs past their end date and not done. A waiting job is pushed back by the
+        retry interval, so it is judged by its end date, not by when it is next due; every
+        pending job is read. A job leased by another sweeper at that moment isn't seen."""
+        count, after = 0, None
+        while True:
+            page = self._jobs.due(_EVERYTHING, limit=_PAGE, after=after)
+            count += sum(
+                is_old_grant_job(j)
+                and j.result is None
+                and datetime.fromisoformat(str(j.payload["expires_at"])) <= now
+                for j in page
+            )
+            if len(page) < _PAGE:
+                return count
+            after = (page[-1].due_at, page[-1].job_id)
 
     def process(self, job: MaintenanceJob) -> str:
         target = run_target(job)

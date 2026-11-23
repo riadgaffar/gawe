@@ -97,6 +97,11 @@ class StepStore(Protocol):
 
     def get(self, run_id: str, step_id: str) -> StepRecord: ...
 
+    def list_for_tool(self, tool: str, version: str) -> list[StepRecord]:
+        """Every step of this tool version, across runs and tenants, ordered by run then step
+        (M21: finding grants made before M16b). Maintenance only; never an API path."""
+        ...
+
     def transition(
         self,
         run_id: str,
@@ -159,6 +164,13 @@ class InMemoryStepStore:
                 return self._steps[(run_id, step_id)]
             except KeyError:
                 raise StepNotFoundError(f"no step {step_id} in run {run_id}") from None
+
+    def list_for_tool(self, tool: str, version: str) -> list[StepRecord]:
+        with self._lock:
+            found = [
+                s for s in self._steps.values() if s.tool == tool and s.tool_version == version
+            ]
+        return sorted(found, key=lambda s: (s.run_id, s.step_id))
 
     def transition(
         self,

@@ -6,7 +6,7 @@ Run with `GAWE_APP=gawe.apps.it_access:bundle`.
 import json
 import os
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -77,7 +77,9 @@ def bundle(
             )
         },
         conditional_writes=iam.CONDITIONAL_WRITES,
-        revokers={("iam.grant_access", "2.0.0"): iam},
+        # 1.0.0 grants have no end date; GAWE ends them on one it sets (M21).
+        revokers={("iam.grant_access", "2.0.0"): iam, ("iam.grant_access", "1.0.0"): iam},
+        grant_lifetime=timedelta(hours=grant_lifetime_hours),
         # Runs read their ticket from the ticket system; uploads are refused.
         sources={PROFILE_NAME: tickets},
         policy_rules=HERE / "policies.yaml",
