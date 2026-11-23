@@ -11,10 +11,17 @@ from typing import Any
 from gawe.connectors.base import FaultInjector, Ledger
 from gawe.connectors.mock_clm import MockCLM, deal_value_check
 from gawe.connectors.mock_operations import MockOperations
+from gawe.core.guarantees import EVERY_WRITE
 
 
 class MockESign:
-    CONDITIONAL_WRITES = frozenset({("esign.send_for_signature", "2.0.0")})
+    # What this system guarantees for its writes (M22): each operation once per GAWE's key, and its
+    # own record of it, read by that key. The current version also checks the bound record's
+    # revision in the write's transaction; 1.0.0 (the older store) doesn't.
+    GUARANTEES = {
+        ("esign.send_for_signature", "2.0.0"): EVERY_WRITE | {"conditional_write"},
+        ("esign.send_for_signature", "1.0.0"): EVERY_WRITE,
+    }
 
     def __init__(self, ledger: Ledger, clm: MockCLM) -> None:
         self._ledger = ledger

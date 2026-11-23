@@ -30,9 +30,10 @@ adds. If verification fails twice on a milestone, stop and report instead of loo
 | M19  | The Reader's summary limit: the contract Reader's instructions state the 300-character limit its schema always enforced, checked on the same contracts and attacks, and the Haiku comparison run again | Done (2026-11-22: 2437 passed, 76 skipped; 116 Postgres tests pass; paid runs $15.98 against about $17 planned. Reader errors on attack runs went from 10 of 130 to 0 for Sonnet and from 40 to 0 for Haiku; on CUAD from 1 to 0 of 306 for Sonnet and 79 to 7 for Haiku. The small-contract downgrade was judged live at last: 5 of 5 ignored and flagged. Nothing else moved, and M17's liability bars still pass. Haiku's Reader gap stayed (F1 −4.2 points, lower end −10.7), so it is still not good enough as the Reader, nor as the Planner (failed 8 of 15 honest IT runs). The scripted run matched all 38 expectations, unchanged. See [m19-design.md](m19-design.md) and [results.md](results.md#m19-update-the-readers-summary-limit-fixed)) |
 | M20  | Action classes the engine only prepares: an app setting that makes a tool version prepare-only, refused at the executor against the current setting; the step stops at `prepared` and a person with the named role, not the requester, marks it done or not done; API, UI card and demo | Done (2026-11-22: 2490 passed, 77 skipped; 118 Postgres tests pass; migration 0009 up and down; no paid runs. Every path to dispatch was tried and refused with the tool never called: an allowing rule, an approval (also one from before the setting), a resumed run, retries and sweeps, crash recovery, a direct executor call, the benchmark harness. Off by default: the scripted run is identical to M19's. With signatures prepare-only, all 3 scripted and 5 hand-written signature attacks stop at `prepared`. GAWE records the person's word; it can't confirm the action. See [m20-design.md](m20-design.md) and [results.md](results.md#m20-update-actions-gawe-only-prepares)) |
 | M21  | An end date for grants made before M16b: GAWE finds each 1.0.0 grant it sent in its own records, gives it the later of its natural end and a notice date, and ends it with M16b's expiry job, through an operator command that is a dry run by default | Done (2026-11-22: 2521 passed, 79 skipped; 121 Postgres tests pass; no migration; no paid runs. The mock IAM now reads and revokes both kinds of old grant (ledger-only, M9 to M15, and the 1.0.0 store, M16a to M16b). `end-old-grants` prints ids and dates only, schedules once however often it runs, and audits `grant.end_date_set`; old-grant jobs past their date count toward the overdue alarm. Run end to end on a throwaway database: a real 1.0.0 grant was listed, scheduled, left alone before its date and revoked at it. The IAM system still doesn't know these dates; only GAWE's job ends them. See [m21-design.md](m21-design.md)) |
+| M22  | What the target guarantees: each connector declares what its system enforces per write, startup refuses a write that relies on something its target doesn't, and a condition in another system is read just before sending | Done (2026-11-23: 2549 passed, 79 skipped; 121 Postgres tests pass; no migration; no paid runs. Found while exploring and fixed: an IT ticket closed while its grant waited for a security approver still got the grant. It is now re-read on every attempt immediately before the IAM call, and a closed or unreadable ticket sends nothing. The window between that read and the write is named, not closed. Every shipped write declares idempotency and read-back, and the record-bound ones a conditional write; a write judged by a running total would need atomic reservation, though none exists yet. Scripted and integrity unchanged. See [m22-design.md](m22-design.md)) |
 
-Next: one of the two larger reader requirements, **replay of failed events with side effects** or
-**what the target guarantees** (items 7 and 8 in the queue below).
+Next: **M23, credentials and controls the agent can't touch** (the rest of item 8 in the queue
+below), then replay of failed events with side effects.
 
 Planned, not scheduled: **Pilot-ready** (OIDC sign-in and the first real connector against a sandbox
 account). It starts when there is a design partner or a sandbox to connect to, and gets a number then.
@@ -80,14 +81,14 @@ ahead of replay, and the connector-guarantee and credential items are merged.
    reuse M16's preparation, read-back and record binding (reader comments).
 8. **What the target guarantees, and what the agent cannot touch.** Two reader requirements,
    merged 2026-11-19: both ask what the connector or target actually enforces and what the engine
-   only assumes.
-   - Block automation when the target cannot guarantee what policy needs. An approval can go
+   only assumes. Split 2026-11-22: the first part is done as M22; the second is M23, next.
+   - (Done as M22.) Block automation when the target cannot guarantee what policy needs. An approval can go
      stale while configuration stays the same, because operational state (a spend rate, a platform
      cap) moves underneath it. Name the authoritative conditions and how fresh they must be. Reserve
      cumulative limits atomically at the target, not with separate numeric checks. When a connector
      cannot enforce a condition policy relies on, refuse automatic execution and record the race
      that remains; a fresh human approval does not remove it (reader comments).
-   - Credentials that match the action, and controls the agent cannot touch. Where the target
+   - (M23.) Credentials that match the action, and controls the agent cannot touch. Where the target
      supports it, a read credential cannot write: try a write with it and check the target refuses.
      Tools exposed to the agent cannot change the policies, verifiers or credential settings that
      constrain them, through any execution path. Link proposal, decision, approval, dispatch and

@@ -61,7 +61,7 @@ def bundle(
         tools=implementations(clm, mail, esign),
         readbacks=readbacks(clm, esign, mail),
         preparers=preparers(clm, mail_directory),
-        conditional_writes=clm.CONDITIONAL_WRITES | esign.CONDITIONAL_WRITES,
+        guarantees={**clm.GUARANTEES, **esign.GUARANTEES, **mail.GUARANTEES},
         review_sample=review_sample,
         policy_rules=HERE / "policies.yaml",
         profiles=frozenset({PROFILE_NAME}),

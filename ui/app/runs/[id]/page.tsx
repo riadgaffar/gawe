@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { Shell } from "@/components/Shell";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ApiError } from "@/lib/api-client";
-import { isFinished, relativeTime, shortHash } from "@/lib/format";
+import { conditionsNote, isFinished, relativeTime, shortHash } from "@/lib/format";
 import { handoffSummary } from "@/lib/handoff-view";
 import { requireSession } from "@/lib/session";
 import { LiveRefresh } from "./LiveRefresh";
@@ -76,6 +76,9 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                   <StatusBadge status={step.status} />
                   {step.error && <div className="muted">{step.error}</div>}
                   {step.handoff && <div className="muted">{handoffSummary(step.handoff, step.status)}</div>}
+                  {conditionsNote(step.checked_not_enforced) && (
+                    <div className="muted">{conditionsNote(step.checked_not_enforced)}</div>
+                  )}
                   {step.verification && <details><summary>Verification evidence</summary>
                     <p>Deadline: {step.verification.deadline}</p>
                     <pre>{JSON.stringify(step.verification.evidence, null, 2)}</pre>

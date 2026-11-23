@@ -260,10 +260,15 @@ def test_grant_lifetime_bounds_are_inclusive() -> None:
 @pytest.mark.parametrize("app", [contract_review, it_access])
 def test_a_bound_tool_without_a_conditional_write_fails_startup(tmp_path: Path, app: Any) -> None:
     bundle = app.bundle(tmp_path)
-    for identity in sorted(bundle.conditional_writes):
-        missing = replace(bundle, conditional_writes=bundle.conditional_writes - {identity})
-        with pytest.raises(ValueError, match="conditional writes"):
-            load_app_rules(missing)
+    bound = [(m.name, m.version) for m in bundle.manifests if m.record_binding]
+    assert bound
+    for identity in bound:
+        without = {
+            **bundle.guarantees,
+            identity: bundle.guarantees[identity] - {"conditional_write"},
+        }
+        with pytest.raises(ValueError, match="conditional_write"):
+            load_app_rules(replace(bundle, guarantees=without))
 
 
 @pytest.mark.parametrize("app", [contract_review, it_access])
@@ -384,7 +389,8 @@ def _legacy_bundle(e: Env, system: str) -> Any:
     ]
     preparers = {k: v for k, v in e.bundle.preparers.items() if k != (name, "2.0.0")}
     readbacks = {k: v for k, v in e.bundle.readbacks.items() if k != (name, "2.0.0")}
-    conditional = frozenset(w for w in e.bundle.conditional_writes if w[0] != name)
+    # Before M16b the 1.0.0 write was the current one: idempotent and read back, not conditional.
+    guarantees = {k: v for k, v in e.bundle.guarantees.items() if k != (name, "2.0.0")}
     revokers = {k: v for k, v in e.bundle.revokers.items() if k[0] != name}  # none before M16b
 
     def legacy_write(args: Any, call: ToolCall) -> Any:
@@ -402,7 +408,10 @@ def _legacy_bundle(e: Env, system: str) -> Any:
         manifests=manifests,
         preparers=preparers,
         readbacks=readbacks,
-        conditional_writes=conditional,
+        guarantees=guarantees,
+        dispatch_conditions={  # none before M22, and none for the 1.0.0 write
+            k: v for k, v in e.bundle.dispatch_conditions.items() if k[0] != name
+        },
         revokers=revokers,
         policy_rules=path,
         tools={**e.bundle.tools, name: legacy_write},

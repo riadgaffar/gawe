@@ -15,7 +15,9 @@ _NAME = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*")
 
 
 class PolicySource(FrozenModel):
-    kind: Literal["configuration", "findings", "resource"]
+    # "counter": a running total a target system keeps (M22). A write judged with one needs
+    # atomic reservation at its target.
+    kind: Literal["configuration", "findings", "resource", "counter"]
     resource: str
 
 

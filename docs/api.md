@@ -34,7 +34,7 @@ Every error is `{"error": {"code": "...", "message": "..."}}`.
 | `GET /v1/tools` | any user | registered tools with input schemas |
 | `POST /v1/runs` | any user | start a run: `{objective, profile, document?, source_id?}`. Returns `201` with the new run; planning and execution continue in the background. See [Runs started from a record](#runs-started-from-a-record) |
 | `GET /v1/runs?limit=` | any user | the tenant's runs, newest first |
-| `GET /v1/runs/{id}` | any user in tenant | run, steps, policy outcome and evaluated checks per step, each write step's verification record |
+| `GET /v1/runs/{id}` | any user in tenant | run, steps, policy outcome and evaluated checks per step, each write step's verification record, and the conditions it is only checked against (`checked_not_enforced`, see [What targets guarantee](#what-targets-guarantee)) |
 | `GET /v1/runs/{id}/verification` | any user in tenant | independent read-back records for the run, see [Independent write verification](#independent-write-verification) |
 | `POST /v1/runs/{id}/cancel` | starter or `admin` | cancel (409 if a step is executing) |
 | `POST /v1/runs/{id}/resume` | starter or `admin` | drive the run again, e.g. after a restart; `202` |
@@ -108,6 +108,29 @@ system.
   text.
 
 The engine records the person's word; it can't confirm what they did in the target system.
+
+## What targets guarantee
+
+Each app declares, per write tool version, what its target system guarantees, and startup
+refuses a write that relies on something its target doesn't (M22):
+
+| Guarantee | Meaning | Which writes need it |
+|---|---|---|
+| `idempotent_by_key` | The system records an operation once per GAWE's key | Every write |
+| `authoritative_readback` | Its own record of the operation can be read by that key; labels or delayed history don't count | Every write |
+| `conditional_write` | It checks the bound record's revision in the write's own transaction | A write that binds a record |
+| `atomic_reservation` | It reserves against a running total in the write's own transaction | A write that a rule judges with a `counter` policy source |
+
+A write that the app makes prepare-only needs none of them; GAWE never sends it.
+
+Some conditions live in another system, so the target can't check them at the write. The IT app's
+grants rely on the ticket still being open (`ticket_open`). Such a condition is read on every
+attempt, immediately before the tool is called. If it no longer holds, nothing is sent and the
+step fails with `condition_changed`; if it can't be read, `condition_unreadable`. Each check is
+audited as `condition.checked` with the condition names and `held`, `changed:<name>` or
+`unreadable:<name>`, never what was read. A run's steps list these conditions in
+`checked_not_enforced`. The window between that read and the write remains: a ticket closed in
+it still gets its grant, which then expires as usual.
 
 ## Verifying the audit trail
 

@@ -24,7 +24,7 @@ Audit events contain hashes and short codes only, never arguments or tool output
 """
 
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, NoReturn, Protocol
@@ -34,6 +34,7 @@ from jsonschema import Draft202012Validator
 from gawe.core.approvals import ApprovalNotGrantedError, ApprovalService
 from gawe.core.audit import AuditLog
 from gawe.core.canonical import action_hash, canonical_json, sha256_hex
+from gawe.core.guarantees import DispatchCondition
 from gawe.core.maintenance import JobConflictError, MaintenanceJob
 from gawe.core.models import PolicyDecision, ToolManifest
 from gawe.core.policy.signing import PolicySigner, PolicySigningError
@@ -140,8 +141,10 @@ class Executor:
         clock: Callable[[], datetime] = _utc_now,
         sleep: Callable[[float], None] = time.sleep,
         prepare_only: frozenset[tuple[str, str]] = frozenset(),
+        conditions: Mapping[tuple[str, str], Sequence[DispatchCondition]] | None = None,
     ) -> None:
         self._prepare_only = prepare_only
+        self._conditions = {k: tuple(v) for k, v in (conditions or {}).items()}
         self._steps = steps
         self._executions = executions
         self._registry = registry
@@ -297,6 +300,14 @@ class Executor:
                 job = self.verification.renew_dispatch(step, job)
             except JobConflictError:
                 return self.reconcile(step)
+            # M22: conditions the target can't enforce, read last, just before sending.
+            failed = self._check_conditions(step)
+            if failed is not None:
+                self._close_failed(step, number, failed, retryable=False)
+                job = self.verification.change(
+                    job, result={"outcome": "not_dispatched", "code": failed}
+                )
+                return self.reconcile(step, owned=job)
             try:
                 reply = impl(
                     step.resolved_args,
@@ -369,6 +380,37 @@ class Executor:
             )
             return self.reconcile(step, owned=job)
         raise AssertionError("bounded dispatch loop must return")
+
+    def _check_conditions(self, step: StepRecord) -> str | None:
+        """None when every declared condition holds; else `condition_changed` or
+        `condition_unreadable`. Audited by name and result, never the values read."""
+        conditions = self._conditions.get((step.tool, step.tool_version), ())
+        if not conditions:
+            return None
+        assert self.verification is not None
+        run = self.verification.runs.get(step.run_id)
+        result, failed = "held", None
+        for condition in conditions:
+            try:
+                holds = condition.check(run, step)
+            except Exception:  # noqa: BLE001 - an unreadable condition stops the write
+                result, failed = f"unreadable:{condition.name}", "condition_unreadable"
+                break
+            if not holds:
+                result, failed = f"changed:{condition.name}", "condition_changed"
+                break
+        self._audit.record(
+            step.run_id,
+            "condition.checked",
+            ACTOR,
+            {
+                "step_id": step.step_id,
+                "action_hash": step.action_hash,
+                "conditions": [c.name for c in conditions],
+                "result": result,
+            },
+        )
+        return failed
 
     def _recompute_hash(self, step: StepRecord) -> str:
         recomputed = action_hash(

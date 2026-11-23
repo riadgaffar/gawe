@@ -127,8 +127,10 @@ class ApiService:
         maintenance_runner: MaintenanceRunner | None = None,
         reviews: ReviewStore | None = None,
         sources: Mapping[str, DocumentSource] | None = None,
+        checked_not_enforced: Mapping[tuple[str, str], tuple[str, ...]] | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
+        self._checked_not_enforced = dict(checked_not_enforced or {})
         self._orch = orchestrator
         self._runs = runs
         self._steps = steps
@@ -551,6 +553,9 @@ class ApiService:
                     approver_role=decision.approver_role if decision else None,
                     action_hash=step.action_hash,
                     error=step.error,
+                    checked_not_enforced=self._checked_not_enforced.get(
+                        (step.tool, step.tool_version), ()
+                    ),
                     handoff=(
                         HandoffMarkView(
                             role=step.handoff.role,

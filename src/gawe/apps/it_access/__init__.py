@@ -18,9 +18,11 @@ from gawe.apps.readback import operation_adapter
 from gawe.connectors.base import Ledger
 from gawe.connectors.mock_iam import MockIAM
 from gawe.connectors.mock_tickets import MockTickets, Ticket
+from gawe.core.guarantees import DispatchCondition
 from gawe.core.policy.provenance import PolicySource, PolicyVariable
 from gawe.core.policy.rules import email_domain
 from gawe.core.readback import ReadbackAdapter
+from gawe.core.records import StepRecord
 from gawe.core.runs import RunRecord
 
 HERE = Path(__file__).parent
@@ -53,6 +55,17 @@ def sample_tickets(path: Path = HERE / "samples" / "tickets.json") -> list[Ticke
     ]
 
 
+def ticket_open(tickets: MockTickets) -> DispatchCondition:
+    """The run's ticket is still open in the ticket system. A run without one can't hold it."""
+
+    def check(run: RunRecord, step: StepRecord) -> bool:
+        if run.source_id is None:
+            return False
+        return tickets.get(run.tenant_id, run.source_id).status == "open"
+
+    return DispatchCondition("ticket_open", check)
+
+
 def bundle(
     demo_dir: Path | None = None,
     *,
@@ -76,7 +89,10 @@ def bundle(
                 iam, lifetime_hours=grant_lifetime_hours, clock=clock, tickets=tickets
             )
         },
-        conditional_writes=iam.CONDITIONAL_WRITES,
+        guarantees=iam.GUARANTEES,
+        # The ticket lives in another system, so the IAM write can't check it: it is read again
+        # just before a grant is sent (M22).
+        dispatch_conditions={("iam.grant_access", "2.0.0"): (ticket_open(tickets),)},
         # 1.0.0 grants have no end date; GAWE ends them on one it sets (M21).
         revokers={("iam.grant_access", "2.0.0"): iam, ("iam.grant_access", "1.0.0"): iam},
         grant_lifetime=timedelta(hours=grant_lifetime_hours),

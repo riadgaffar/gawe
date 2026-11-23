@@ -34,6 +34,8 @@ export type StepView = {
   action_hash: string | null;
   error: string | null;
   handoff?: HandoffMarkView | null;
+  // M22: conditions read just before sending, which the target can't enforce.
+  checked_not_enforced?: string[];
 };
 
 // A prepare-only step (M20): the role that may mark it, and what the person said.

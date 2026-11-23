@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from gawe.api.wiring import AppBundle
+from gawe.core.guarantees import EVERY_WRITE
 from gawe.core.policy.provenance import PolicySource, PolicyVariable
 from gawe.core.readback import ReadbackResult
 from tests.engine_flow import TENANT_VARS
@@ -25,6 +26,12 @@ def bundle(connector: FakeConnector | None = None) -> tuple[AppBundle, FakeConne
             tools={name: connector for name in catalog},
             readbacks={
                 (m.name, m.version): read for m in catalog.values() if m.side_effect_class != "read"
+            },
+            # The fake connector keeps one effect per key and reads it back by that key (M22).
+            guarantees={
+                (m.name, m.version): EVERY_WRITE
+                for m in catalog.values()
+                if m.side_effect_class != "read"
             },
             policy_rules=FIXTURES / "example_policies.yaml",
             profiles=frozenset({"contract_review"}),

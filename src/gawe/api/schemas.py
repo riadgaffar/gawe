@@ -62,6 +62,9 @@ class StepView(View):
     error: str | None = None
     verification: VerificationView | None = None
     handoff: HandoffMarkView | None = None
+    # Conditions in other systems this write relies on that its target can't enforce: read just
+    # before sending, with a window left between that read and the write (M22).
+    checked_not_enforced: tuple[str, ...] = ()
 
 
 class RunView(View):

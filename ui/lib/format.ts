@@ -43,6 +43,13 @@ export function label(status: string): string {
   return status.replaceAll("_", " ");
 }
 
+// M22: conditions in another system a write relies on, read just before sending. The target
+// can't enforce them, so the page says so rather than implying they're guaranteed.
+export function conditionsNote(names: readonly string[] | null | undefined): string | null {
+  if (!names || names.length === 0) return null;
+  return `Checked just before sending, not enforced by the target: ${names.join(", ")}`;
+}
+
 export function shortHash(hash: string | null | undefined, length = 12): string {
   if (!hash) return "-";
   return hash.length <= length ? hash : `${hash.slice(0, length)}…`;

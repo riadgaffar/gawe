@@ -15,11 +15,18 @@ from typing import Any
 from gawe.connectors.base import ConnectorError, FaultInjector, Ledger
 from gawe.connectors.mock_operations import MockDatabase, MockOperations, operations_table
 from gawe.connectors.mock_records import VersionedRecords, records_table
+from gawe.core.guarantees import EVERY_WRITE
 
 
 class MockCLM:
     # Tool versions whose writes this system guards with the bound contract revision.
-    CONDITIONAL_WRITES = frozenset({("crm.write_assessment", "2.0.0")})
+    # What this system guarantees for its writes (M22): each operation once per GAWE's key, and its
+    # own record of it, read by that key. The current version also checks the bound record's
+    # revision in the write's transaction; 1.0.0 (the older store) doesn't.
+    GUARANTEES = {
+        ("crm.write_assessment", "2.0.0"): EVERY_WRITE | {"conditional_write"},
+        ("crm.write_assessment", "1.0.0"): EVERY_WRITE,
+    }
 
     def __init__(self, contracts: Mapping[str, Mapping[str, Any]], ledger: Ledger) -> None:
         path = ledger.path.parent / "clm-records.sqlite3" if ledger.path else None

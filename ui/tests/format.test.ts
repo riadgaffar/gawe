@@ -92,3 +92,13 @@ test("read-back lifecycle distinguishes waiting from terminal uncertainty", () =
   assert.equal(isFinished("unknown"), true);
   assert.equal(isFinished("waiting_verification"), false);
 });
+
+test("the run page says which conditions are only checked, not enforced", async () => {
+  const { conditionsNote } = await import("../lib/format.ts");
+  assert.equal(conditionsNote(["ticket_open"]), "Checked just before sending, not enforced by the target: ticket_open");
+  assert.equal(conditionsNote([]), null);
+  assert.equal(conditionsNote(undefined), null);
+  const { readFile } = await import("node:fs/promises");
+  const page = await readFile(new URL("../app/runs/[id]/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /conditionsNote\(step\.checked_not_enforced\)/);
+});

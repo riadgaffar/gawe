@@ -5,6 +5,7 @@ manifests, its policy rules and its Reader profile. Everything else is common. S
 two kinds: in-memory (local demos and tests) and Postgres (everything survives a restart).
 """
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -23,6 +24,7 @@ from gawe.core.approvals import (
 from gawe.core.audit import AuditLog, AuditStore, InMemoryAuditStore
 from gawe.core.executor import Executor, RetryPolicy, ToolImplementation
 from gawe.core.expiry import Revoker
+from gawe.core.guarantees import GUARANTEES, DispatchCondition, required
 from gawe.core.maintenance import InMemoryMaintenanceStore, MaintenanceStore
 from gawe.core.models import ToolManifest
 from gawe.core.policy.engine import RuleEngine
@@ -71,9 +73,13 @@ class AppBundle:
     policy_variables: Mapping[str, PolicyVariable] = field(default_factory=dict)
     preparers: Mapping[tuple[str, str], Preparer] = field(default_factory=dict)
     readbacks: Mapping[tuple[str, str], ReadbackAdapter] = field(default_factory=dict)
-    # (tool, version) writes whose connector checks the bound record revision in the write's
-    # own transaction. Declared by the connectors, not by the manifests.
-    conditional_writes: frozenset[tuple[str, str]] = frozenset()
+    # (tool, version) -> what its target system guarantees (M22, `gawe.core.guarantees`).
+    # Declared by the connectors, not by the manifests; startup checks each write's needs.
+    guarantees: Mapping[tuple[str, str], frozenset[str]] = field(default_factory=dict)
+    # (tool, version) -> conditions in other systems, checked just before sending (M22).
+    dispatch_conditions: Mapping[tuple[str, str], tuple[DispatchCondition, ...]] = field(
+        default_factory=dict
+    )
     # (tool, version) writes that grant access until `expires_at`, with the target system's
     # revocation. Each such grant gets an expiry job the sweep runs at its end date.
     revokers: Mapping[tuple[str, str], Revoker] = field(default_factory=dict)
@@ -100,18 +106,12 @@ def load_app_rules(bundle: AppBundle) -> tuple[Rule, ...]:
     if required != set(bundle.preparers):
         raise ValueError("preparation adapters must match required tool versions")
     for manifest in bundle.manifests:
-        identity = (manifest.name, manifest.version)
         if manifest.record_binding is None:
             continue
         if manifest.side_effect_class == "read" or not manifest.preparation_required:
             raise ValueError(
                 f"{manifest.name}@{manifest.version}: record binding needs a write "
                 "with trusted preparation"
-            )
-        if identity not in bundle.conditional_writes:
-            raise ValueError(
-                f"{manifest.name}@{manifest.version}: record binding needs a "
-                "connector with conditional writes"
             )
     expiring = {
         (m.name, m.version)
@@ -142,6 +142,7 @@ def load_app_rules(bundle: AppBundle) -> tuple[Rule, ...]:
     )
     validate_provenance(rules, bundle.manifests, bundle.policy_sources, bundle.policy_variables)
     _check_prepare_only(bundle, rules)
+    _check_guarantees(bundle, rules)
     writes = {(m.name, m.version) for m in bundle.manifests if m.side_effect_class != "read"}
     if writes != set(bundle.readbacks):
         raise ValueError("read-back adapters must match write tool versions")
@@ -162,6 +163,43 @@ def _check_prepare_only(bundle: AppBundle, rules: Sequence[Rule]) -> None:
             raise ValueError(f"prepare_only names {name}@{version}, a read: nothing to hand over")
         if role not in known_roles:
             raise ValueError(f"prepare_only gives {name}@{version} the unknown role {role!r}")
+
+
+_CONDITION = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _check_guarantees(bundle: AppBundle, rules: Sequence[Rule]) -> None:
+    """Every current write's target guarantees what the write relies on, or GAWE never sends it
+    (prepare-only). A declaration names only registered tool versions and known guarantees."""
+    manifests = {(m.name, m.version): m for m in bundle.manifests}
+    for (name, version), declared in bundle.guarantees.items():
+        if (name, version) not in manifests:
+            raise ValueError(f"guarantees name {name}@{version}, which the app doesn't register")
+        unknown = set(declared) - GUARANTEES
+        if unknown:
+            raise ValueError(f"{name}@{version}: unknown guarantees {sorted(unknown)}")
+    for (name, version), conditions in bundle.dispatch_conditions.items():
+        manifest = manifests.get((name, version))
+        if manifest is None or manifest.retired or manifest.side_effect_class == "read":
+            raise ValueError(f"dispatch conditions name {name}@{version}, not a current write")
+        names = [c.name for c in conditions]
+        if (
+            not names
+            or len(set(names)) != len(names)
+            or not all(_CONDITION.match(n) for n in names)
+        ):
+            raise ValueError(f"{name}@{version}: dispatch conditions need distinct short names")
+    for identity, manifest in manifests.items():
+        if identity in bundle.prepare_only:
+            continue  # a person carries it out; GAWE never sends it
+        missing = required(manifest, rules, bundle.policy_sources, bundle.policy_variables) - set(
+            bundle.guarantees.get(identity, frozenset())
+        )
+        if missing:
+            raise ValueError(
+                f"{manifest.name}@{manifest.version} relies on {sorted(missing)}, which its "
+                "target doesn't guarantee; declare it, or make the action prepare-only"
+            )
 
 
 @dataclass(frozen=True)
@@ -296,6 +334,7 @@ def build_engine(
         retry=retry,
         clock=clock,
         prepare_only=frozenset(bundle.prepare_only),
+        conditions=bundle.dispatch_conditions,
     )
     policy = RuleEngine(rules, signer)
     orchestrator = Orchestrator(
@@ -416,6 +455,9 @@ def assemble(
         maintenance_runner=engine.runner,
         reviews=stores.reviews,
         sources=bundle.sources,
+        checked_not_enforced={
+            k: tuple(c.name for c in v) for k, v in bundle.dispatch_conditions.items()
+        },
         clock=clock,
     )
     services.append(service)

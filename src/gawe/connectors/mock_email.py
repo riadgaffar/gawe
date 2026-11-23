@@ -7,10 +7,15 @@ from typing import Any
 from gawe.connectors.base import ConnectorError, FaultInjector, Ledger
 from gawe.connectors.mock_directory import Expansion, MockDirectory
 from gawe.connectors.mock_mail_server import MockMailServer
+from gawe.core.guarantees import EVERY_WRITE
 from gawe.core.preparation import RecipientChanged
 
 
 class MockEmail:
+    # What sending guarantees (M22): one message per GAWE's key, and the mail server's own record
+    # of what it accepted, read by that key. Nothing to bind, so no conditional write.
+    GUARANTEES = {("email.send", "2.0.0"): EVERY_WRITE}
+
     def __init__(self, ledger: Ledger) -> None:
         self._ledger = ledger
         self.faults = FaultInjector()
