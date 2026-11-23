@@ -13,7 +13,11 @@ from gawe.api.auth import hash_token, new_token
 
 TENANT = "00000000-0000-0000-0000-00000000aa01"
 PEOPLE = [
-    ("alice", "00000000-0000-0000-0000-00000000aa11", ["case_manager", "it_agent"]),
+    (
+        "alice",
+        "00000000-0000-0000-0000-00000000aa11",
+        ["case_manager", "it_agent", "billing_operator"],
+    ),
     ("bob", "00000000-0000-0000-0000-00000000aa12", ["legal_reviewer", "security_admin"]),
     ("root", "00000000-0000-0000-0000-00000000aa13", ["admin"]),
     ("fiona", "00000000-0000-0000-0000-00000000aa14", ["finance_approver"]),

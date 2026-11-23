@@ -18,6 +18,7 @@ from hypothesis import strategies as st
 from jsonschema import Draft202012Validator
 
 from gawe.apps import contract_review as cr
+from gawe.apps import event_replay as er
 from gawe.apps import it_access as ia
 from gawe.core.policy import engine as engine_module
 from gawe.core.policy import rules as rules_module
@@ -74,6 +75,41 @@ CASES = {
             "allow",
         ),
     },
+    "event_replay": {
+        "events.list_failed": (
+            {
+                "customer": "cus-a",
+                "type": "invoice.paid",
+                "since": "2026-11-20T00:00:00Z",
+                "until": "2026-11-21T00:00:00Z",
+                "tenant_id": "t1",
+            },
+            "allow",
+        ),
+        "billing.replay_events": (
+            {
+                "event_ids": ["ev-1"],
+                "tenant_id": "t1",
+                "batch": [
+                    {
+                        "event_id": "ev-1",
+                        "customer": "cus-a",
+                        "amount": 100,
+                        "destination": "acct-a",
+                        "delivery_key": "dk-1",
+                        "revision": "rev-1",
+                    }
+                ],
+                "count": 1,
+                "total": 100,
+                "customers": ["cus-a"],
+                "customer_count": 1,
+                "already_delivered": [],
+                "record": {"batch_revision": "digest"},
+            },
+            "allow",
+        ),
+    },
     "example": {
         "contracts.extract_risks": ({"document_id": "doc-1"}, "allow"),
         "contracts.send_email": ({"to": "a@acme.com", "body": "Hello"}, "allow"),
@@ -89,11 +125,13 @@ CASES = {
 MANIFESTS = {
     "contract_review": {m.name: m for m in cr.MANIFESTS if not m.retired},
     "it_access": {m.name: m for m in ia.MANIFESTS if not m.retired},
+    "event_replay": {m.name: m for m in er.MANIFESTS if not m.retired},
     "example": TOOLS,
 }
 PATHS = {
     "contract_review": cr.HERE / "policies.yaml",
     "it_access": ia.HERE / "policies.yaml",
+    "event_replay": er.HERE / "policies.yaml",
     "example": Path(__file__).parents[1] / "fixtures" / "example_policies.yaml",
 }
 VARIABLES = {
@@ -110,6 +148,10 @@ VARIABLES = {
             "portal_submitters": ["a@acme.example"],
         },
         "history": {"repeated_systems": []},  # M24: no earlier grants to this person
+    },
+    "event_replay": {
+        **er.TENANT_VARIABLES,
+        "billing": {"remaining_today": 50_000},
     },
     "example": {"tenant": {"internal_domains": ["acme.com"]}},
 }
@@ -135,6 +177,11 @@ VARIABLE_TARGETS = [
     ("it_access", "iam.grant_access", "tenant.max_grant_lifetime_hours"),
     ("it_access", "iam.grant_access", "tenant.control_systems"),
     ("it_access", "iam.grant_access", "history.repeated_systems"),
+    ("event_replay", "billing.replay_events", "tenant.automatic_events"),
+    ("event_replay", "billing.replay_events", "tenant.automatic_total"),
+    ("event_replay", "billing.replay_events", "tenant.approval_events"),
+    ("event_replay", "billing.replay_events", "tenant.approval_total"),
+    ("event_replay", "billing.replay_events", "billing.remaining_today"),
     ("example", "contracts.send_email", "tenant.internal_domains"),
 ]
 # Every field and mutation kind is a pytest parameter: random selection cannot omit a target.
@@ -145,6 +192,8 @@ TARGETS = (
         for name, (args, _) in cases.items()
         for field in args
         for kind in ("missing", "null", "wrong_type")
+        # A missing optional field (a list filter, M25) is a readable input, not an unreadable one.
+        if kind != "missing" or field in MANIFESTS[app][name].input_schema.get("required", ())
     ]
     + [(*target, "domain") for target in DOMAIN_TARGETS]
     + [
@@ -166,6 +215,16 @@ WRONG_TYPES = (
     | st.lists(JSON_VALUES, max_size=3)
     | st.dictionaries(st.text(max_size=8), JSON_VALUES, max_size=3)
 )
+
+
+def wrong_types(app: str, name: str, field: str) -> st.SearchStrategy[Any]:
+    """Values of the wrong type for this field: for a list field (M25) another list may be
+    valid, so only non-lists."""
+    if MANIFESTS[app][name].input_schema["properties"][field].get("type") == "array":
+        return st.booleans() | st.dictionaries(st.text(max_size=8), JSON_VALUES, max_size=3)
+    return WRONG_TYPES
+
+
 # Restricted ASCII tokens keep size/schema validity independent of the domain parser.
 TOKEN = st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789", min_size=1, max_size=12)
 
@@ -244,7 +303,7 @@ def test_unreadable_input_never_allows(
         if kind == "missing":
             del args[field]
         else:
-            args[field] = None if kind == "null" else data.draw(WRONG_TYPES)
+            args[field] = None if kind == "null" else data.draw(wrong_types(app, name, field))
         assert not Draft202012Validator(MANIFESTS[app][name].input_schema).is_valid(args)
         decision = decide(app, name, args, variables)
         assert decision.outcome == "deny"
@@ -261,7 +320,7 @@ def test_readable_controls_keep_expected_outcomes(app: str, name: str) -> None:
 
 def test_property_targets_cover_all_shipped_tools_paths_and_variables() -> None:
     discovered = set((Path(cr.__file__).parents[1]).glob("*/policies.yaml"))
-    assert discovered == {PATHS["contract_review"], PATHS["it_access"]}
+    assert discovered == {PATHS["contract_review"], PATHS["it_access"], PATHS["event_replay"]}
     domains = set()
     variables = set()
     for app, manifests in MANIFESTS.items():

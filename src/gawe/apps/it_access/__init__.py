@@ -46,8 +46,9 @@ TENANT_VARIABLES: Mapping[str, Any] = {
         "internal_domains": ["acme.example"],
         "max_grant_lifetime_hours": MAX_GRANT_LIFETIME_HOURS,
         # Systems that hold another app's controls (M23): contract review's deal values, which
-        # decide whether a signature needs finance, live in the CRM. Changing them takes a person.
-        "control_systems": ["crm"],
+        # decide whether a signature needs finance, live in the CRM; event replay's events,
+        # amounts, daily total and limit live in billing (M25). Changing them takes a person.
+        "control_systems": ["crm", "billing"],
         # M24: how many grants of one system to one person run automatically within the window;
         # the next one needs security. Counted from GAWE's own records, every level alike.
         "automatic_grants": 2,

@@ -8,24 +8,30 @@ Each check runs the app's own write and read-back code with arguments the engine
 first run through the normal flow), then writes again directly with a fresh key.
 """
 
+import threading
+import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 from tests.unit.test_write_readback import Env
 
-from gawe.apps import contract_review, it_access
-from gawe.connectors.base import ToolPreDispatchError
+from gawe.apps import contract_review, event_replay, it_access
+from gawe.connectors.base import ConnectorError, Ledger, ToolPreDispatchError
+from gawe.connectors.mock_billing import MockBilling
 from gawe.connectors.mock_directory import MockDirectory
 from gawe.connectors.mock_mail_server import MockMailServer
 from gawe.core.executor import ToolCall
+from gawe.core.runs import RunRecord
 
 SYSTEM = {
     "crm.write_assessment": "crm",
     "esign.send_for_signature": "esign",
     "iam.grant_access": "iam",
     "email.send": "mail",
+    "billing.replay_events": "billing",
 }
 
 
@@ -86,10 +92,73 @@ def conditional_write(t: Target) -> None:
     assert t.read("stale-key").status != "agreement"
 
 
-CHECKS: dict[str, Callable[[Target], None]] = {
+class BillingTarget:
+    """The replay write (M25), with batches prepared by the app's own preparer."""
+
+    TENANT = "t1"
+
+    def __init__(self, path: Path, tool: str, version: str) -> None:
+        self.billing = MockBilling.from_seed(
+            Ledger(path / "ledger.jsonl"), daily_limits={self.TENANT: 10**9}
+        )
+        for event_id in ("ev-1001", "ev-1002"):  # moved into this test's tenant
+            self.billing.change_event(event_id, {"tenant_id": self.TENANT})
+        self.bundle = event_replay.bundle(path, billing=self.billing)
+        self.now = datetime.now(UTC)
+        run = RunRecord(
+            run_id="r",
+            tenant_id=self.TENANT,
+            acting_user_id="u",
+            objective="o",
+            profile="p",
+            created_at=self.now,
+        )
+        prepare = self.bundle.preparers[(tool, version)]
+        self.args = dict(prepare({"event_ids": ["ev-1001"]}, reapproval=False, run=run).args)
+        self.other = dict(prepare({"event_ids": ["ev-1002"]}, reapproval=False, run=run).args)
+        self.read_back = self.bundle.readbacks[(tool, version)]
+        self.tool = tool
+
+    def write(self, key: str, args: Any = None) -> Any:
+        impl = self.bundle.tools[self.tool]
+        return impl(args or self.args, ToolCall("r", "write", 1, key))
+
+    def effects(self, key: str) -> int:
+        return sum(r.get("operation_key") == key for r in self.billing.operations.records())
+
+    def read(self, key: str) -> Any:
+        return self.read_back(key, self.args, self.now)
+
+    def change_bound_record(self) -> None:
+        self.billing.change_event("ev-1001", {"note": "changed by someone else"})
+
+
+def atomic_reservation(t: Any) -> None:
+    """Two batches that each fit what is left today, but not together: one is applied."""
+    t.billing.daily_limits[t.TENANT] = t.args["total"] + t.other["total"] - 1
+    t.billing.inside_write = lambda conn: time.sleep(0.05)
+    outcomes: list[str] = []
+
+    def go(key: str, args: Any) -> None:
+        try:
+            t.write(key, args)
+            outcomes.append("applied")
+        except ConnectorError as exc:
+            outcomes.append(exc.code)
+
+    threads = [threading.Thread(target=go, args=a) for a in (("k1", t.args), ("k2", t.other))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(outcomes) == ["applied", "daily_limit_exceeded"]
+
+
+CHECKS: dict[str, Callable[[Any], None]] = {
     "idempotent_by_key": idempotent_by_key,
     "authoritative_readback": authoritative_readback,
     "conditional_write": conditional_write,
+    "atomic_reservation": atomic_reservation,
 }
 
 
@@ -97,7 +166,7 @@ CHECKS: dict[str, Callable[[Target], None]] = {
 def declarations(tmp_path_factory: pytest.TempPathFactory) -> list[tuple[str, str, str]]:
     path = tmp_path_factory.mktemp("decl")
     found: list[tuple[str, str, str]] = []
-    for app in (contract_review, it_access):
+    for app in (contract_review, it_access, event_replay):
         for (tool, version), guarantees in app.bundle(path / app.__name__).guarantees.items():
             found += [(tool, version, g) for g in sorted(guarantees)]
     return sorted(found)
@@ -128,6 +197,10 @@ CASES = [
     ("iam.grant_access", "1.0.0", "authoritative_readback"),
     ("email.send", "2.0.0", "idempotent_by_key"),
     ("email.send", "2.0.0", "authoritative_readback"),
+    ("billing.replay_events", "1.0.0", "idempotent_by_key"),
+    ("billing.replay_events", "1.0.0", "authoritative_readback"),
+    ("billing.replay_events", "1.0.0", "conditional_write"),
+    ("billing.replay_events", "1.0.0", "atomic_reservation"),
 ]
 
 
@@ -139,4 +212,5 @@ def test_the_cases_are_exactly_the_declarations(declarations: list[tuple[str, st
 def test_the_mock_does_what_it_declares(
     tmp_path: Path, tool: str, version: str, guarantee: str
 ) -> None:
-    CHECKS[guarantee](Target(tmp_path, tool, version))
+    target = BillingTarget if tool == "billing.replay_events" else Target
+    CHECKS[guarantee](target(tmp_path, tool, version))

@@ -33,8 +33,9 @@ adds. If verification fails twice on a milestone, stop and report instead of loo
 | M22  | What the target guarantees: each connector declares what its system enforces per write, startup refuses a write that relies on something its target doesn't, and a condition in another system is read just before sending | Done (2026-11-23: 2549 passed, 79 skipped; 121 Postgres tests pass; no migration; no paid runs. Found while exploring and fixed: an IT ticket closed while its grant waited for a security approver still got the grant. It is now re-read on every attempt immediately before the IAM call, and a closed or unreadable ticket sends nothing. The window between that read and the write is named, not closed. Every shipped write declares idempotency and read-back, and the record-bound ones a conditional write; a write judged by a running total would need atomic reservation, though none exists yet. Scripted and integrity unchanged. See [m22-design.md](m22-design.md)) |
 | M23  | Credentials and controls the agent can't touch: each tool's code holds a credential scoped to what the tool does, checked by the target system; the controls inventory pinned by tests, and access to a system holding another app's controls waits for a person; a per-step trace that links decision, approval, attempts, condition checks, hand-off and read-back, and names any broken link | Done (2026-11-23: 2627 passed, 80 skipped; 122 Postgres tests pass; no migration; no paid runs. Found while exploring and fixed: the IT app granted write on the CRM automatically, and the CRM holds the deal values contract review's policy reads; write or admin there now waits for security. One honest benchmark ticket now waits too, so M18's "33 of 43 needed no person" would be 32. Credentials are proved on the mocks; the list of systems holding controls is kept by hand. Scripted and integrity unchanged. See [m23-design.md](m23-design.md)) |
 | M24  | Combination rules within one app: a rule may read the app's own earlier actions on the same subject, from GAWE's step records, only to add a review; a lock per subject so two runs at once can't both see nothing before; the earlier actions on the approval card. Contract Review: a rating lower than the contract's standing rating needs legal. IT access: a third grant of one system to one person within 30 days needs security | Done (2026-11-23: 2875 passed, 84 skipped; 126 Postgres tests pass; no migration; no paid runs. Found while building and fixed: the daily review would have counted actions taken after the one it judges, and a waiting downgrade could have hidden the rating before it. Scripted, integrity and the clean set unchanged: every trial starts with empty stores. See [m24-design.md](m24-design.md)) |
+| M25  | Replay of failed events, scoped to a tenant: a third app over a mock billing platform with its own dead-letter queue. The batch is frozen at preview from the platform's records (tenant from the run, never the model); policy judges its count, total, customers and what is left of the day; the platform applies it whole or not at all, each event under its own delivery key, and reserves the total against a daily limit in the same transaction (M22's reservation, first used); the model never sees payloads; the approval card shows the batch as a table | Done (2026-11-23: 3152 passed, 84 skipped; 126 Postgres tests pass; no migration; no paid runs. `python -m bench replay`: 9 scripted cases, each matching its record, including the readers' A/B/C test, a late callback and a lost reply. Found while building and fixed: billing write was automatic in the IT app though billing now holds replay's events and limit; it waits for security, which added a rule to three scripted lateral-grant records with the same outcome. Integrity unchanged. See [m25-design.md](m25-design.md)) |
 
-Next: replay of failed events with side effects (item 7 in the queue below).
+Next: an undo record before each action (item 10 in the queue below, which needs its own design).
 
 Planned, not scheduled: **Pilot-ready** (OIDC sign-in and the first real connector against a sandbox
 account). It starts when there is a design partner or a sandbox to connect to, and gets a number then.
@@ -75,11 +76,13 @@ ahead of replay, and the connector-guarantee and credential items are merged.
 6. **An end date for grants made before M16** (done 2026-11-22 as M21). They never expired and
    were left for an operator to review. Each now gets an end date and an expiry job from an
    operator command: the later of its natural end under today's lifetime and a notice date.
-7. **Replay of failed events with side effects, scoped to a tenant.** Several readers asked for it
-   (scope, duplicate billing, late callbacks). Fix the batch at preview, inside the hash; reuse
-   the original idempotency key or reconcile the original operation, never a fresh key; cap the
-   amount (policy already has `gt` and `lte`); take the tenant from the event record. It would
-   reuse M16's preparation, read-back and record binding (reader comments).
+7. **Replay of failed events with side effects, scoped to a tenant** (done 2026-11-23 as M25).
+   Several readers asked for it (scope, duplicate billing, late callbacks, a saved batch with
+   conditional writes); thanks to them. The batch is frozen at preview inside the hash; each event
+   is delivered under its original delivery key, so a late original is skipped, never billed
+   twice; the tenant comes from the run and the facts from the platform's records; per-batch caps
+   in policy and a daily cap reserved at the platform. The readers' A/B/C test is a scripted case:
+   B changed, so nothing is applied and a new preview covers A and B; C was never in the batch.
 8. **What the target guarantees, and what the agent cannot touch** (done 2026-11-23 as M22 and
    M23). Two reader requirements, merged 2026-11-19: both ask what the connector or target
    actually enforces and what the engine only assumes. Split 2026-11-22 into M22 and M23.
@@ -453,6 +456,12 @@ Reader suggestions weighed and not adopted, with the reason:
 - A cancelled run fails its waiting step, and failed steps count, so a grant cancelled before it
   was ever sent still counts toward repeats (M24). If honest users are sent to security for
   grants they cancelled, stop counting a failed step with no attempt to send it.
+- Event replay (M25) is proved on a mock whose dead-letter queue and billing ledger share one
+  database, so the revision check sits in the write's own transaction. A real platform must do
+  the same, deduplicate on each event's original delivery key and reserve against a daily limit,
+  or replay is prepare-only. Its caps are proposals, not measured.
+- The IAM's `billing` and the billing platform are linked by name only, kept by hand, like the
+  CRM (M23); `billing` write waits for security since M25.
 - The next-day review covers the last seven days and needs `GAWE_REVIEW_SAMPLE_KEY` for its
   sample; without the key the sample is off.
 

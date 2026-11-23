@@ -130,7 +130,7 @@ src/gawe/core/refs.py          resolves `$ref` arguments from earlier steps' sav
 src/gawe/core/telemetry.py     spans and metrics interface; no-op, in-memory and OpenTelemetry
 src/gawe/engine/         orchestrator (the run loop) and startup recovery of interrupted runs
 src/gawe/maintenance/    scheduled verification sweep, heartbeats, `python -m gawe.maintenance`
-src/gawe/apps/           Contract Review and IT-access applications (tools, policies, samples)
+src/gawe/apps/           Contract Review, IT access and event replay (tools, policies, samples)
 src/gawe/connectors/     mock systems with idempotent, ledger-backed effects
 src/gawe/anchoring/      audit-head anchor sinks: local file, RFC 3161 signed timestamps
 bench/                   M12 benchmark harness (CUAD accuracy, injection suite, report)

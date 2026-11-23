@@ -3,7 +3,8 @@
 // header that carries only its path, a label and its length, never any of its text.
 import type { ApprovalView, ChangeView, HistoryItemView } from "./api-types.ts";
 
-export type TypedRow = { path: string; display: string };
+export type Table = { columns: string[]; rows: string[][] };
+export type TypedRow = { path: string; display: string; table?: Table };
 export type FreeTextSection = { path: string; header: string; content: string };
 export type DifferenceModel = { summary: string; rows: string[] };
 export type HistoryRow = { key: string; runId: string; text: string };
@@ -21,6 +22,28 @@ export function display(value: unknown): string {
     return value.join(", ");
   }
   return JSON.stringify(value) ?? "null";
+}
+
+// A typed list of flat records (a replay batch, say) as a table: one row per record, one column
+// per field, in first-seen order. Anything else, including nested values, stays as `display`.
+export function tableOf(value: unknown): Table | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const isRecord = (item: unknown): item is Record<string, unknown> =>
+    typeof item === "object" && item !== null && !Array.isArray(item);
+  if (!value.every(isRecord)) return undefined;
+  const flat = value.every((item) =>
+    Object.values(item).every((v) => v === null || typeof v !== "object"),
+  );
+  if (!flat) return undefined;
+  const columns: string[] = [];
+  for (const item of value) for (const key of Object.keys(item)) if (!columns.includes(key)) columns.push(key);
+  const rows = value.map((item) => columns.map((c) => (c in item ? display(item[c]) : "")));
+  return { columns, rows };
+}
+
+function typedRow(path: string, value: unknown): TypedRow {
+  const table = tableOf(value);
+  return table ? { path, display: display(value), table } : { path, display: display(value) };
 }
 
 export function freeTextHeader(label: string, length: number): string {
@@ -63,7 +86,7 @@ export function historyRow(item: HistoryItemView): HistoryRow {
 
 export function approvalCardModel(approval: ApprovalView): ApprovalCardModel {
   return {
-    typed: approval.typed_fields.map((field) => ({ path: field.path, display: display(field.value) })),
+    typed: approval.typed_fields.map((field) => typedRow(field.path, field.value)),
     history: (approval.history ?? []).map(historyRow),
     actionHash: approval.action_hash,
     difference: differenceModel(approval),

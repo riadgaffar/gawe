@@ -1,0 +1,65 @@
+# Event replay policy (M25). Default-deny; the strictest matching outcome wins.
+# Counts and totals are what trusted preparation froze from the billing platform's records,
+# never what the model proposed: a proposal carries event ids only.
+rules:
+  - id: list-allowed
+    effect: allow
+    when: {side_effect_class: read}
+
+  - id: replay-baseline-allowed
+    effect: allow
+    when: {tool: billing.replay_events}
+
+  - id: replay-many-events-needs-finance
+    effect: needs_approval
+    approver_role: finance_approver
+    reason: More events than replay automatically
+    when:
+      tool: billing.replay_events
+      args:
+        count: {gt: $tenant.automatic_events}
+
+  - id: replay-large-total-needs-finance
+    effect: needs_approval
+    approver_role: finance_approver
+    reason: A larger total than replays automatically
+    when:
+      tool: billing.replay_events
+      args:
+        total: {gt: $tenant.automatic_total}
+
+  - id: replay-several-customers-needs-finance
+    effect: needs_approval
+    approver_role: finance_approver
+    reason: The batch spans more than one customer
+    when:
+      tool: billing.replay_events
+      args:
+        customer_count: {gt: 1}
+
+  - id: replay-too-many-events-denied
+    effect: deny
+    reason: Too many events for one replay
+    when:
+      tool: billing.replay_events
+      args:
+        count: {gt: $tenant.approval_events}
+
+  - id: replay-too-large-denied
+    effect: deny
+    reason: The total is over what one replay may move
+    when:
+      tool: billing.replay_events
+      args:
+        total: {gt: $tenant.approval_total}
+
+  # The billing platform keeps the day's running total and reserves each batch against it in the
+  # write's own transaction (M22 atomic reservation): this rule says no early and the platform
+  # enforces it. A batch approved before the day filled up is still refused at the write.
+  - id: replay-over-daily-limit-denied
+    effect: deny
+    reason: The total is over what is left of today's replay limit
+    when:
+      tool: billing.replay_events
+      args:
+        total: {gt: $billing.remaining_today}

@@ -31,7 +31,22 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
           {card.typed.map((row) => (
             <div key={row.path}>
               <dt><code>{row.path}</code></dt>
-              <dd>{row.display}</dd>
+              <dd>
+                {row.table ? (
+                  <table>
+                    <thead>
+                      <tr>{row.table.columns.map((c) => <th key={c}><code>{c}</code></th>)}</tr>
+                    </thead>
+                    <tbody>
+                      {row.table.rows.map((cells, i) => (
+                        <tr key={i}>{cells.map((cell, j) => <td key={j}>{cell}</td>)}</tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  row.display
+                )}
+              </dd>
             </div>
           ))}
         </dl>

@@ -64,6 +64,11 @@ class VersionedRecords:
 
         return self.database.transaction(seeded)
 
+    def transaction(self, action: Callable[[sqlite3.Connection], T]) -> T:
+        """Run `action` in one transaction of the system's database, with the seed in place, so a
+        write elsewhere in the system can check these records in its own transaction."""
+        return self._run(action)
+
     def get(self, record_id: str) -> tuple[dict[str, Any], str]:
         """(record, revision); ConnectorError(missing) when absent."""
 

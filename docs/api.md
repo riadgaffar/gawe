@@ -148,7 +148,8 @@ with no credential, a read tool holding a scope that changes anything, and a wri
 credential lacks or exceeds the scopes of its declared writes.
 
 The IT app's `tenant.control_systems` names the systems that hold another app's controls: `crm`,
-where contract review's deal values live. Write or admin access to one waits for a
+where contract review's deal values live, and `billing`, which holds event replay's events, daily
+total and limit (M25). Write or admin access to one waits for a
 `security_admin` (`control-system-change-needs-security`); read access doesn't. A tenant setting
 without the list denies every grant.
 
@@ -173,6 +174,42 @@ Each read writes a `history.read` audit event with the step, the tool, the count
 step's run id, step id and action hash, never argument values; history that can't be read records
 the error class and the step denies. The approval view lists the earlier actions (`history`,
 above).
+
+## Replaying failed events
+
+A third app, `GAWE_APP=gawe.apps.event_replay:bundle` (M25), replays a tenant's dead-lettered
+billing events. It has no Reader: an operator holding `billing_operator` starts a run with the
+profile `event_replay` and an objective, say "replay the failed invoice.paid events for customer X
+since the outage".
+
+- `events.list_failed` (read) takes optional `customer`, `type`, `since` and `until` and returns
+  each failed event's id, type, customer, amount, failure time and status, plus `event_ids`. Never
+  the payload, which whoever sent the webhook wrote.
+- `billing.replay_events` (write) takes `event_ids`. Preparation adds the run's tenant and
+  freezes each event from the billing platform's record: revision, customer, amount, destination
+  and delivery key, plus the batch's `count`, `total`, `customers` and `customer_count`. The
+  approval card shows the frozen batch as a table.
+
+Rules, with tenant settings `automatic_events` (10), `automatic_total` (1,000), `approval_events`
+(100) and `approval_total` (25,000): within the automatic limits and for one customer the batch
+runs; above them, or for more than one customer, it waits for a `finance_approver`; above the
+approval limits, or over what is left of the platform's daily limit (`billing.remaining_today`,
+50,000 per tenant by default), it is denied. A platform without a limit leaves replay denied.
+
+The platform applies the batch whole or not at all, once per GAWE key, each event under its own
+delivery key, and reserves the total against the day's limit in the same transaction. Error
+codes on the step:
+
+| Code | Meaning |
+|---|---|
+| `event_not_found` | an unknown id, or one of another tenant (preparation) |
+| `event_not_failed` | an event no longer dead-lettered (preparation or write) |
+| `batch_invalid` | an empty batch, or an id named twice |
+| `nothing_to_replay` | every proposed event was already delivered |
+| `event_changed` | an event changed after preview; nothing applied |
+| `daily_limit_exceeded` | the batch no longer fits what is left of the day; nothing applied |
+
+`python -m bench replay` runs nine scripted cases with expected records; no model is called.
 
 ## Tracing a step
 

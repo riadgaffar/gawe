@@ -395,14 +395,14 @@ def test_grants_older_than_the_window_dont_count(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("system", "email"),
     [("crm", DANA), ("billing", DANA), ("wiki", SAM)],
-    ids=["another system", "another system, write", "another grantee"],
+    ids=["another system", "another system, billing", "another grantee"],
 )
 def test_another_system_or_grantee_doesnt_count(tmp_path: Path, system: str, email: str) -> None:
     d = Desk(tmp_path)
     d.grant()
     d.grant()
-    level = "write" if system == "billing" else "read"
-    assert d.grant(system, level, email).status == "completed"
+    # Read: since M25 wiki is the only system with automatic write (billing is a control system).
+    assert d.grant(system, "read", email).status == "completed"
 
 
 def test_case_variants_of_one_address_are_one_person() -> None:

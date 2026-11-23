@@ -13,8 +13,9 @@ from pathlib import Path
 import pytest
 
 from gawe.api.wiring import AppBundle
-from gawe.apps import contract_review, it_access
+from gawe.apps import contract_review, event_replay, it_access
 from gawe.apps.contract_review import tools as cr_tools
+from gawe.apps.event_replay import tools as er_tools
 from gawe.apps.it_access import tools as it_tools
 
 # Every route, and what it may change. None takes or changes a control; a new route must be
@@ -87,7 +88,9 @@ def test_an_app_bundle_cant_be_changed_once_built(tmp_path: Path) -> None:
     assert dataclasses.fields(AppBundle)  # every control is a field of this frozen bundle
 
 
-@pytest.mark.parametrize("tools", [cr_tools, it_tools], ids=["contract_review", "it_access"])
+@pytest.mark.parametrize(
+    "tools", [cr_tools, it_tools, er_tools], ids=["contract_review", "it_access", "event_replay"]
+)
 def test_no_tool_writes_a_gawe_control(tools: object) -> None:
     # Controls live in GAWE's configuration and records (`config.*`, `run.*`, `gawe.*`); tools
     # write only to target systems.
@@ -97,16 +100,23 @@ def test_no_tool_writes_a_gawe_control(tools: object) -> None:
 
 
 # The IAM system's name for each system whose records another app's policy reads. Kept by hand:
-# contract review reads deal values from the contract system, which the IAM calls `crm`.
-HOLDS_POLICY_SOURCES = {"clm": "crm"}
+# contract review reads deal values from the contract system, which the IAM calls `crm`; event
+# replay reads the billing platform's daily total, and its preparation trusts the platform's
+# events (M25), which the IAM calls `billing`.
+HOLDS_POLICY_SOURCES = {"clm": "crm", "billing": "billing"}
 
 
 def test_every_system_holding_a_policy_source_is_a_control_system(tmp_path: Path) -> None:
-    sources = contract_review.bundle(tmp_path).policy_sources.values()
+    sources = [
+        *contract_review.bundle(tmp_path / "cr").policy_sources.values(),
+        *event_replay.bundle(tmp_path / "er").policy_sources.values(),
+    ]
     systems = {
-        HOLDS_POLICY_SOURCES[s.resource.split(".")[0]] for s in sources if s.kind == "resource"
+        HOLDS_POLICY_SOURCES[s.resource.split(".")[0]]
+        for s in sources
+        if s.kind in ("resource", "counter")
     }
-    assert systems == {"crm"}
+    assert systems == {"crm", "billing"}
     assert systems <= set(it_access.TENANT_VARIABLES["tenant"]["control_systems"])
 
 

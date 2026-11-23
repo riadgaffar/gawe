@@ -7,12 +7,12 @@ from typing import Any
 import pytest
 
 from gawe.api.wiring import AppBundle, load_app_rules
-from gawe.apps import contract_review, it_access
+from gawe.apps import contract_review, event_replay, it_access
 from gawe.core.guarantees import EVERY_WRITE, GUARANTEES, required
 from gawe.core.policy.provenance import PolicySource, PolicyVariable
 
 GRANT = ("iam.grant_access", "2.0.0")
-APPS = [contract_review, it_access]
+APPS = [contract_review, it_access, event_replay]
 
 
 def current_writes(bundle: AppBundle) -> list[Any]:

@@ -75,6 +75,25 @@ BOUNDARIES = {
         ),
         "grant-lifetime-over-maximum-denied": ("grant", "Lifetimes over the maximum deny."),
     },
+    "event_replay": {
+        "list-allowed": ("baseline", "Read tools have baseline permission."),
+        "replay-baseline-allowed": ("replay", "A replay within every limit runs."),
+        "replay-many-events-needs-finance": (
+            "replay",
+            "More than the automatic count needs finance.",
+        ),
+        "replay-large-total-needs-finance": (
+            "replay",
+            "More than the automatic total needs finance.",
+        ),
+        "replay-several-customers-needs-finance": (
+            "replay",
+            "More than one customer needs finance.",
+        ),
+        "replay-too-many-events-denied": ("replay", "More than the approval count denies."),
+        "replay-too-large-denied": ("replay", "More than the approval total denies."),
+        "replay-over-daily-limit-denied": ("replay", "More than what is left today denies."),
+    },
     "example": {
         "read-tools-allowed": ("baseline", "Read tools have baseline permission."),
         "crm-write-allowed": ("baseline", "CRM assessment writes have baseline permission."),
@@ -314,7 +333,8 @@ def test_grant_boundaries(
         ids.add("repeated-grant-needs-security")
     if system == "prod_db":
         ids.add("production-database-needs-security")
-    if system == "crm" and level in {"write", "admin"}:  # M23: the CRM holds deal values
+    # M23: the CRM holds deal values; M25: billing holds event replay's events and daily total.
+    if system in {"crm", "billing"} and level in {"write", "admin"}:
         ids.add("control-system-change-needs-security")
     if level == "admin":
         ids.add("elevated-access-needs-security")
@@ -480,7 +500,16 @@ def test_an_unreadable_grant_maximum_denies(maximum: Any) -> None:
 
 def test_every_shipped_rule_has_an_independent_boundary() -> None:
     assert set(BOUNDARIES) == set(RULES)
-    families = {"baseline", "address", "signature", "assessment", "grant", "requester", "refresh"}
+    families = {
+        "baseline",
+        "address",
+        "signature",
+        "assessment",
+        "grant",
+        "requester",
+        "refresh",
+        "replay",
+    }
     for app, rules in RULES.items():
         assert set(BOUNDARIES[app]) == {r.id for r in rules}
         assert all(family in families and sentence for family, sentence in BOUNDARIES[app].values())
@@ -714,3 +743,48 @@ def test_unusable_grant_settings_give_no_variable(settings: dict[str, Any]) -> N
         created_at=NOW,
     )
     assert grant_history(settings)([], {}, run) == {}
+
+
+# M25: the replay rules, against the shipped settings written out by hand: 10 events and 1,000
+# run automatically, 100 and 25,000 with finance, above that denied; one customer, or finance.
+@pytest.mark.parametrize("count", [1, 10, 11, 100, 101])
+@pytest.mark.parametrize("total", [0, 1_000, 1_001, 25_000, 25_001])
+@pytest.mark.parametrize("customers", [1, 2])
+@pytest.mark.parametrize("left", ["plenty", "exact", "short"])
+def test_replay_boundaries(count: int, total: int, customers: int, left: str) -> None:
+    remaining = {"plenty": 10**9, "exact": total, "short": total - 1}[left]
+    args = deepcopy(CASES["event_replay"]["billing.replay_events"][0])
+    event = args["batch"][0]
+    args["batch"] = [
+        {
+            **event,
+            "event_id": f"ev-{i}",
+            "delivery_key": f"dk-{i}",
+            "customer": f"cus-{i % customers}",
+        }
+        for i in range(count)
+    ]
+    args.update(
+        event_ids=[e["event_id"] for e in args["batch"]],
+        count=count,
+        total=total,
+        customers=[f"cus-{i}" for i in range(customers)],
+        customer_count=customers,
+    )
+    variables = {**deepcopy(VARIABLES["event_replay"]), "billing": {"remaining_today": remaining}}
+    ids = {"replay-baseline-allowed"}
+    if count > 10:
+        ids.add("replay-many-events-needs-finance")
+    if total > 1_000:
+        ids.add("replay-large-total-needs-finance")
+    if customers > 1:
+        ids.add("replay-several-customers-needs-finance")
+    denied = set()
+    if count > 100:
+        denied.add("replay-too-many-events-denied")
+    if total > 25_000:
+        denied.add("replay-too-large-denied")
+    if total > remaining:
+        denied.add("replay-over-daily-limit-denied")
+    outcome = "deny" if denied else "needs_approval" if len(ids) > 1 else "allow"
+    assert_decision("event_replay", "billing.replay_events", args, variables, outcome, ids | denied)
