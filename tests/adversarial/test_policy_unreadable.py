@@ -100,6 +100,7 @@ VARIABLES = {
     "contract_review": {
         **cr.TENANT_VARIABLES,
         "review": {"unsupported_levels": [], "large_deals": []},
+        "history": {"lower_ratings": []},  # M24: no earlier rating of the contract
     },
     "it_access": {
         **ia.TENANT_VARIABLES,
@@ -108,6 +109,7 @@ VARIABLES = {
             "submitters": ["a@acme.example"],
             "portal_submitters": ["a@acme.example"],
         },
+        "history": {"repeated_systems": []},  # M24: no earlier grants to this person
     },
     "example": {"tenant": {"internal_domains": ["acme.com"]}},
 }
@@ -125,12 +127,14 @@ VARIABLE_TARGETS = [
     ("contract_review", "email.send", "tenant.blocked_domains"),
     ("contract_review", "crm.write_assessment", "review.unsupported_levels"),
     ("contract_review", "crm.write_assessment", "review.large_deals"),
+    ("contract_review", "crm.write_assessment", "history.lower_ratings"),
     ("it_access", "iam.grant_access", "tenant.internal_domains"),
     ("it_access", "iam.grant_access", "request.reported_requester"),
     ("it_access", "iam.grant_access", "request.submitters"),
     ("it_access", "iam.grant_access", "request.portal_submitters"),
     ("it_access", "iam.grant_access", "tenant.max_grant_lifetime_hours"),
     ("it_access", "iam.grant_access", "tenant.control_systems"),
+    ("it_access", "iam.grant_access", "history.repeated_systems"),
     ("example", "contracts.send_email", "tenant.internal_domains"),
 ]
 # Every field and mutation kind is a pytest parameter: random selection cannot omit a target.
@@ -192,6 +196,13 @@ def test_unreadable_input_never_allows(
         variables["review"] = {
             "unsupported_levels": data.draw(st.sampled_from([[], ["low"]])),
             "large_deals": data.draw(st.sampled_from([[], ["C-1001"]])),
+        }
+        variables["history"] = {
+            "lower_ratings": data.draw(st.sampled_from([[], ["low"], ["low", "medium"]]))
+        }
+    if app == "it_access":
+        variables["history"] = {
+            "repeated_systems": data.draw(st.sampled_from([[], ["crm"], ["wiki", "billing"]]))
         }
     if kind.startswith("variable_"):
         parent, key = field.split(".")
@@ -457,6 +468,11 @@ POPULATED = {
     "contract_review": {
         **VARIABLES["contract_review"],
         "review": {"unsupported_levels": ["low"], "large_deals": ["C-1001"]},
+        "history": {"lower_ratings": ["low", "medium"]},
+    },
+    "it_access": {
+        **VARIABLES["it_access"],
+        "history": {"repeated_systems": ["wiki", "billing"]},
     },
 }
 

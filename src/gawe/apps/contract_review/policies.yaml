@@ -66,6 +66,18 @@ rules:
       args:
         risk_level: {eq: low}
 
+  # M24: a rating lower than the contract's last needs legal, whichever run made the last one, so
+  # a downgrade can't be split across runs (high in one, medium in the next). History only ever
+  # adds a review: startup refuses $history.* in an allow rule. "low" needs legal anyway (above).
+  - id: rating-lowered-needs-legal
+    effect: needs_approval
+    approver_role: legal_reviewer
+    reason: This rating is lower than the contract's last one
+    when:
+      tool: crm.write_assessment
+      args:
+        risk_level: {in: $history.lower_ratings}
+
   - id: signature-standard-needs-legal
     effect: needs_approval
     approver_role: legal_reviewer

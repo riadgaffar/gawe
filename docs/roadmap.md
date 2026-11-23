@@ -32,6 +32,7 @@ adds. If verification fails twice on a milestone, stop and report instead of loo
 | M21  | An end date for grants made before M16b: GAWE finds each 1.0.0 grant it sent in its own records, gives it the later of its natural end and a notice date, and ends it with M16b's expiry job, through an operator command that is a dry run by default | Done (2026-11-22: 2521 passed, 79 skipped; 121 Postgres tests pass; no migration; no paid runs. The mock IAM now reads and revokes both kinds of old grant (ledger-only, M9 to M15, and the 1.0.0 store, M16a to M16b). `end-old-grants` prints ids and dates only, schedules once however often it runs, and audits `grant.end_date_set`; old-grant jobs past their date count toward the overdue alarm. Run end to end on a throwaway database: a real 1.0.0 grant was listed, scheduled, left alone before its date and revoked at it. The IAM system still doesn't know these dates; only GAWE's job ends them. See [m21-design.md](m21-design.md)) |
 | M22  | What the target guarantees: each connector declares what its system enforces per write, startup refuses a write that relies on something its target doesn't, and a condition in another system is read just before sending | Done (2026-11-23: 2549 passed, 79 skipped; 121 Postgres tests pass; no migration; no paid runs. Found while exploring and fixed: an IT ticket closed while its grant waited for a security approver still got the grant. It is now re-read on every attempt immediately before the IAM call, and a closed or unreadable ticket sends nothing. The window between that read and the write is named, not closed. Every shipped write declares idempotency and read-back, and the record-bound ones a conditional write; a write judged by a running total would need atomic reservation, though none exists yet. Scripted and integrity unchanged. See [m22-design.md](m22-design.md)) |
 | M23  | Credentials and controls the agent can't touch: each tool's code holds a credential scoped to what the tool does, checked by the target system; the controls inventory pinned by tests, and access to a system holding another app's controls waits for a person; a per-step trace that links decision, approval, attempts, condition checks, hand-off and read-back, and names any broken link | Done (2026-11-23: 2627 passed, 80 skipped; 122 Postgres tests pass; no migration; no paid runs. Found while exploring and fixed: the IT app granted write on the CRM automatically, and the CRM holds the deal values contract review's policy reads; write or admin there now waits for security. One honest benchmark ticket now waits too, so M18's "33 of 43 needed no person" would be 32. Credentials are proved on the mocks; the list of systems holding controls is kept by hand. Scripted and integrity unchanged. See [m23-design.md](m23-design.md)) |
+| M24  | Combination rules within one app: a rule may read the app's own earlier actions on the same subject, from GAWE's step records, only to add a review; a lock per subject so two runs at once can't both see nothing before; the earlier actions on the approval card. Contract Review: a rating lower than the contract's standing rating needs legal. IT access: a third grant of one system to one person within 30 days needs security | Done (2026-11-23: 2875 passed, 84 skipped; 126 Postgres tests pass; no migration; no paid runs. Found while building and fixed: the daily review would have counted actions taken after the one it judges, and a waiting downgrade could have hidden the rating before it. Scripted, integrity and the clean set unchanged: every trial starts with empty stores. See [m24-design.md](m24-design.md)) |
 
 Next: replay of failed events with side effects (item 7 in the queue below).
 
@@ -94,9 +95,10 @@ ahead of replay, and the connector-guarantee and credential items are merged.
      constrain them, through any execution path. Link proposal, decision, approval, dispatch and
      observed result for success, denial and unknown alike, and name the gaps in today's audit
      links rather than adding a new audit system (reader comments).
-9. **Combination rules within one app, from the audit trail.** Split out of M15. Needs its own
-   design, including the keyed subject hash and key management. Combinations across workflows
-   still need a shared subject key from a system of record.
+9. **Combination rules within one app** (done 2026-11-23 as M24). Split out of M15. History is
+   read from GAWE's own step records, which only the engine writes, so no keyed subject hash or
+   key management was needed. Combinations across workflows still need a shared subject key from
+   a system of record.
 10. **An undo record written before each action.** Save the prior values before an eligible change
    and bind undo to the original action and the record's revision, so undo stops if anything
    changed since. Undo needs its own policy decision, idempotency and read-back, and never claims
@@ -442,6 +444,15 @@ Reader suggestions weighed and not adopted, with the reason:
   each are kept by hand (M23).
 - The step trace reads GAWE's own records; it links what happened outside GAWE only as far as the
   read-back saw it (M23).
+- Combination rules read one app's history in one tenant (M24); across apps they still need a
+  shared subject key. The Postgres reader loads a tenant's counted steps of the tool before
+  comparing subjects; a large tenant would want an index on `steps`, which needs a migration.
+- Earlier ratings are ordered by run start, not by when a write landed (M24). While every "low"
+  needs legal, a misread only adds a review. If that rule is dropped, order took-effect ratings by
+  when their successful attempt finished, in the same change.
+- A cancelled run fails its waiting step, and failed steps count, so a grant cancelled before it
+  was ever sent still counts toward repeats (M24). If honest users are sent to security for
+  grants they cancelled, stop counting a failed step with no attempt to send it.
 - The next-day review covers the last seven days and needs `GAWE_REVIEW_SAMPLE_KEY` for its
   sample; without the key the sample is off.
 

@@ -172,6 +172,11 @@ class InMemoryStepStore:
             ]
         return sorted(found, key=lambda s: (s.run_id, s.step_id))
 
+    def all_for_tool(self, tool: str) -> list[StepRecord]:
+        """Every step of this tool, any version, across runs (M24's history reader)."""
+        with self._lock:
+            return [s for s in self._steps.values() if s.tool == tool]
+
     def transition(
         self,
         run_id: str,

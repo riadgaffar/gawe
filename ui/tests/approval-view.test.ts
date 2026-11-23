@@ -33,6 +33,7 @@ function approval(overrides: Partial<ApprovalView> = {}): ApprovalView {
       { path: "body", label: LABEL, length: [...BODY].length, content: BODY },
     ],
     difference: { previous_approval_id: null, previous_decided_at: null, changes: [] },
+    history: [],
     ...overrides,
   };
 }
@@ -147,4 +148,29 @@ test("the card collapses free text and no longer prints the raw arguments", asyn
     source.indexOf(s),
   );
   assert.deepEqual([...order].sort((a, b) => a - b), order, "typed, hash, difference, then free text");
+});
+
+test("earlier actions a rule counted show their typed values and the day their run started", () => {
+  const card = approvalCardModel(
+    approval({
+      tool: "crm.write_assessment",
+      history: [
+        {
+          tool: "crm.write_assessment",
+          run_id: "r0",
+          step_id: "assess",
+          run_started_at: "2026-11-20T09:30:00Z",
+          values: { risk_level: "high" },
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(card.history, [
+    {
+      key: "r0/assess",
+      runId: "r0",
+      text: "crm.write_assessment · risk_level high · run started 2026-11-20",
+    },
+  ]);
+  assert.deepEqual(approvalCardModel(approval()).history, []);
 });

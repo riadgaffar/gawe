@@ -458,7 +458,8 @@ def test_low_ratings_with_nothing_flagged_are_drawn_and_record_the_key_id(tmp_pa
 
 def test_only_low_ratings_with_nothing_flagged_are_candidates(tmp_path: Path) -> None:
     d = Desk(tmp_path, key=key(), rate=ALWAYS)
-    d.run(step=rate_step({**LOW, "risk_level": "medium"}))
+    # Another contract: since M24 a "low" after this contract's "medium" waits for legal.
+    d.run(step=rate_step({**LOW, "contract_id": "C-1004", "risk_level": "medium"}))
     flagged = d.run()
     d.stores.runs.update(
         flagged, findings={"flagged_clauses": [{"kind": "other", "severity": "low"}]}

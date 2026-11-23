@@ -17,7 +17,9 @@ _NAME = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*")
 class PolicySource(FrozenModel):
     # "counter": a running total a target system keeps (M22). A write judged with one needs
     # atomic reservation at its target.
-    kind: Literal["configuration", "findings", "resource", "counter"]
+    # "history": the app's own earlier actions, from GAWE's step records (M24). A rule reading one
+    # may only escalate: startup refuses it in an allow rule.
+    kind: Literal["configuration", "findings", "resource", "counter", "history"]
     resource: str
 
 
@@ -91,6 +93,7 @@ def validate_provenance(
                         f"variable '{name}' source '{resource}' overlaps "
                         f"{identity} write '{written}'"
                     )
+    history = {s.resource for s in sources.values() if s.kind == "history"}
     for rule in rules:
         for conditions in rule.when.args.values():
             for operand in conditions.values():
@@ -99,4 +102,9 @@ def validate_provenance(
                     if name not in variables:
                         raise RuleConfigError(
                             f"rule '{rule.id}': undeclared policy variable '{operand}'"
+                        )
+                    if rule.effect == "allow" and resolve(name) & history:
+                        raise RuleConfigError(
+                            f"rule '{rule.id}': history may only escalate, so an allow rule "
+                            f"can't read '{operand}'"
                         )

@@ -9,9 +9,9 @@ For each run with a `policy.decided` event that UTC day, in the job's tenant:
 2. For decisions audited that day: the signature must verify (`signature_invalid`) and the stored
    arguments must still hash to the decided action (`action_mismatch`).
 3. Automatic actions that executed are evaluated again under the current rules, with the run's
-   findings and today's values. A different outcome is `rules_changed` when the rule-set digest
-   differs, `inputs_changed` when it does not, and `rules_may_have_changed` for a decision from
-   before digests existed.
+   findings, today's values and the app's history as it stood when the run started (M24). A
+   different outcome is `rules_changed` when the rule-set digest differs, `inputs_changed` when
+   it does not, and `rules_may_have_changed` for a decision from before digests existed.
 4. Automatic executed actions the app marks as sample candidates are drawn with the review key
    (`sampled_low`).
 
@@ -21,6 +21,7 @@ new. A run that has ended gets its anchor refreshed past the new events. The rev
 and records; it never changes a run, a step or a decision.
 """
 
+import contextlib
 from collections.abc import Callable, Mapping
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -28,6 +29,7 @@ from typing import Any
 from gawe.core.anchor import Anchorer
 from gawe.core.audit import AuditLog, AuditStore, verify_chain
 from gawe.core.canonical import action_hash, canonical_json, sha256_hex
+from gawe.core.history import HISTORY_VARIABLE, History
 from gawe.core.maintenance import MaintenanceJob, MaintenanceStore
 from gawe.core.models import PolicyDecision
 from gawe.core.policy.audit_payload import decided_payload
@@ -89,7 +91,9 @@ class DailyReviewJobs:
         sample: SampleCandidate | None = None,
         rate: float = DEFAULT_RATE,
         telemetry: Telemetry | None = None,
+        history: History | None = None,
     ) -> None:
+        self._history = history
         self._jobs, self._runs, self._steps = jobs, runs, steps
         self._events, self._audit, self._reviews = audit_store, audit, reviews
         self._registry, self._engine, self._signer = registry, engine, signer
@@ -224,6 +228,14 @@ class DailyReviewJobs:
             return None
         if manifest.retired:
             return None  # current rules are not written for retired versions
+        variables = dict(self._variables(run))
+        if self._history is not None and self._history.declared(step.tool):
+            # History as it stood when the run started, so later actions don't count (M24).
+            # Unreadable history leaves the variables out, and the step reads as changed.
+            with contextlib.suppress(Exception):
+                variables[HISTORY_VARIABLE] = self._history.read(
+                    run, step.step_id, step.tool, step.resolved_args, as_of=run.created_at
+                ).variables
         now = self._engine.evaluate(
             EvaluationContext(
                 run_id=run.run_id,
@@ -232,7 +244,7 @@ class DailyReviewJobs:
                 resolved_args=step.resolved_args,
                 acting_user_id=run.acting_user_id,
                 user_roles=frozenset(run.roles),
-                variables=self._variables(run),
+                variables=variables,
             )
         )
         if now.outcome == decision.outcome:

@@ -81,6 +81,11 @@ The approval view also splits the arguments the way the tool declares them:
 - `difference`: the comparison with the most recently approved call of the same tool in the same
   tenant. Typed fields are listed as added, removed or changed with their values; free text only
   as changed or unchanged. `previous_approval_id` is null when there is no earlier approved call.
+- `history`: for a tool whose app declares history (M24), the earlier actions on the same
+  subject that the step's rules counted, oldest first, at most the latest 10: `tool`, `run_id`,
+  `step_id`, `run_started_at` and `values`, the typed arguments the app names (in Contract
+  Review, the earlier `risk_level`; in IT access, the earlier grant's `system` and `level`).
+  Empty for other tools. The `history.read` audit event counts all of them, by reference only.
 
 Values a tool does not declare are listed as free text. `resolved_args` stays in the view for
 clients that need the raw arguments.
@@ -146,6 +151,28 @@ The IT app's `tenant.control_systems` names the systems that hold another app's 
 where contract review's deal values live. Write or admin access to one waits for a
 `security_admin` (`control-system-change-needs-security`); read access doesn't. A tenant setting
 without the list denies every grant.
+
+## Rules on earlier actions
+
+An app can let rules read its own earlier actions on the same subject (`AppBundle.history`;
+M24): earlier steps of a tool, any version, in the same tenant, naming the same subject argument,
+read from GAWE's step records. Every step past policy counts except denied, rejected and not-done
+ones; in the same run only earlier steps of the plan. A rule may use these only to add a review or
+a denial: startup refuses a `history.*` variable in an `allow` rule.
+
+- Contract Review keys on `contract_id`. A `risk_level` lower than the contract's standing rating
+  (the highest of the last rating that took effect and every counted one after it) waits for a
+  `legal_reviewer` (`rating-lowered-needs-legal`).
+- IT access keys on the grantee's `email`, lower-cased. Tenant settings `automatic_grants` (2) and
+  `history_days` (30): once a person has been granted a system `automatic_grants` times, at any
+  level, in the `history_days` before the run started, the next grant waits for a
+  `security_admin` (`repeated-grant-needs-security`). A missing or unusable setting denies every
+  grant.
+
+Each read writes a `history.read` audit event with the step, the tool, the count and each counted
+step's run id, step id and action hash, never argument values; history that can't be read records
+the error class and the step denies. The approval view lists the earlier actions (`history`,
+above).
 
 ## Tracing a step
 

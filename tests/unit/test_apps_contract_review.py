@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,9 @@ from gawe.apps.contract_review.reader_schema import SCHEMA_ID
 from gawe.connectors.base import Ledger
 from gawe.connectors.mock_email import MockEmail
 from gawe.core.executor import ToolCall
+from gawe.core.history import HistoryEntry
 from gawe.core.policy.engine import RuleEngine
+from gawe.core.statemachine import StepStatus
 from gawe.llm.fake import FakeProvider
 
 T = "t1"
@@ -282,7 +285,8 @@ def test_policy_golden_cases(
     b = cr.bundle(tmp_path)
     engine = RuleEngine(load_app_rules(b), signer())
     manifest = current_manifest(b.manifests, tool)
-    variables = b.variables(None)  # type: ignore[arg-type]  # no run: no findings yet
+    # No run: no findings yet, and no earlier rating of the contract.
+    variables = {**b.variables(None), "history": {"lower_ratings": []}}  # type: ignore[arg-type]
     if tool == "email.send":
         args = prepared_email(args)
     args = bound_args(manifest, args)
@@ -326,6 +330,7 @@ def test_a_low_risk_rating_always_needs_legal(
         "review": cr.review_variables(
             findings, {"C-1001": 45000, "C-1002": 250000, "C-1004": 60000}
         ),
+        "history": {"lower_ratings": []},
     }
     decision = engine.evaluate(
         make_ctx(manifest, args, roles=["case_manager"], variables=variables)
@@ -383,3 +388,128 @@ def test_bundle_loads_through_the_env_entry_point(tmp_path: Path) -> None:
     assert _load_bundle("gawe.apps.contract_review:bundle").profiles == frozenset(
         {"contract_review"}
     )
+
+
+# --- M24: a rating lower than the contract's last needs legal ----------------------------------
+
+LOWERED = "rating-lowered-needs-legal"
+OTHER = Identity("t2", "olga", frozenset({"case_manager"}))
+
+
+def rated(*runs: tuple[str, ...]) -> list[Any]:
+    """A Reader reply and a plan per run; each plan rates its contract at the levels given."""
+    script: list[Any] = []
+    for cid, *levels in runs:
+        steps = [get(cid)] + [
+            step(f"assess{i}", "crm.write_assessment", assessment(cid, level), ("get",))
+            for i, level in enumerate(levels)
+        ]
+        script += [CLEAN_READ, {"steps": steps}]
+    return script
+
+
+def held_by(w: World, run_id: str) -> list[str]:
+    view = w.service.get_run(ALICE, run_id)
+    return [r for s in view.steps for r in s.policy_rule_ids if r == LOWERED]
+
+
+def test_high_then_medium_in_another_run_waits_then_runs_once_approved(tmp_path: Path) -> None:
+    w = World(tmp_path, rated(("C-1001", "high"), ("C-1001", "medium")))
+    first = w.run()
+    assert w.status(first) == "completed"
+    second = w.run()
+    assert w.status(second) == "paused_for_approval" and held_by(w, second) == [LOWERED]
+    (item,) = w.service.inbox(BOB)
+    assert item.reason == "This rating is lower than the contract's last one"
+    assert [(h.tool, h.run_id, h.values) for h in item.history] == [
+        ("crm.write_assessment", first, {"risk_level": "high"})
+    ]
+    w.approve(BOB)
+    assert w.status(second) == "completed"
+    assert [r["data"]["risk_level"] for r in w.ledger("crm.assessment")] == ["high", "medium"]
+
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        [("C-1001", "medium"), ("C-1001", "high")],  # raised
+        [("C-1001", "high"), ("C-1001", "high")],  # repeated
+        [("C-1001", "medium")],  # a first rating
+        [("C-1001", "high"), ("C-1004", "medium")],  # another contract
+    ],
+)
+def test_a_rating_that_doesnt_lower_the_last_runs_automatically(
+    runs: list[tuple[str, ...]], tmp_path: Path
+) -> None:
+    w = World(tmp_path, rated(*runs))
+    assert [w.status(w.run()) for _ in runs] == ["completed"] * len(runs)
+
+
+def test_another_tenants_rating_doesnt_count(tmp_path: Path) -> None:
+    w = World(tmp_path, rated(("C-1001", "high"), ("C-1001", "medium")))
+    theirs = w.run(OTHER)
+    assert w.service.get_run(OTHER, theirs).status == "completed"
+    assert w.status(w.run()) == "completed"
+
+
+def test_a_rejected_rating_doesnt_count(tmp_path: Path) -> None:
+    w = World(tmp_path, rated(("C-1001", "high"), ("C-1001", "medium"), ("C-1001", "medium")))
+    w.run()
+    second = w.run()
+    (item,) = w.service.inbox(BOB)
+    w.service.decide(BOB, item.approval_id, decision="rejected", action_hash=item.action_hash)
+    assert w.status(second) != "completed"
+    third = w.run()  # still lower than the "high" that took effect
+    assert w.status(third) == "paused_for_approval" and held_by(w, third) == [LOWERED]
+
+
+def test_a_waiting_rating_counts_but_never_hides_the_one_before(tmp_path: Path) -> None:
+    w = World(tmp_path, rated(("C-1001", "high"), ("C-1001", "medium"), ("C-1001", "medium")))
+    w.run()
+    assert w.status(w.run()) == "paused_for_approval"
+    # The waiting "medium" doesn't make a second "medium" look like no change: if legal
+    # rejected the first, the contract would drop from high with no person.
+    third = w.run()
+    assert w.status(third) == "paused_for_approval" and held_by(w, third) == [LOWERED]
+
+
+def test_two_assessments_in_one_plan(tmp_path: Path) -> None:
+    w = World(tmp_path, rated(("C-1001", "high", "medium")))
+    run_id = w.run()
+    view = w.service.get_run(ALICE, run_id)
+    assert view.status == "paused_for_approval"
+    assert [s.status for s in view.steps[1:]] == ["succeeded", "awaiting_approval"]
+    assert LOWERED in view.steps[2].policy_rule_ids
+
+
+@pytest.mark.parametrize(
+    ("statuses", "levels", "lower"),
+    [
+        ((), (), []),
+        (("succeeded",), ("low",), []),
+        (("succeeded",), ("medium",), ["low"]),
+        (("succeeded",), ("high",), ["low", "medium"]),
+        (("succeeded", "succeeded"), ("high", "medium"), ["low"]),  # an approved downgrade
+        (("succeeded", "awaiting_approval"), ("high", "medium"), ["low", "medium"]),
+        (("succeeded", "verification_unknown"), ("medium", "high"), ["low", "medium"]),
+        (("awaiting_approval",), ("medium",), ["low"]),
+        (("succeeded",), ("critical",), []),  # a level the tool no longer accepts
+    ],
+)
+def test_rating_history(
+    statuses: tuple[str, ...], levels: tuple[str, ...], lower: list[str]
+) -> None:
+    entries = [
+        HistoryEntry(
+            run_id=f"r{i}",
+            step_id="assess",
+            tool_version="2.0.0",
+            action_hash="a" * 64,
+            status=StepStatus(status),
+            resolved_args={"contract_id": "C-1001", "risk_level": level},
+            started_at=datetime(2026, 11, 1 + i, tzinfo=UTC),
+        )
+        for i, (status, level) in enumerate(zip(statuses, levels, strict=True))
+    ]
+    run: Any = None
+    assert cr.rating_history(entries, {}, run) == {"lower_ratings": lower}

@@ -26,6 +26,15 @@ from gawe.core.audit import AuditLog, AuditStore, InMemoryAuditStore
 from gawe.core.executor import Executor, RetryPolicy, ToolImplementation
 from gawe.core.expiry import Revoker
 from gawe.core.guarantees import GUARANTEES, DispatchCondition, required
+from gawe.core.history import (
+    HISTORY_VARIABLE,
+    History,
+    HistoryReader,
+    HistorySubject,
+    InMemoryHistoryReader,
+    InMemorySubjectLocks,
+    SubjectLocks,
+)
 from gawe.core.maintenance import InMemoryMaintenanceStore, MaintenanceStore
 from gawe.core.models import ToolManifest
 from gawe.core.policy.engine import RuleEngine
@@ -95,6 +104,9 @@ class AppBundle:
     # (tool, version) -> the role that marks it done. The engine prepares these actions and a
     # person carries them out; nothing ever lets the agent dispatch them (M20). Empty by default.
     prepare_only: Mapping[tuple[str, str], str] = field(default_factory=dict)
+    # Tool name -> the argument naming its subject and what its rules read from earlier actions
+    # (M24). History rules may only escalate; startup refuses one in an allow rule.
+    history: Mapping[str, HistorySubject] = field(default_factory=dict)
     # How long a grant lasts when the app makes one today. A grant made before end dates existed
     # is ended as if made that way, after a notice period (M21). None: the app grants nothing.
     grant_lifetime: timedelta | None = None
@@ -149,6 +161,7 @@ def load_app_rules(bundle: AppBundle) -> tuple[Rule, ...]:
     _check_prepare_only(bundle, rules)
     _check_guarantees(bundle, rules)
     _check_credentials(bundle)
+    _check_history(bundle)
     writes = {(m.name, m.version) for m in bundle.manifests if m.side_effect_class != "read"}
     if writes != set(bundle.readbacks):
         raise ValueError("read-back adapters must match write tool versions")
@@ -234,6 +247,48 @@ def _check_credentials(bundle: AppBundle) -> None:
             raise ValueError(f"{identity}'s credential can also change {sorted(changes - needed)}")
 
 
+def _check_history(bundle: AppBundle) -> None:
+    """History is declared whole (M24): each subject names a tool and an argument it has; each
+    history source is `gawe.history.<tool>` of a declared tool; and each `history.*` variable
+    reads a history source, so the allow-rule refusal in provenance sees it, plus at most tenant
+    settings."""
+    current = [m for m in bundle.manifests if not m.retired]
+    for tool, subject in bundle.history.items():
+        versions = [m for m in current if m.name == tool]
+        if not versions:
+            raise ValueError(f"history declared for unknown tool {tool}")
+        for m in versions:
+            if subject.argument not in m.input_schema.get("properties", {}):
+                raise ValueError(
+                    f"{m.name}@{m.version} has no argument {subject.argument!r} to key history on"
+                )
+            for name in subject.shown:
+                if (m.field_classes or {}).get(name) != "typed":
+                    raise ValueError(
+                        f"{m.name}@{m.version}: history shows {name!r}, which isn't a typed field"
+                    )
+    history_sources = set()
+    for name, source in bundle.policy_sources.items():
+        if source.kind == "history":
+            tool = source.resource.removeprefix("gawe.history.")
+            if not source.resource.startswith("gawe.history.") or tool not in bundle.history:
+                raise ValueError(f"history source {name} names no declared history")
+            history_sources.add(name)
+        elif source.resource.startswith("gawe.history."):
+            raise ValueError(f"source {name} reads history but isn't of kind history")
+    # Tenant settings may shape a history variable (a window, a count); findings and target
+    # resources may not, so what an action did is the only input a document could not choose.
+    settings = {n for n, src in bundle.policy_sources.items() if src.kind == "configuration"}
+    for name, variable in bundle.policy_variables.items():
+        deps = set(variable.dependencies)
+        if name.split(".")[0] == HISTORY_VARIABLE and not (
+            deps & history_sources and deps <= history_sources | settings
+        ):
+            raise ValueError(
+                f"variable {name} must read a history source, and otherwise settings only"
+            )
+
+
 @dataclass(frozen=True)
 class Stores:
     runs: RunStore
@@ -243,6 +298,9 @@ class Stores:
     audit: AuditStore
     maintenance: MaintenanceStore = field(default_factory=InMemoryMaintenanceStore)
     reviews: ReviewStore = field(default_factory=InMemoryReviewStore)
+    # M24: an app's own history, read from the run and step stores above, and the subject locks.
+    history: HistoryReader | None = None
+    locks: SubjectLocks = field(default_factory=InMemorySubjectLocks)
 
 
 def memory_stores() -> Stores:
@@ -262,6 +320,7 @@ def memory_stores() -> Stores:
         executions=InMemoryExecutionStore(),
         approvals=InMemoryApprovalStore(describe),
         audit=InMemoryAuditStore(),
+        history=InMemoryHistoryReader(runs, steps),
     )
 
 
@@ -270,6 +329,7 @@ def postgres_stores(engine: Any) -> Stores:
     from gawe.db.approval_store import PostgresApprovalStore
     from gawe.db.audit_store import PostgresAuditStore
     from gawe.db.execution_store import PostgresExecutionStore
+    from gawe.db.history_store import PostgresHistoryReader, PostgresSubjectLocks
     from gawe.db.maintenance_store import PostgresMaintenanceStore
     from gawe.db.review_store import PostgresReviewStore
     from gawe.db.run_store import PostgresRunStore
@@ -283,6 +343,8 @@ def postgres_stores(engine: Any) -> Stores:
         audit=PostgresAuditStore(engine),
         maintenance=PostgresMaintenanceStore(engine),
         reviews=PostgresReviewStore(engine),
+        history=PostgresHistoryReader(engine),
+        locks=PostgresSubjectLocks(engine),
     )
 
 
@@ -369,6 +431,13 @@ def build_engine(
         conditions=bundle.dispatch_conditions,
     )
     policy = RuleEngine(rules, signer)
+    if bundle.history and stores.history is None:
+        raise ValueError("the app reads history but the stores have no history reader")
+    history = (
+        History(bundle.history, stores.history, stores.locks)
+        if bundle.history and stores.history is not None
+        else None
+    )
     orchestrator = Orchestrator(
         runs=stores.runs,
         steps=stores.steps,
@@ -390,6 +459,7 @@ def build_engine(
         on_finished=anchorer.anchor_run if anchor_sinks else None,
         clock=clock,
         prepare_only=bundle.prepare_only,
+        history=history,
     )
     runner = MaintenanceRunner(
         store=stores.maintenance,
@@ -420,6 +490,7 @@ def build_engine(
                 engine=policy,
                 signer=signer,
                 variables=bundle.variables,
+                history=history,
                 anchorer=anchorer,
                 clock=clock,
                 key=review_key,

@@ -78,6 +78,7 @@ export type ApprovalView = {
   typed_fields: TypedFieldView[];
   free_text_fields: FreeTextFieldView[];
   difference: DifferenceView;
+  history: HistoryItemView[];
 };
 
 // A prepare-only action waiting for a person to carry it out by hand (M20).
@@ -126,6 +127,15 @@ export type ChangeView = {
   change: "added" | "removed" | "changed" | "unchanged";
   before?: unknown;
   after?: unknown;
+};
+
+// An earlier action on the same subject that a rule counted (M24): typed values only.
+export type HistoryItemView = {
+  tool: string;
+  run_id: string;
+  step_id: string;
+  run_started_at: string;
+  values: Record<string, unknown>;
 };
 
 export type DifferenceView = {

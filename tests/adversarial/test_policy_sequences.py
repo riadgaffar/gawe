@@ -31,11 +31,13 @@ from bench.injection.scripted import (
     scripted_trials,
 )
 from gawe.api.auth import Identity
+from gawe.apps import it_access
 from gawe.core.runs import RunRecord
 from gawe.core.statemachine import RunStatus, StepStatus
 
 TRIALS = scripted_trials(load_suite())
 PLANNER_TRIALS = [trial for trial in TRIALS if trial.mode == "planner"]
+SETTINGS = it_access.TENANT_VARIABLES["tenant"]
 PREFIXES = st.lists(st.integers(min_value=0, max_value=5), min_size=0, max_size=6)
 
 
@@ -53,6 +55,17 @@ def probe(case: Case, findings: dict[str, Any]) -> RunRecord:
         created_at=datetime(2026, 11, 12, tzinfo=UTC),
         findings=findings,
     )
+
+
+def other_rules_only(env: TrialEnvironment) -> TrialEnvironment:
+    """The prefix tests check that allowed state never weakens another rule's outcome. Since M24 a
+    third grant of one system to one person waits, which a prefix plus the attack run's honest
+    grant can reach; that rule has its own tripwire below, so here repeats are allowed."""
+    if env.app != "it_access":
+        return env
+    many = {**SETTINGS, "automatic_grants": 1000}
+    subject = replace(it_access.GRANT_HISTORY, variables=it_access.grant_history(many))
+    return replace(env, bundle=replace(env.bundle, history={it_access.GRANT: subject}))
 
 
 def values(env: TrialEnvironment, fixed: RunRecord) -> dict[str, Any]:
@@ -183,7 +196,7 @@ def test_all_scripted_attacks_after_shared_state_prefixes(
     trial: ScriptedTrial, codes: list[int]
 ) -> None:
     with TemporaryDirectory(prefix="gawe-sequence-") as tmp:
-        env = TrialEnvironment.create(trial.case.app, Path(tmp))
+        env = other_rules_only(TrialEnvironment.create(trial.case.app, Path(tmp)))
         fixed = probe(trial.case, replies_for(trial.case, trial.mode)[0])
         before = values(env, fixed)
         prefix_run = run_prefix(env, trial.case, prefix_steps(trial.case, codes))
@@ -212,7 +225,7 @@ def test_planner_attacks_after_prefixes_in_the_same_run(
     trial: ScriptedTrial, codes: list[int]
 ) -> None:
     with TemporaryDirectory(prefix="gawe-within-run-") as tmp:
-        env = TrialEnvironment.create(trial.case.app, Path(tmp))
+        env = other_rules_only(TrialEnvironment.create(trial.case.app, Path(tmp)))
         findings, plan = replies_for(trial.case, trial.mode)
         fixed = probe(trial.case, findings)
         before = values(env, fixed)
@@ -328,3 +341,69 @@ def test_environment_cannot_be_used_for_another_app(tmp_path: Path) -> None:
     env = TrialEnvironment.create("contract_review", tmp_path)
     with pytest.raises(ValueError, match="different app"):
         drive(trial.case, scripted_provider(trial.case, trial.mode), no_sleep, environment=env)
+
+
+# --- M24: a grant asked for again and again ---------------------------------------------------
+# Random sequences of allowed grants to one person, each in its own run, with the shipped
+# settings. Plain counting is the oracle: once a system has been granted `automatic_grants` times
+# (automatically or approved; a rejected one doesn't count), the next grant of it waits for
+# security, and the card lists every earlier grant of it.
+ALLOWED_GRANTS = [("wiki", "read"), ("wiki", "write"), ("crm", "read"), ("billing", "write")]
+SECURITY = Identity(TENANT, "security", frozenset({"security_admin"}))
+REPEAT_RULE = "repeated-grant-needs-security"
+
+
+@seed(15024)
+@settings(max_examples=12, derandomize=True, database=None, deadline=None)
+@example(grants=[(0, "approve")] * 4)
+@example(grants=[(0, "reject"), (1, "approve"), (2, "approve"), (1, "reject"), (0, "approve")])
+@given(
+    grants=st.lists(
+        st.tuples(st.integers(0, len(ALLOWED_GRANTS) - 1), st.sampled_from(["approve", "reject"])),
+        min_size=1,
+        max_size=7,
+    )
+)
+def test_a_repeated_grant_waits_after_any_sequence_of_allowed_ones(
+    grants: list[tuple[int, str]],
+) -> None:
+    case = next(t.case for t in TRIALS if t.case.app == "it_access")
+    requester = str(case.base.clean_findings["requester_email"])
+    with TemporaryDirectory(prefix="gawe-repeats-") as tmp:
+        env = TrialEnvironment.create("it_access", Path(tmp))
+        counted: dict[str, int] = {}
+        for code, decision in grants:
+            system, level = ALLOWED_GRANTS[code]
+            plan = {
+                "steps": [
+                    {
+                        "id": "grant",
+                        "tool": "iam.grant_access",
+                        "args": {"email": requester, "system": system, "level": level},
+                    }
+                ]
+            }
+            service = env.service(Recorder(metered(ScriptedModel(case.base.clean_findings, plan))))
+            who = Identity(TENANT, "requester", ROLES["it_access"])
+            run_id = service.start_run(
+                who, objective="Grant", profile="it_access", **start_input(case, env, "it_access")
+            ).run_id
+            run = env.stores.runs.get(run_id)
+            held = counted.get(system, 0) >= SETTINGS["automatic_grants"]
+            assert (run.status is RunStatus.PAUSED_FOR_APPROVAL) is held, (system, counted)
+            assert (REPEAT_RULE in run.decisions["grant"].rule_ids) is held
+            if not held:
+                assert run.status is RunStatus.COMPLETED
+                counted[system] = counted.get(system, 0) + 1
+                continue
+            (item,) = [v for v in service.inbox(SECURITY) if v.run_id == run_id]
+            assert sum(h.values["system"] == system for h in item.history) == counted[system]
+            service.decide(
+                SECURITY,
+                item.approval_id,
+                decision="approved" if decision == "approve" else "rejected",
+                action_hash=item.action_hash,
+            )
+            if decision == "approve":
+                assert env.stores.runs.get(run_id).status is RunStatus.COMPLETED
+                counted[system] += 1

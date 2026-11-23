@@ -36,6 +36,19 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
           ))}
         </dl>
       </div>
+      {card.history.length > 0 && (
+        <div>
+          <strong>Earlier actions on the same subject</strong>{" "}
+          <span className="muted">(what the rule counted, oldest first)</span>
+          <ul>
+            {card.history.map((row) => (
+              <li key={row.key}>
+                {row.text} · <Link href={`/runs/${encodeURIComponent(row.runId)}`}>run</Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div>
         <strong>Action hash</strong> <span className="muted">(your decision is bound to this)</span>
         <pre>{card.actionHash}</pre>

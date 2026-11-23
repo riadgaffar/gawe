@@ -36,6 +36,7 @@ from gawe.core.approvals import ApprovalAlreadyOpenError, ApprovalService
 from gawe.core.audit import AuditLog
 from gawe.core.canonical import canonical_json, sha256_hex
 from gawe.core.executor import ConcurrentExecutionError, ExecutionRefusedError, Executor
+from gawe.core.history import HISTORY_VARIABLE, History, HistoryRead
 from gawe.core.maintenance import run_target
 from gawe.core.models import REF_KEY, PolicyDecision, is_ref
 from gawe.core.policy.audit_payload import decided_payload
@@ -117,7 +118,9 @@ class Orchestrator:
         on_finished: Callable[[RunRecord], object] | None = None,
         clock: Callable[[], datetime] = _utc_now,
         prepare_only: Mapping[tuple[str, str], str] | None = None,
+        history: History | None = None,
     ) -> None:
+        self._history = history
         self._prepare_only = dict(prepare_only or {})
         self._runs = runs
         self._steps = steps
@@ -521,28 +524,42 @@ class Orchestrator:
                 return
             resolved = dict(prepared.args)
             metadata = dict(prepared.metadata)
-        ctx = EvaluationContext(
-            run_id=run.run_id,
-            step_id=step.step_id,
-            manifest=manifest,
-            resolved_args=resolved,
-            acting_user_id=run.acting_user_id,
-            user_roles=frozenset(run.roles),
-            variables=self._variables(run),
+        subject = self._history.subject(step.tool, resolved) if self._history else None
+        hold = (
+            self._history.hold(run.tenant_id, step.tool, subject)
+            if self._history is not None and subject is not None
+            else contextlib.nullcontext()
         )
-        with self._telemetry.span("gawe.policy.evaluate", step_id=step.step_id, tool=step.tool):
-            decision = self._policy.evaluate(ctx)
-        checked = self._steps.transition(
-            run.run_id,
-            step.step_id,
-            expected=StepStatus.READY,
-            to=StepStatus.POLICY_CHECKED,
-            action_hash=decision.action_hash,
-            resolved_args=resolved,
-            expected_action_hash=step.action_hash,
-            preparation=metadata,
-            policy_decision=decision,
-        )
+        # M24: reading history, evaluating and storing the decision happen under one lock per
+        # subject, so a second run judging the same subject sees this step in flight.
+        with hold:
+            variables = dict(self._variables(run))
+            read = self._read_history(run, step, resolved)
+            if read is not None:
+                variables[HISTORY_VARIABLE] = read.variables
+                metadata = {**metadata, "history": list(read.shown)}
+            ctx = EvaluationContext(
+                run_id=run.run_id,
+                step_id=step.step_id,
+                manifest=manifest,
+                resolved_args=resolved,
+                acting_user_id=run.acting_user_id,
+                user_roles=frozenset(run.roles),
+                variables=variables,
+            )
+            with self._telemetry.span("gawe.policy.evaluate", step_id=step.step_id, tool=step.tool):
+                decision = self._policy.evaluate(ctx)
+            checked = self._steps.transition(
+                run.run_id,
+                step.step_id,
+                expected=StepStatus.READY,
+                to=StepStatus.POLICY_CHECKED,
+                action_hash=decision.action_hash,
+                resolved_args=resolved,
+                expected_action_hash=step.action_hash,
+                preparation=metadata,
+                policy_decision=decision,
+            )
         run = self._runs.update(run.run_id, decisions={**run.decisions, step.step_id: decision})
         self._telemetry.count("gawe.policy.decision", tool=step.tool, outcome=decision.outcome)
         self._audit.record(
@@ -552,6 +569,28 @@ class Orchestrator:
             decided_payload(decision),
         )
         self._after_policy(run, checked, decision)
+
+    def _read_history(
+        self, run: RunRecord, step: StepRecord, resolved: Mapping[str, Any]
+    ) -> HistoryRead | None:
+        """The step's history, audited by reference; None when the tool declares none or it
+        can't be read, which leaves the history variables out so the step denies."""
+        if self._history is None or not self._history.declared(step.tool):
+            return None
+        try:
+            read = self._history.read(run, step.step_id, step.tool, resolved)
+        except Exception as exc:  # noqa: BLE001 - unreadable history never relaxes a decision
+            self._audit.record(
+                run.run_id,
+                "history.read",
+                ACTOR,
+                {"step_id": step.step_id, "tool": step.tool, "error": type(exc).__name__},
+            )
+            return None
+        self._audit.record(
+            run.run_id, "history.read", ACTOR, read.audit_payload(step.step_id, step.tool)
+        )
+        return read
 
     def _after_policy(self, run: RunRecord, step: StepRecord, decision: PolicyDecision) -> bool:
         if decision.outcome == "deny":

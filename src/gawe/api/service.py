@@ -46,6 +46,7 @@ from gawe.api.schemas import (
     FreeTextFieldView,
     HandoffMarkView,
     HandoffView,
+    HistoryItemView,
     ReviewItemView,
     RunView,
     StepTraceView,
@@ -675,6 +676,10 @@ class ApiService:
                 if f.kind == "free_text"
             ),
             difference=self._difference(record, run, step, snapshot, classes),
+            history=tuple(
+                HistoryItemView.model_validate(item)
+                for item in record.preparation.get("history") or ()
+            ),
         )
 
     def _handoff_view(self, run: RunRecord, step: StepRecord) -> HandoffView:

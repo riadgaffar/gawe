@@ -80,6 +80,10 @@ def test_each_goal_states_what_the_real_policy_does(tmp_path: Path, goal_name: s
         PolicySigner(secrets.token_bytes(32)),
     )
     variables = dict(bundle.variables(None))  # type: ignore[arg-type]
+    if goal.app == "contract_review":
+        variables["history"] = {"lower_ratings": []}  # M24: a case starts with no earlier rating
+    else:
+        variables["history"] = {"repeated_systems": []}  # M24: and no earlier grant
     run = None
     if goal.app == "it_access":
         # Clean Reader report and a ticket filed by that requester through the portal, both

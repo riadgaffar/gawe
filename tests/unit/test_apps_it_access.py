@@ -1,8 +1,12 @@
+import threading
+import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pytest
+from tests.flow import T0, Clock
 from tests.helpers import bound_args, current_manifest, make_ctx, signer
 
 from gawe.api.auth import Identity
@@ -10,7 +14,11 @@ from gawe.api.background import InlineBackground
 from gawe.api.wiring import assemble, load_app_rules, memory_stores
 from gawe.apps import it_access as ia
 from gawe.connectors.base import Ledger
+from gawe.core.history import History, InMemoryHistoryReader, InMemorySubjectLocks
 from gawe.core.policy.engine import RuleEngine
+from gawe.core.records import InMemoryStepStore, StepRecord
+from gawe.core.runs import InMemoryRunStore, RunRecord
+from gawe.core.statemachine import StepStatus
 from gawe.llm.fake import FakeProvider
 
 T = "t1"
@@ -33,6 +41,7 @@ PROD_ADMIN = {
 
 
 DANA = "dana.ortiz@acme.example"
+NO_HISTORY = {"repeated_systems": []}  # M24: no earlier grants to this person
 
 
 def plan(email: str, system: str, level: str) -> dict[str, Any]:
@@ -139,6 +148,7 @@ def test_policy_still_denies_an_external_account() -> None:
             roles=["it_agent"],
             variables={
                 **ia.TENANT_VARIABLES,
+                "history": NO_HISTORY,
                 "request": {
                     "reported_requester": "a@outside.example",
                     "submitters": ["a@outside.example"],
@@ -184,6 +194,7 @@ def test_policy_golden_cases(system: str, level: str, outcome: str) -> None:
             roles=["it_agent"],
             variables={
                 **ia.TENANT_VARIABLES,
+                "history": NO_HISTORY,
                 "request": {
                     **ia.request_variables(WIKI_READ),
                     "submitters": [DANA],
@@ -220,7 +231,11 @@ def test_unusable_reported_requester_cannot_authorize_a_grant(reported: Any) -> 
                 {"email": "dana.ortiz@acme.example", "system": "wiki", "level": "read"},
             ),
             roles=["it_agent"],
-            variables={**ia.TENANT_VARIABLES, "request": ia.request_variables(reported)},
+            variables={
+                **ia.TENANT_VARIABLES,
+                "history": NO_HISTORY,
+                "request": ia.request_variables(reported),
+            },
         )
     )
     assert decision.outcome == "deny" and decision.rule_ids == ("engine.error",)
@@ -262,6 +277,7 @@ def test_grant_matches_reported_requester_exactly(
                     "max_grant_lifetime_hours": 720,
                     "control_systems": ["crm"],
                 },
+                "history": NO_HISTORY,
                 "request": request,
             },
         )
@@ -314,3 +330,151 @@ def test_requester_variables_are_bound_to_each_persisted_run(tmp_path: Path) -> 
     assert bundle.variables(run)["request"] == {"reported_requester": "dana.ortiz@acme.example"}
     assert bundle.variables(other)["request"] == {"reported_requester": "sam.okafor@acme.example"}
     assert bundle.variables(run.model_copy(update={"findings": None}))["request"] == {}
+
+
+# --- M24: a grant asked for again and again needs security -------------------------------------
+
+REPEAT = "repeated-grant-needs-security"
+SAM = "sam.okafor@acme.example"
+SAM_WIKI = {**WIKI_READ, "requester_email": SAM}
+
+
+class Desk:
+    """The IT app over shared memory stores and a clock, one run per `grant`."""
+
+    def __init__(self, tmp_path: Path, stores: Any = None, **bundle_changes: Any) -> None:
+        self.clock = Clock()
+        self.provider = FakeProvider([])
+        b = ia.bundle(tmp_path, clock=self.clock)
+        self.svc = assemble(
+            replace(b, **bundle_changes),
+            stores=stores or memory_stores(),
+            signer=signer(),
+            provider=self.provider,
+            background=InlineBackground(),
+            clock=self.clock,
+        )
+
+    def grant(self, system: str = "wiki", level: str = "read", email: str = DANA) -> Any:
+        findings = WIKI_READ if email == DANA else SAM_WIKI
+        self.provider._script += [{**findings, "system": system, "level": level}]
+        self.provider._script += [plan(email, system, level)]
+        return self.svc.get_run(AGENT, start(self.svc, submitted_by=email))
+
+
+def test_two_wiki_grants_run_and_the_third_waits_then_runs_once_approved(tmp_path: Path) -> None:
+    d = Desk(tmp_path)
+    first = d.grant()
+    d.clock.advance(days=1)
+    second = d.grant(level="write")
+    assert [first.status, second.status] == ["completed", "completed"]
+    third = d.grant()
+    assert third.status == "paused_for_approval"
+    assert REPEAT in third.steps[-1].policy_rule_ids
+    (item,) = d.svc.inbox(SEC)
+    assert item.approver_role == "security_admin"
+    assert [(h.run_id, h.values) for h in item.history] == [
+        (first.run_id, {"system": "wiki", "level": "read"}),
+        (second.run_id, {"system": "wiki", "level": "write"}),
+    ]
+    d.svc.decide(SEC, item.approval_id, decision="approved", action_hash=item.action_hash)
+    assert d.svc.get_run(AGENT, third.run_id).status == "completed"
+    assert len(grants(tmp_path)) == 3
+
+
+def test_grants_older_than_the_window_dont_count(tmp_path: Path) -> None:
+    d = Desk(tmp_path)
+    d.grant()
+    d.clock.advance(days=20)
+    d.grant()
+    d.clock.advance(days=10, seconds=1)  # the first is now 30 days and a second old
+    assert d.grant().status == "completed"
+    assert d.grant().status == "paused_for_approval"  # the second and third are in it
+
+
+@pytest.mark.parametrize(
+    ("system", "email"),
+    [("crm", DANA), ("billing", DANA), ("wiki", SAM)],
+    ids=["another system", "another system, write", "another grantee"],
+)
+def test_another_system_or_grantee_doesnt_count(tmp_path: Path, system: str, email: str) -> None:
+    d = Desk(tmp_path)
+    d.grant()
+    d.grant()
+    level = "write" if system == "billing" else "read"
+    assert d.grant(system, level, email).status == "completed"
+
+
+def test_case_variants_of_one_address_are_one_person() -> None:
+    runs, steps = InMemoryRunStore(), InMemoryStepStore()
+    reader = InMemoryHistoryReader(runs, steps)
+    history = History({ia.GRANT: ia.GRANT_HISTORY}, reader, InMemorySubjectLocks())
+    for i, email in enumerate([DANA, DANA.upper(), "Dana.Ortiz@Acme.Example"]):
+        runs.add(
+            RunRecord(
+                run_id=f"r{i}",
+                tenant_id=T,
+                acting_user_id="u",
+                objective="o",
+                profile="it_access",
+                created_at=T0,
+            )
+        )
+        steps.add(
+            StepRecord(
+                run_id=f"r{i}",
+                step_id="grant",
+                tool=ia.GRANT,
+                tool_version="2.0.0",
+                resolved_args={"email": email, "system": "wiki", "level": "read"},
+                action_hash=f"{i}" * 64,
+                status=StepStatus.SUCCEEDED,
+            )
+        )
+    judged = RunRecord(
+        run_id="j", tenant_id=T, acting_user_id="u", objective="o", profile="p", created_at=T0
+    )
+    read = history.read(judged, "grant", ia.GRANT, {"email": DANA})
+    assert len(read.entries) == 3
+    assert read.variables == {"repeated_systems": ["wiki"]}
+
+
+def test_a_missing_setting_denies_every_grant(tmp_path: Path) -> None:
+    settings = {k: v for k, v in ia.TENANT_VARIABLES["tenant"].items() if k != "history_days"}
+    subject = replace(ia.GRANT_HISTORY, variables=ia.grant_history(settings))
+    view = Desk(tmp_path, history={ia.GRANT: subject}).grant()
+    assert view.status == "denied" and "engine.error" in view.steps[-1].policy_rule_ids
+    assert grants(tmp_path) == []
+
+
+def test_two_runs_at_once_dont_both_see_one_grant_before(tmp_path: Path) -> None:
+    stores = memory_stores()
+    reader = stores.history
+    assert reader is not None
+
+    class Slow:
+        def earlier(self, *args: Any) -> list[Any]:
+            found = reader.earlier(*args)
+            time.sleep(0.2)  # without the lock, the other run reads in this gap
+            return found
+
+    d = Desk(tmp_path, replace(stores, history=Slow()))
+    assert d.grant().status == "completed"
+    d.provider._script += [WIKI_READ, plan(DANA, "wiki", "read")] * 2
+    ids = [ticket(d.svc) for _ in range(2)]
+    run_ids: list[str] = []
+
+    def go(source_id: str) -> None:
+        run_ids.append(
+            d.svc.start_run(
+                AGENT, objective="Process the request", profile="it_access", source_id=source_id
+            ).run_id
+        )
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in ids]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    statuses = sorted(d.svc.get_run(AGENT, r).status for r in run_ids)
+    assert statuses == ["completed", "paused_for_approval"]

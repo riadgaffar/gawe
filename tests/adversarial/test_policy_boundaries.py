@@ -5,6 +5,7 @@ nor the production operators/matchers are used to choose expected outcomes or ru
 """
 
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -13,7 +14,11 @@ from hypothesis import given, seed, settings
 from hypothesis import strategies as st
 
 from gawe.apps.contract_review import review_variables
+from gawe.apps.it_access import grant_history
+from gawe.core.history import HistoryEntry
 from gawe.core.policy.rules import RuleConfigError, email_domain, parse_rules
+from gawe.core.runs import RunRecord
+from gawe.core.statemachine import StepStatus
 from tests.adversarial.test_policy_unreadable import CASES, ENGINES, MANIFESTS, RULES, VARIABLES
 from tests.helpers import bound_args, make_ctx, prepared_email, signer
 
@@ -38,6 +43,10 @@ BOUNDARIES = {
             "Low on a listed large deal needs legal.",
         ),
         "low-risk-needs-legal": ("assessment", "Every low rating needs legal (M17)."),
+        "rating-lowered-needs-legal": (
+            "assessment",
+            "A level below the contract's last rating needs legal (M24).",
+        ),
         "signature-standard-needs-legal": ("signature", "Values at or below 100,000 need legal."),
         "signature-high-value-needs-finance": ("signature", "Values above 100,000 need finance."),
     },
@@ -60,6 +69,10 @@ BOUNDARIES = {
             "Write or admin on a system holding another app's controls needs security.",
         ),
         "external-user-denied": ("address", "Noninternal or unreadable grant recipients deny."),
+        "repeated-grant-needs-security": (
+            "grant",
+            "A system granted to the person the set number of times in the window needs security.",
+        ),
         "grant-lifetime-over-maximum-denied": ("grant", "Lifetimes over the maximum deny."),
     },
     "example": {
@@ -245,20 +258,30 @@ def test_signature_threshold_boundaries(app: str, tool: str, side: str, delta: i
     assert_decision(app, tool, args, deepcopy(VARIABLES[app]), "needs_approval", {rule})
 
 
+# The levels below each earlier rating, written by hand (high > medium > low).
+BELOW = {None: [], "low": [], "medium": ["low"], "high": ["low", "medium"]}
+
+
 @pytest.mark.parametrize("level", ["low", "medium", "high"])
 @pytest.mark.parametrize("unsupported", [False, True])
 @pytest.mark.parametrize("large", [False, True])
+@pytest.mark.parametrize("last", list(BELOW))
 @seed(FIXED_SEED)
 @GENERATED
 @given(contract=st.integers(1000, 9999))
-def test_assessment_boundaries(level: str, unsupported: bool, large: bool, contract: int) -> None:
+def test_assessment_boundaries(
+    level: str, unsupported: bool, large: bool, last: str | None, contract: int
+) -> None:
     cid = f"C-{contract}"
     variables = deepcopy(VARIABLES["contract_review"])
     variables["review"] = {
         "unsupported_levels": [level] if unsupported else [],
         "large_deals": [cid] if large else [],
     }
+    variables["history"] = {"lower_ratings": BELOW[last]}
     ids = {"crm-assessment-allowed"}
+    if level in BELOW[last]:
+        ids.add("rating-lowered-needs-legal")
     if unsupported:
         ids.add("low-risk-contradicted-needs-legal")
     if large and level == "low":
@@ -278,12 +301,17 @@ def test_assessment_boundaries(level: str, unsupported: bool, large: bool, contr
 @pytest.mark.parametrize("system", ["wiki", "crm", "billing", "prod_db"])
 @pytest.mark.parametrize("level", ["read", "write", "admin"])
 @pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize("repeated", [(), ("wiki",), ("wiki", "billing", "crm", "prod_db")])
 @seed(FIXED_SEED)
 @GENERATED
 @given(token=TOKEN)
-def test_grant_boundaries(system: str, level: str, external: bool, token: str) -> None:
+def test_grant_boundaries(
+    system: str, level: str, external: bool, repeated: tuple[str, ...], token: str
+) -> None:
     email = token + ("@outside.example" if external else "@acme.example")
     ids = {"grant-baseline-allowed"}
+    if system in repeated:
+        ids.add("repeated-grant-needs-security")
     if system == "prod_db":
         ids.add("production-database-needs-security")
     if system == "crm" and level in {"write", "admin"}:  # M23: the CRM holds deal values
@@ -297,7 +325,11 @@ def test_grant_boundaries(system: str, level: str, external: bool, token: str) -
         "it_access",
         "iam.grant_access",
         {"email": email, "system": system, "level": level},
-        {**deepcopy(VARIABLES["it_access"]), "request": self_filed(email)},
+        {
+            **deepcopy(VARIABLES["it_access"]),
+            "request": self_filed(email),
+            "history": {"repeated_systems": list(repeated)},
+        },
         outcome,
         ids,
         parse=(email, True),
@@ -484,19 +516,22 @@ def test_numeric_and_enum_invalid_boundaries(
     assert_decision(app, tool, args, deepcopy(VARIABLES[app]), "deny", {"engine.invalid_args"})
 
 
-@pytest.mark.parametrize("variable", ["unsupported_levels", "large_deals"])
+@pytest.mark.parametrize(
+    "variable", ["review.unsupported_levels", "review.large_deals", "history.lower_ratings"]
+)
 @pytest.mark.parametrize("kind", ["absent", "wrong_type", "nonmatching"])
 @seed(FIXED_SEED)
 @GENERATED
 @given(token=TOKEN)
 def test_review_variable_boundaries(variable: str, kind: str, token: str) -> None:
-    # "low", so both review variables are read; since M17 a readable "low" still needs legal.
+    # "low", so every assessment variable is read; since M17 a readable "low" still needs legal.
     args = {**deepcopy(CASES["contract_review"]["crm.write_assessment"][0]), "risk_level": "low"}
     variables = deepcopy(VARIABLES["contract_review"])
+    parent, key = variable.split(".")
     if kind == "absent":
-        del variables["review"][variable]
+        del variables[parent][key]
     else:
-        variables["review"][variable] = token if kind == "wrong_type" else ["unrelated-" + token]
+        variables[parent][key] = token if kind == "wrong_type" else ["unrelated-" + token]
     assert_decision(
         "contract_review",
         "crm.write_assessment",
@@ -615,3 +650,67 @@ def test_changed_recipients_require_legal_even_when_internal() -> None:
     )
     assert decision.outcome == "needs_approval"
     assert set(decision.rule_ids) == {"email-baseline-allowed", "changed-recipients-need-legal"}
+
+
+# M24: the grant history's window and count, against plain arithmetic. The judged run starts at
+# NOW; an earlier grant counts when its run started no more than `days` days before.
+NOW = datetime(2026, 11, 23, 12, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("allowed", [1, 2, 5])
+@pytest.mark.parametrize("days", [1, 30])
+@pytest.mark.parametrize("earlier", [0, 1, 2, 5, 6])
+@pytest.mark.parametrize("offset", [timedelta(0), timedelta(seconds=-1), timedelta(seconds=1)])
+def test_grant_history_window_and_count(
+    allowed: int, days: int, earlier: int, offset: timedelta
+) -> None:
+    started = NOW - timedelta(days=days) + offset  # offset > 0 inside, < 0 outside the window
+    entries = [
+        HistoryEntry(
+            run_id=f"r{i}",
+            step_id="grant",
+            tool_version="2.0.0",
+            action_hash="a" * 64,
+            status=StepStatus.SUCCEEDED,
+            resolved_args={"email": "a@acme.example", "system": "wiki", "level": "read"},
+            started_at=started,
+        )
+        for i in range(earlier)
+    ]
+    run = RunRecord(
+        run_id="judged",
+        tenant_id="t",
+        acting_user_id="u",
+        objective="o",
+        profile="it_access",
+        created_at=NOW,
+    )
+    variables = grant_history({"automatic_grants": allowed, "history_days": days})
+    inside = offset >= timedelta(0)
+    expected = ["wiki"] if inside and earlier >= allowed else []
+    assert variables(entries, {}, run) == {"repeated_systems": expected}
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {},
+        {"automatic_grants": 2},
+        {"history_days": 30},
+        {"automatic_grants": 0, "history_days": 30},
+        {"automatic_grants": 2, "history_days": 0},
+        {"automatic_grants": True, "history_days": 30},
+        {"automatic_grants": "2", "history_days": 30},
+        {"automatic_grants": 2.0, "history_days": 30},
+    ],
+)
+def test_unusable_grant_settings_give_no_variable(settings: dict[str, Any]) -> None:
+    run = RunRecord(
+        run_id="judged",
+        tenant_id="t",
+        acting_user_id="u",
+        objective="o",
+        profile="p",
+        created_at=NOW,
+    )
+    assert grant_history(settings)([], {}, run) == {}

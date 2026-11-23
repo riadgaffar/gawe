@@ -2,7 +2,9 @@
 
 Policy sees two values derived per run (`review.*`, see `review_variables`), so a "low risk"
 assessment needs legal approval when the Reader's own findings contradict it, or when the deal is
-large. The deal value comes from the contract system, which a document cannot change.
+large. The deal value comes from the contract system, which a document cannot change. Since M24 it
+also sees the contract's earlier ratings (`history.*`, see `rating_history`), so a rating lower
+than the contract's last needs legal, whichever run made the last one.
 
 Run with `GAWE_APP=gawe.apps.contract_review:bundle`. Mock connectors write their effects to
 `$GAWE_DEMO_DIR/ledger.jsonl` (default `.demo-data/`), so you can see exactly what happened and
@@ -10,7 +12,7 @@ that a retried call did not repeat it.
 """
 
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -32,15 +34,19 @@ from gawe.connectors.mock_clm import MockCLM
 from gawe.connectors.mock_directory import MockDirectory
 from gawe.connectors.mock_email import MockEmail
 from gawe.connectors.mock_esign import MockESign
+from gawe.core.history import HistoryEntry, HistorySubject
 from gawe.core.policy.provenance import PolicySource, PolicyVariable
 from gawe.core.preparation import Preparer
 from gawe.core.readback import ReadbackAdapter
 from gawe.core.records import StepRecord
 from gawe.core.runs import RunRecord
+from gawe.core.statemachine import StepStatus
 
 HERE = Path(__file__).parent
 LARGE_DEAL_THRESHOLD = 100_000  # the same line the signature rule draws for finance approval
 PROFILE_NAME = "contract_review"
+ASSESSMENT = "crm.write_assessment"
+RATINGS = ("low", "medium", "high")  # lowest first
 TENANT_VARIABLES: Mapping[str, Any] = {
     "tenant": {
         "internal_domains": ["acme.example"],
@@ -76,16 +82,19 @@ def bundle(
         reader_profile=PROFILE,
         variables=_variables_for(clm),
         postconditions=POSTCONDITIONS,
+        history={ASSESSMENT: RATING_HISTORY},
         policy_sources={
             "tenant_config": PolicySource(kind="configuration", resource="config.tenant"),
             "reader_findings": PolicySource(kind="findings", resource="run.findings"),
             "deal_values": PolicySource(kind="resource", resource="clm.contract.deal_value"),
+            "earlier_ratings": PolicySource(kind="history", resource=f"gawe.history.{ASSESSMENT}"),
         },
         policy_variables={
             "tenant.internal_domains": PolicyVariable(dependencies=("tenant_config",)),
             "tenant.blocked_domains": PolicyVariable(dependencies=("tenant_config",)),
             "review.unsupported_levels": PolicyVariable(dependencies=("reader_findings",)),
             "review.large_deals": PolicyVariable(dependencies=("deal_values",)),
+            "history.lower_ratings": PolicyVariable(dependencies=("earlier_ratings",)),
         },
     )
 
@@ -164,6 +173,29 @@ def _variables_for(clm: MockCLM) -> Callable[[RunRecord | None], Mapping[str, An
         return {**TENANT_VARIABLES, "review": review_variables(findings, clm.deal_values())}
 
     return variables
+
+
+def rating_history(
+    entries: Sequence[HistoryEntry], args: Mapping[str, Any], run: RunRecord
+) -> dict[str, list[str]]:
+    """`lower_ratings`: the levels below the contract's standing rating, so a rule can ask
+    whether this rating lowers it (high > medium > low). Empty with no earlier rating.
+
+    The standing rating is the highest of the last rating that took effect and every counted
+    rating after it, which may still take effect (waiting, running, unknown). Taking only the
+    latest would let a waiting "medium" after a "high" make a second "medium" look like no change,
+    and if legal then rejected the first, the contract would drop from high with no person. A
+    level the tool no longer accepts is ignored."""
+    took_effect = {StepStatus.SUCCEEDED, StepStatus.DONE_BY_PERSON}
+    start = max((i for i, e in enumerate(entries) if e.status in took_effect), default=0)
+    levels = [e.resolved_args.get("risk_level") for e in entries[start:]]
+    known = [RATINGS.index(level) for level in levels if level in RATINGS]
+    return {"lower_ratings": list(RATINGS[: max(known)]) if known else []}
+
+
+RATING_HISTORY = HistorySubject(
+    argument="contract_id", variables=rating_history, shown=("risk_level",)
+)
 
 
 def review_variables(

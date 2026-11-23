@@ -114,6 +114,16 @@ class DifferenceView(View):
     changes: tuple[ChangeView, ...] = ()
 
 
+class HistoryItemView(View):
+    """An earlier action on the same subject that a rule counted (M24): typed values only."""
+
+    tool: str
+    run_id: str
+    step_id: str
+    run_started_at: datetime
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
 class ApprovalView(View):
     preparation: dict[str, Any] = Field(default_factory=dict)
     approval_id: str
@@ -133,6 +143,7 @@ class ApprovalView(View):
     typed_fields: tuple[TypedFieldView, ...] = ()
     free_text_fields: tuple[FreeTextFieldView, ...] = ()
     difference: DifferenceView = Field(default_factory=DifferenceView)
+    history: tuple[HistoryItemView, ...] = ()
 
 
 class HandoffView(View):

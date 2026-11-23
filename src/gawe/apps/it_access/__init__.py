@@ -1,14 +1,19 @@
 """IT access requests: a small second workflow showing the engine is not contract-specific.
 
+Since M24 policy also sees the grantee's earlier grants (`history.*`, see `grant_history`): a
+system granted to one person `automatic_grants` times within `history_days` needs security the
+next time, so access can't be collected by asking again and again.
+
 Run with `GAWE_APP=gawe.apps.it_access:bundle`.
 """
 
 import json
 import os
-from collections.abc import Callable, Mapping
+from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from gawe.api.wiring import AppBundle
 from gawe.apps.it_access.grant_preparation import DEFAULT_LIFETIME_HOURS, GrantPreparer
@@ -25,6 +30,7 @@ from gawe.connectors.base import Ledger
 from gawe.connectors.mock_iam import MockIAM
 from gawe.connectors.mock_tickets import MockTickets, Ticket
 from gawe.core.guarantees import DispatchCondition
+from gawe.core.history import HistoryEntry, HistorySubject
 from gawe.core.policy.provenance import PolicySource, PolicyVariable
 from gawe.core.policy.rules import email_domain
 from gawe.core.readback import ReadbackAdapter
@@ -33,6 +39,7 @@ from gawe.core.runs import RunRecord
 
 HERE = Path(__file__).parent
 PROFILE_NAME = "it_access"
+GRANT = "iam.grant_access"
 MAX_GRANT_LIFETIME_HOURS = 30 * 24
 TENANT_VARIABLES: Mapping[str, Any] = {
     "tenant": {
@@ -41,8 +48,49 @@ TENANT_VARIABLES: Mapping[str, Any] = {
         # Systems that hold another app's controls (M23): contract review's deal values, which
         # decide whether a signature needs finance, live in the CRM. Changing them takes a person.
         "control_systems": ["crm"],
+        # M24: how many grants of one system to one person run automatically within the window;
+        # the next one needs security. Counted from GAWE's own records, every level alike.
+        "automatic_grants": 2,
+        "history_days": 30,
     }
 }
+
+
+def _positive(value: Any) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def grant_history(
+    settings: Mapping[str, Any],
+) -> Callable[[Sequence[HistoryEntry], Mapping[str, Any], RunRecord], dict[str, list[str]]]:
+    """`repeated_systems`: the systems this grantee has been granted `automatic_grants` times or
+    more in the `history_days` before this run started, whatever the level and whether or not a
+    person approved them. A missing or unusable setting gives no variable, so every grant denies.
+    The window ends at the judged run's start, so the daily review judges a grant as it was."""
+
+    def variables(
+        entries: Sequence[HistoryEntry], args: Mapping[str, Any], run: RunRecord
+    ) -> dict[str, list[str]]:
+        allowed, days = settings.get("automatic_grants"), settings.get("history_days")
+        if not (_positive(allowed) and _positive(days)):
+            return {}
+        since = run.created_at - timedelta(days=days)
+        counts = Counter(e.resolved_args.get("system") for e in entries if e.started_at >= since)
+        return {
+            "repeated_systems": sorted(
+                str(system) for system, n in counts.items() if system and n >= allowed
+            )
+        }
+
+    return variables
+
+
+GRANT_HISTORY = HistorySubject(
+    argument="email",
+    lower=True,
+    variables=grant_history(TENANT_VARIABLES["tenant"]),
+    shown=("system", "level"),
+)
 
 
 def _utc_now() -> datetime:
@@ -114,10 +162,12 @@ def bundle(
         reader_profile=PROFILE,
         variables=variables_for(tickets),
         postconditions=POSTCONDITIONS,
+        history={GRANT: GRANT_HISTORY},
         policy_sources={
             "tenant_config": PolicySource(kind="configuration", resource="config.tenant"),
             "reader_findings": PolicySource(kind="findings", resource="run.findings"),
             "ticket_system": PolicySource(kind="resource", resource="tickets.ticket"),
+            "earlier_grants": PolicySource(kind="history", resource=f"gawe.history.{GRANT}"),
         },
         policy_variables={
             "tenant.internal_domains": PolicyVariable(dependencies=("tenant_config",)),
@@ -126,6 +176,9 @@ def bundle(
             "request.reported_requester": PolicyVariable(dependencies=("reader_findings",)),
             "request.submitters": PolicyVariable(dependencies=("ticket_system",)),
             "request.portal_submitters": PolicyVariable(dependencies=("ticket_system",)),
+            "history.repeated_systems": PolicyVariable(
+                dependencies=("earlier_grants", "tenant_config")
+            ),
         },
     )
 

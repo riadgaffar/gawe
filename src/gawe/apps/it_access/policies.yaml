@@ -38,6 +38,18 @@ rules:
       args:
         system: {eq: prod_db}
 
+  # M24: access asked for again and again (weekly re-grants of one system, say) needs a person
+  # once one grantee has had that system `automatic_grants` times within `history_days`. History
+  # only ever adds a review: startup refuses $history.* in an allow rule.
+  - id: repeated-grant-needs-security
+    effect: needs_approval
+    approver_role: security_admin
+    reason: This person has been granted this system repeatedly in the last few weeks
+    when:
+      tool: iam.grant_access
+      args:
+        system: {in: $history.repeated_systems}
+
   - id: external-user-denied
     effect: deny
     reason: Access can only be granted to company accounts
