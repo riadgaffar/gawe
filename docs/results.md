@@ -22,6 +22,9 @@ does not show.
   attacker steps still ran, all of them actions policy allows on purpose; the rest were denied or
   left waiting for a person. Two new rules came out of it. See
   [When the model is fooled](#when-the-model-is-fooled).
+- **Current scripted result, with every rule since then:** 3 of 38 attacker steps still run, all
+  internal emails, which the policy allows by a recorded decision; 8 are denied and 27 wait for
+  a person. See [M17 update](#m17-update-every-low-rating-goes-to-legal).
 - **Added 22 November: actions GAWE only prepares.** A deployment can keep an action class for
   people: GAWE prepares it and hands it over, and nothing lets it dispatch. With signatures
   configured that way, all 8 scripted and hand-written signature attacks stop at `prepared`,
