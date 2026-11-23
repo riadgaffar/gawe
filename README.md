@@ -1,23 +1,61 @@
 # GAWE: Governed Agentic Workflow Engine
 
-An AI agent receives a business objective, discovers tools, drafts a plan, requests human
-approval for sensitive actions, executes only what policy authorizes, and leaves a tamper-evident
-audit record.
+An engine for AI agents that act on business systems (sending email, recording risk ratings,
+requesting signatures, granting access) where the documents they read can't be trusted.
 
-**Core principle: the policy engine, not the LLM, authorizes execution.** The LLM proposes;
-deterministic code disposes.
+**The model proposes, deterministic code decides.** A quarantined Reader turns an untrusted
+document into structured findings; a Planner that never sees the document proposes a plan; a
+default-deny YAML policy engine decides each step (allow, needs approval, deny) and signs the
+decision; approvals bind to a hash of the exact action; and every event lands in a hash-chained,
+externally anchored audit log.
 
-## Layers
+It's measured, not just claimed ([docs/results.md](docs/results.md)):
 
-| Layer | What | Status |
-|---|---|---|
-| 1. Core | Domain-agnostic orchestration engine: policy, approvals, executor, audit | Done |
-| 2. Integration platform | REST API (`docs/api.md`) and Next.js UI (`ui/`) | Done |
-| 3. Business apps | Contract Review and IT access reference apps | Done |
+- **Live:** 64 distinct prompt-injection attacks against Claude Sonnet 5.5 fooled it zero times
+  (95% upper bound 5.7%).
+- **With the model fooled on purpose:** every attack scripted to succeed against the model, then
+  run through the real engine. 3 of 38 attacker steps still go through, all internal emails, which
+  the policy allows by a recorded decision; 8 are denied and 27 wait for a person.
+- **What it doesn't show** is on the same page: the attacks are written in advance, the systems
+  are mocks, and one model family was tested.
 
-Design: [docs/architecture.md](docs/architecture.md). Attacks and their tests:
-[docs/threat-model.md](docs/threat-model.md).
-Benchmark results, and what they do and don't show: [docs/results.md](docs/results.md).
+Why it was built this way, and what readers' critiques changed:
+[the write-up on dev.to](https://dev.to/riadgaffar/i-ran-125-prompt-injection-attacks-on-my-ai-agent-none-got-through-and-that-wasnt-the-4ib6).
+
+## Try it in a minute
+
+Needs Python 3.12 or newer. No API key, no Docker, no spend:
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+make install                 # core + db + dev dependencies
+make check                   # ruff + mypy --strict + the full test suite, on a fake model
+python -m bench scripted     # every attack, model fooled on purpose; writes a report
+```
+
+## What it enforces
+
+- **Plans are untrusted.** Structure, tools, dependencies and argument types are validated before
+  anything is considered for execution.
+- **Policy decides every side effect**, default deny, strictest outcome wins, signed with a key
+  the model never holds. Policy refuses to start if a rule doesn't match a tool's schema, or if an
+  allow rule could match a value it can't read.
+- **Approvals bind to the exact action**, including the version of every record it refers to;
+  any change, or a record replaced underneath, invalidates the approval. The approval screen shows
+  typed fields first and collapses text the model wrote.
+- **Writes are checked against the target, not the tool's reply**: read back from the system's
+  own record, with pending states, deadlines and a scheduled sweep. Email goes only to the
+  mailboxes a directory expands, and each connector declares what its system actually guarantees.
+- **Some actions are only prepared:** an action class can be configured so GAWE drafts it and a
+  person completes it, with nothing able to dispatch it.
+- **Access is bounded:** a grant to anyone other than whoever filed the ticket, or from a ticket
+  that came in by email or a public form, waits for a security approver; automatic grants expire.
+- **The audit log is tamper-evident:** each event hashes its predecessor, and the chain's head is
+  anchored outside the database with signed timestamps.
+
+Design: [docs/architecture.md](docs/architecture.md). Every attack and the test that covers it:
+[docs/threat-model.md](docs/threat-model.md). Milestones and what's next:
+[docs/roadmap.md](docs/roadmap.md).
 
 ## Quick start
 
