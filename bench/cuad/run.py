@@ -5,7 +5,9 @@ number is complete and the second column is what is missing (design section 5.3)
 
 Each read goes through the shipped Reader (same sanitizing, fence, schema and retries) on a
 metered provider. A record keeps the flagged kinds, each flag's severity, the risk level, token
-counts and cost; never the contract text, the summary or the parties. Severity and risk level
+counts and cost; never the contract text, the summary or the parties. A rejected read also keeps
+`reader_failures` (M19): one text-free label per rejected reply, such as `summary:maxLength`.
+Severity and risk level
 (since M17) are what the approval rules read, so approval volume can be worked out offline.
 """
 
@@ -18,8 +20,9 @@ from typing import Any
 
 from bench.budget import CountingProvider
 from bench.cuad.labels import CuadCase, read_text
+from bench.injection.run import reader_failures
 from bench.results import STATUS_BUDGET_STOPPED, ResultsWriter, run_trials
-from gawe.llm.provider import LLMUnavailableError
+from gawe.llm.provider import LLMProvider, LLMRequest, LLMResponse, LLMUnavailableError
 from gawe.llm.reader import DocumentTooLargeError, Reader, ReaderError, ReaderProfile
 
 KIND = "cuad"
@@ -60,15 +63,24 @@ def run_cuad(
     clock: Callable[[], float] = time.monotonic,
 ) -> bool:
     """Run every trial; False if the budget stopped the run early."""
-    readers = {name: Reader(provider, profiles[name]) for name in {t.profile for t in trials}}
+    replies = _Replies(provider)
+    readers = {name: Reader(replies, profiles[name]) for name in {t.profile for t in trials}}
 
     def run_one(trial: Trial) -> dict[str, Any]:
         provider.take_records()  # attribute only this trial's calls to it
+        replies.texts.clear()
         started = clock()
         text = read_text(root, trial.case)
         status, flags, risk_level, attempts = _read(readers[trial.profile], text, sleep)
         calls = provider.take_records()
+        labels = (
+            {"reader_failures": reader_failures(replies.texts, profiles[trial.profile].schema)}
+            if status == "reader_error"
+            else {}
+        )
+        replies.texts.clear()  # model replies are kept for this trial only, never recorded
         return {
+            **labels,
             **_ids(trial),
             "status": status,
             "flagged": sorted({f["kind"] for f in flags}),
@@ -94,6 +106,20 @@ def run_cuad(
         }
 
     return run_trials(trials, run_one, writer=writer, kind=KIND, stopped=stopped)
+
+
+class _Replies:
+    """Keeps the text of each reply for the current trial only, so a rejected read can say why
+    (M19, as the injection harness has since M18). Never written to a record."""
+
+    def __init__(self, inner: LLMProvider) -> None:
+        self._inner = inner
+        self.texts: list[str] = []
+
+    def complete(self, request: LLMRequest) -> LLMResponse:
+        response = self._inner.complete(request)
+        self.texts.append(response.text)
+        return response
 
 
 def _ids(trial: Trial) -> dict[str, Any]:

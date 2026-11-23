@@ -429,11 +429,25 @@ M12_SHA256 = {
 }
 
 
-def test_production_changed_since_m12_and_presence_is_back_to_m12() -> None:
-    assert profile_sha256(PROFILES["production"]) != M12_SHA256["production"]
-    assert profile_sha256(PROFILES["presence"]) == M12_SHA256["presence"]
-    for profile in PROFILES.values():
+# M18's fingerprints: production as M17 left it; presence was M12's again.
+M18_SHA256 = {
+    "presence": M12_SHA256["presence"],
+    "production": "41889ace8aacf4afa3b642aa9e4739919188988ced320037d905f92f9c5949f2",
+}
+
+
+def test_m19_changed_both_profiles_and_kept_the_schema() -> None:
+    for name, profile in PROFILES.items():
+        assert profile_sha256(profile) not in (M12_SHA256[name], M18_SHA256[name])
         assert profile.schema is SCHEMA
+
+
+def test_both_profiles_state_the_summary_limit_and_that_the_note_replaces_detail() -> None:
+    for profile in PROFILES.values():
+        text = " ".join(profile.instructions.split())
+        assert "at most 300 characters in all" in text
+        assert "That note takes the place of detail in the summary, never adds to it" in text
+    assert SCHEMA["properties"]["summary"]["maxLength"] == 300  # the bound itself is unchanged
 
 
 def test_production_defines_unlimited_liability_with_a_medium_level_for_no_cap() -> None:

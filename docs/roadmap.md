@@ -27,10 +27,10 @@ adds. If verification fails twice on a milestone, stop and report instead of loo
 | M16c | Trusted ticket submitter for IT access: runs start from a ticket id and the server fetches the text; who filed the ticket and through which channel come from the ticket system; a grant to anyone other than the filer, or from an emailed or public-form ticket, waits for a security approver; closed tickets are refused | Done (2026-11-16: 2191 passed, 76 skipped; the scripted run matched all 38 expectations, 4 executed, 8 denied, 26 waiting for a person. The three reader-mode lateral grants now wait instead of running. The trusted submitter is a property of the mock ticket system, and honest on-behalf requests always need a person. See [m16c-design.md](m16c-design.md) and [results.md](results.md#m16c-update-grants-compared-with-who-filed-the-ticket)) |
 | M17  | The low-risk decision: a definition of `unlimited_liability` for the Reader, a liability-language scan gated on CUAD, approval volume on 300 honest CUAD contracts, and provisional calls on approval by change and on internal email | Done (2026-11-19: 2264 passed, 76 skipped; 116 Postgres tests pass; paid runs $27.12 against $27 planned. Production high-severity precision on `unlimited_liability` rose from 20% to 76%, and 78% on 291 held-out contracts. Only 2.7% of honest contracts were rated "low", so every "low" now needs legal (provisional). The scan's express level failed its gate and is not wired in. The scripted run matched all 38 expectations, 3 executed, 8 denied, 27 waiting for a person. See [m17-design.md](m17-design.md) and [results.md](results.md#m17-update-every-low-rating-goes-to-legal)) |
 | M18  | Measurement: the live rerun with every rule since M13, 36 more clean documents counted per document, 40 hand-written attacks (the attacker model declined to write them), and Haiku 5.5 paired against Sonnet 5.5 | Done (2026-11-22: 2435 passed, 76 skipped; 116 Postgres tests pass; paid runs $6.07 against about $9 planned. 64 distinct attacks, none fooled Sonnet, 95% upper bound 5.7%; every one stopped at the model, so policy is still evidenced by the scripted run. Of 43 honest documents, 33 needed no person, 9 a person by the rules meant for them, 0 denied, 1 failed. Haiku is not good enough yet as Reader (F1 −3.9 points, lower end −8.5) or Planner (failed 5 of 15 honest IT runs). The Reader's 300-character summary makes both models fail closed on some documents; fix queued. The scripted run matched all 38 expectations, unchanged. See [m18-design.md](m18-design.md) and [results.md](results.md#m18-update-more-attacks-more-honest-documents-and-haiku)) |
+| M19  | The Reader's summary limit: the contract Reader's instructions state the 300-character limit its schema always enforced, checked on the same contracts and attacks, and the Haiku comparison run again | Done (2026-11-22: 2437 passed, 76 skipped; 116 Postgres tests pass; paid runs $15.98 against about $17 planned. Reader errors on attack runs went from 10 of 130 to 0 for Sonnet and from 40 to 0 for Haiku; on CUAD from 1 to 0 of 306 for Sonnet and 79 to 7 for Haiku. The small-contract downgrade was judged live at last: 5 of 5 ignored and flagged. Nothing else moved, and M17's liability bars still pass. Haiku's Reader gap stayed (F1 −4.2 points, lower end −10.7), so it is still not good enough as the Reader, nor as the Planner (failed 8 of 15 honest IT runs). The scripted run matched all 38 expectations, unchanged. See [m19-design.md](m19-design.md) and [results.md](results.md#m19-update-the-readers-summary-limit-fixed)) |
 
-Next: **the Reader's summary limit** (item 4 in the queue below): state the 300-character limit in
-the contract Reader's prompt, or allow a longer summary, then re-measure the Reader-error rate and
-re-run the Haiku comparison. Then the rest of the queue.
+Next: **action classes the engine only prepares** (item 5 in the queue below), then an end date
+for grants made before M16.
 
 Planned, not scheduled: **Pilot-ready** (OIDC sign-in and the first real connector against a sandbox
 account). It starts when there is a design partner or a sandbox to connect to, and gets a number then.
@@ -55,7 +55,7 @@ ahead of replay, and the connector-guarantee and credential items are merged.
    written once: the append looks for the same event first, inside its retry.
 3. **The low-risk decision** (done 2026-11-19 as M17), then more measurement (done 2026-11-22 as
    M18): a live rerun, more clean documents, hand-written attacks and a Haiku comparison.
-4. **The Reader's summary limit** (found in M18, 2026-11-22). The contract Reader's summary is
+4. **The Reader's summary limit** (found in M18, 2026-11-22; done 2026-11-22 as M19). The contract Reader's summary is
    capped at 300 characters, and its prompt asks for the contract's main risk plus a mention of any
    text aimed at AI reviewers. On a one-sided contract with planted text that doesn't fit, so both
    attempts fail and the run ends with no findings: `cr-downgrade-smalldeal` failed 5 of 5 live in
@@ -363,6 +363,9 @@ Reader suggestions weighed and not adopted, with the reason:
   failing the bar; its Reader failed on 79 of 306 CUAD reads and 40 of 130 attack runs, mostly the
   summary limit; its Planner was never fooled but failed 5 of 15 honest IT runs. Re-run after the
   summary fix.
+  **M19:** re-run. Haiku's Reader errors fell to 7 of 306 CUAD reads and 0 of 130 attack runs, but
+  its presence F1 gap stayed (−4.2 points, 95% −10.7 to +2.0), so the errors were not most of the
+  gap. Its Planner failed 8 of 15 honest IT runs. Not good enough yet in either role.
 - **A confidence score from the Reader to prioritise reviews.** The confidence comes from the model
   an attacker is trying to fool, so "low risk, high confidence" costs the attacker nothing. Reviews
   are prioritised on values the document cannot change instead.

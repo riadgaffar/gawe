@@ -169,3 +169,13 @@ def test_a_failed_read_records_no_flags_and_no_risk_level(tmp_path: Path) -> Non
     done, trials, _ = run(tmp_path, counting(["not json"] * 6))
     assert done
     assert all(t["flags"] == [] and t["risk_level"] is None for t in trials)
+
+
+def test_a_rejected_read_says_why_each_reply_failed_without_text(tmp_path: Path) -> None:
+    long = {**findings(), "summary": "s" * 400}
+    script = [long, long, findings(), findings()]
+    _, trials, _ = run(tmp_path, counting(script))
+    assert trials[0]["status"] == "reader_error"
+    assert trials[0]["reader_failures"] == ["summary:maxLength", "summary:maxLength"]
+    assert "reader_failures" not in trials[1]
+    assert "s" * 50 not in (tmp_path / "out" / "trials.jsonl").read_text()
