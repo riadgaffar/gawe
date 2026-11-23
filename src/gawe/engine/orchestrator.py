@@ -37,12 +37,12 @@ from gawe.core.audit import AuditLog
 from gawe.core.canonical import canonical_json, sha256_hex
 from gawe.core.executor import ConcurrentExecutionError, ExecutionRefusedError, Executor
 from gawe.core.maintenance import run_target
-from gawe.core.models import PolicyDecision
+from gawe.core.models import REF_KEY, PolicyDecision, is_ref
 from gawe.core.policy.audit_payload import decided_payload
 from gawe.core.policy.engine import PolicyEngine
 from gawe.core.policy.rules import EvaluationContext
 from gawe.core.preparation import PreparationError, Preparer
-from gawe.core.records import ExecutionStore, StaleStateError, StepRecord, StepStore
+from gawe.core.records import ExecutionStore, Handoff, StaleStateError, StepRecord, StepStore
 from gawe.core.refs import RefResolutionError, resolve_args
 from gawe.core.registry import RegistryError, ToolRegistry
 from gawe.core.runs import RunRecord, RunStore, StaleRunError
@@ -74,8 +74,15 @@ _BAD_UPSTREAM = frozenset(
         StepStatus.REJECTED,
         StepStatus.VERIFICATION_BLOCKED,
         StepStatus.VERIFICATION_UNKNOWN,
+        StepStatus.NOT_DONE_BY_PERSON,
     }
 )
+# What lets a dependant start: the engine's own success, or a person saying they did it (M20).
+_DONE = frozenset({StepStatus.SUCCEEDED, StepStatus.DONE_BY_PERSON})
+
+
+class HandoffError(Exception):
+    """A hand-off mark was refused; the message is a short code."""
 
 
 class RunBusyError(Exception):
@@ -109,7 +116,9 @@ class Orchestrator:
         preparers: Mapping[tuple[str, str], Preparer] | None = None,
         on_finished: Callable[[RunRecord], object] | None = None,
         clock: Callable[[], datetime] = _utc_now,
+        prepare_only: Mapping[tuple[str, str], str] | None = None,
     ) -> None:
+        self._prepare_only = dict(prepare_only or {})
         self._runs = runs
         self._steps = steps
         self._executions = executions
@@ -200,7 +209,11 @@ class Orchestrator:
                         return run
                 if run.status in (RunStatus.CREATED, RunStatus.PLANNING):
                     run = self._plan(run)
-                if run.status in (RunStatus.RUNNING, RunStatus.PAUSED_FOR_APPROVAL):
+                if run.status in (
+                    RunStatus.RUNNING,
+                    RunStatus.PAUSED_FOR_APPROVAL,
+                    RunStatus.WAITING_FOR_PERSON,
+                ):
                     run = self._execute(run)
                 span.set("status", run.status.value)
                 if self._executor.verification:
@@ -353,6 +366,13 @@ class Orchestrator:
     # -- running --------------------------------------------------------------------------
 
     def _execute(self, run: RunRecord) -> RunRecord:
+        if run.status is RunStatus.WAITING_FOR_PERSON:
+            if self._still_prepared(run):
+                return run  # nothing to do until the person marks it
+            run = self._runs.transition(
+                run.run_id, expected=RunStatus.WAITING_FOR_PERSON, to=RunStatus.RUNNING
+            )
+            self._audit.record(run.run_id, "run.resumed", ACTOR, {})
         if run.status is RunStatus.PAUSED_FOR_APPROVAL:
             if not self._can_resume(run):
                 return run
@@ -375,6 +395,12 @@ class Orchestrator:
                 if self._steps.get(run.run_id, planned.id).status is StepStatus.AWAITING_READBACK:
                     return self._settle(self._runs.get(run.run_id))
         return self._settle(self._runs.get(run.run_id))
+
+    def _still_prepared(self, run: RunRecord) -> bool:
+        assert run.plan is not None
+        return any(
+            self._steps.get(run.run_id, s.id).status is StepStatus.PREPARED for s in run.plan.steps
+        )
 
     def _can_resume(self, run: RunRecord) -> bool:
         assert run.plan is not None
@@ -454,7 +480,7 @@ class Orchestrator:
         if any(state in _BAD_UPSTREAM for state in states):
             self._fail_step(run.run_id, step.step_id, "upstream_failed")
             return True
-        if not all(state is StepStatus.SUCCEEDED for state in states):
+        if not all(state in _DONE for state in states):
             return False
         self._steps.transition(
             run.run_id, step.step_id, expected=StepStatus.PENDING, to=StepStatus.READY
@@ -463,6 +489,13 @@ class Orchestrator:
         return True
 
     def _evaluate_policy(self, run: RunRecord, step: StepRecord) -> None:
+        for value in step.args_template.values():
+            if is_ref(value):
+                source = str(value[REF_KEY]).partition(".output")[0]
+                if self._steps.get(run.run_id, source).status is StepStatus.DONE_BY_PERSON:
+                    # A person's action has no output the engine can trust.
+                    self._fail_step(run.run_id, step.step_id, "handoff_has_no_output")
+                    return
         outputs = {dep: self._executions.load_output(run.run_id, dep) for dep in step.depends_on}
         try:
             resolved = resolve_args(step.args_template, outputs)
@@ -537,6 +570,9 @@ class Orchestrator:
             )
             self._telemetry.count("gawe.step.outcome", tool=step.tool, status="denied")
             return True
+        role = self._prepare_only.get((step.tool, step.tool_version))
+        if role is not None:
+            return self._hand_off(run, step, decision, role)
         if decision.outcome == "needs_approval":
             assert step.action_hash is not None
             if self._approval_state(step) == "none":
@@ -559,6 +595,84 @@ class Orchestrator:
             )
             return True
         return self._run_tool(run, step)
+
+    def _hand_off(
+        self, run: RunRecord, step: StepRecord, decision: PolicyDecision, role: str
+    ) -> bool:
+        """M20: the action is prepared, judged by policy (a deny already returned) and bound into
+        its hash, and now waits for a person. It asks no approval and never reaches the executor."""
+        self._steps.transition(
+            run.run_id,
+            step.step_id,
+            expected=StepStatus.POLICY_CHECKED,
+            to=StepStatus.PREPARED,
+            expected_action_hash=step.action_hash,
+            handoff=Handoff(role=role),
+        )
+        self._audit.record(
+            run.run_id,
+            "handoff.prepared",
+            ACTOR,
+            {
+                "step_id": step.step_id,
+                "action_hash": step.action_hash,
+                "role": role,
+                "policy_outcome": decision.outcome,
+            },
+        )
+        return True
+
+    def mark_handoff(
+        self,
+        run_id: str,
+        step_id: str,
+        *,
+        user_id: str,
+        roles: frozenset[str],
+        done: bool,
+        action_hash: str,
+        reference: str | None = None,
+    ) -> StepRecord:
+        """A person says whether they carried out a prepared action. Refused (HandoffError, a
+        short code) unless they hold its role, aren't the requester, name the current hash and the
+        step is still waiting. Once marked, it can't be marked again."""
+        with self._lock_for(run_id):
+            run = self._runs.get(run_id)
+            step = self._steps.get(run_id, step_id)
+            if step.status is not StepStatus.PREPARED or step.handoff is None:
+                raise HandoffError("not_waiting_for_a_person")
+            if step.action_hash != action_hash:
+                raise HandoffError("action_hash_mismatch")
+            if step.handoff.role not in roles:
+                raise HandoffError("role_required")
+            if user_id == run.acting_user_id:
+                raise HandoffError("requester_cannot_mark")
+            try:
+                handoff = Handoff(
+                    role=step.handoff.role, by=user_id, at=self._clock(), reference=reference
+                )
+            except ValueError:
+                raise HandoffError("reference_invalid") from None
+            marked = self._steps.transition(
+                run_id,
+                step_id,
+                expected=StepStatus.PREPARED,
+                to=StepStatus.DONE_BY_PERSON if done else StepStatus.NOT_DONE_BY_PERSON,
+                expected_action_hash=action_hash,
+                handoff=handoff,
+            )
+            self._audit.record(
+                run_id,
+                "handoff.done" if done else "handoff.not_done",
+                user_id,
+                {
+                    "step_id": step_id,
+                    "action_hash": action_hash,
+                    "role": handoff.role,
+                    "reference_chars": len(reference or ""),
+                },
+            )
+        return marked
 
     def _check_approval(self, run: RunRecord, step: StepRecord) -> bool:
         assert step.action_hash is not None
@@ -659,9 +773,14 @@ class Orchestrator:
         statuses = {s.status for s in steps}
         if statuses & _IN_FLIGHT:
             return run  # another worker is mid-execution; check back later
-        if statuses & {StepStatus.DENIED, StepStatus.REJECTED}:
+        if statuses & {StepStatus.DENIED, StepStatus.REJECTED, StepStatus.NOT_DONE_BY_PERSON}:
             self._terminate_remaining(run, steps)
-            code = "policy_denied" if StepStatus.DENIED in statuses else "approval_rejected"
+            if StepStatus.DENIED in statuses:
+                code = "policy_denied"
+            elif StepStatus.REJECTED in statuses:
+                code = "approval_rejected"
+            else:
+                code = "handoff_not_done"  # a person chose not to do it, like a rejection
             return self._finish(run, RunStatus.DENIED, code)
         if StepStatus.VERIFICATION_UNKNOWN in statuses:
             self._terminate_remaining(run, steps)
@@ -669,7 +788,7 @@ class Orchestrator:
         if statuses & {StepStatus.FAILED, StepStatus.VERIFICATION_BLOCKED}:
             self._terminate_remaining(run, steps)
             return self._finish(run, RunStatus.FAILED, "step_failed")
-        if statuses == {StepStatus.SUCCEEDED}:
+        if statuses <= _DONE:
             return self._finish(run, RunStatus.COMPLETED, None)
         if StepStatus.AWAITING_READBACK in statuses:
             if run.status is not RunStatus.WAITING_VERIFICATION:
@@ -686,6 +805,13 @@ class Orchestrator:
                 run.run_id, expected=RunStatus.RUNNING, to=RunStatus.PAUSED_FOR_APPROVAL
             )
             self._audit.record(run.run_id, "run.paused", ACTOR, {"awaiting": awaiting})
+            return run
+        prepared = [s.step_id for s in steps if s.status is StepStatus.PREPARED]
+        if prepared and run.status is RunStatus.RUNNING:
+            run = self._runs.transition(
+                run.run_id, expected=RunStatus.RUNNING, to=RunStatus.WAITING_FOR_PERSON
+            )
+            self._audit.record(run.run_id, "run.waiting_for_person", ACTOR, {"prepared": prepared})
         return run
 
     def _terminate_remaining(self, run: RunRecord, steps: list[StepRecord]) -> None:

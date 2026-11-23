@@ -115,6 +115,31 @@ export async function decide(_prev: ActionState, form: FormData): Promise<Action
   }
 }
 
+// Mirrors the server's rule for a hand-off reference (a ticket or envelope id).
+const REFERENCE = /^[A-Za-z0-9._:-]{1,120}$/;
+
+export async function markHandoff(_prev: ActionState, form: FormData): Promise<ActionState> {
+  const { client } = await requireSession();
+  const outcome = text(form, "outcome");
+  if (outcome !== "done" && outcome !== "not_done") return { error: "Choose done or not done." };
+  // A reference only goes with done; one left half-typed never blocks "not done".
+  const reference = outcome === "done" ? text(form, "reference").trim() : "";
+  if (reference && !REFERENCE.test(reference)) {
+    return { error: "A reference is up to 120 letters, digits, dots, underscores, colons or dashes." };
+  }
+  try {
+    // The hash is the one the page displayed: the API refuses it if the action changed.
+    await client.markHandoff(text(form, "run_id"), text(form, "step_id"), {
+      outcome,
+      action_hash: text(form, "action_hash"),
+      reference: reference || undefined,
+    });
+    return { ok: outcome === "done" ? "Marked done." : "Marked not done." };
+  } catch (error) {
+    return fail(error);
+  }
+}
+
 export async function reviewVerdict(_prev: ActionState, form: FormData): Promise<ActionState> {
   const { client } = await requireSession();
   const verdict = text(form, "verdict");

@@ -20,6 +20,7 @@ ACTIVE_STATUSES = (
     RunStatus.RUNNING,
     RunStatus.PAUSED_FOR_APPROVAL,
     RunStatus.WAITING_VERIFICATION,
+    RunStatus.WAITING_FOR_PERSON,  # M20: advancing it does nothing until a person marks it
 )
 DEFAULT_LIMIT = 200
 

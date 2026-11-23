@@ -12,7 +12,9 @@ Who may do what:
 * list next-day review items and give a verdict: the `legal_reviewer` role, and never on a run
   the reviewer started;
 * decide an approval: the approval service's rules (hash match, expiry, separation of duties,
-  role); this layer only adds the tenant check and maps failures to API errors.
+  role); this layer only adds the tenant check and maps failures to API errors;
+* see and mark a hand-off (a prepare-only step waiting for a person): someone holding the role
+  the setting names, who did not start the run; the orchestrator enforces it again on marking.
 """
 
 import re
@@ -40,6 +42,8 @@ from gawe.api.schemas import (
     DifferenceView,
     EventsPage,
     FreeTextFieldView,
+    HandoffMarkView,
+    HandoffView,
     ReviewItemView,
     RunView,
     StepView,
@@ -65,7 +69,7 @@ from gawe.core.audit import AnchorPoint, AuditLog
 from gawe.core.fields import FREE_TEXT_LABEL, difference, fields, length
 from gawe.core.maintenance import MaintenanceStore, run_target
 from gawe.core.models import AuditEvent
-from gawe.core.records import StepNotFoundError, StepRecord, StepStore
+from gawe.core.records import StaleStateError, StepNotFoundError, StepRecord, StepStore
 from gawe.core.registry import ToolNotFoundError, ToolRegistry
 from gawe.core.review import (
     InMemoryReviewStore,
@@ -78,9 +82,9 @@ from gawe.core.review import (
 )
 from gawe.core.runs import SOURCE_ID_PATTERN, RunNotFoundError, RunRecord, RunStore
 from gawe.core.sources import DocumentSource, SourceError
-from gawe.core.statemachine import RUN_TERMINAL, StepStatus
+from gawe.core.statemachine import RUN_TERMINAL, RunStatus, StepStatus
 from gawe.core.verification import READBACK_KIND
-from gawe.engine.orchestrator import Orchestrator, RunBusyError
+from gawe.engine.orchestrator import HandoffError, Orchestrator, RunBusyError
 from gawe.engine.recovery import resume_interrupted
 from gawe.llm.planner import MAX_OBJECTIVE_CHARS
 from gawe.maintenance.runner import MaintenanceRunner
@@ -90,6 +94,7 @@ AUDIT_ACTOR = "gawe.api"
 
 
 REVIEWER_ROLE = "legal_reviewer"
+_HANDOFF_SCAN_LIMIT = 500  # waiting runs read per listing, across tenants, oldest first
 
 
 def _utc_now() -> datetime:
@@ -316,6 +321,69 @@ class ApiService:
             raise NotFoundError("approval not found")
         return self._approval_view(decided, run, step)
 
+    # -- hand-offs (M20) -----------------------------------------------------------------
+
+    def handoffs(self, who: Identity) -> list[HandoffView]:
+        """Prepared steps in this tenant that this person could mark right now."""
+        views: list[HandoffView] = []
+        waiting = self._runs.list_by_status(
+            {RunStatus.WAITING_FOR_PERSON}, limit=_HANDOFF_SCAN_LIMIT
+        )
+        for run in waiting:
+            if run.tenant_id != who.tenant_id or run.acting_user_id == who.user_id:
+                continue
+            for planned in run.plan.steps if run.plan else ():
+                step = self._find_step(run.run_id, planned.id)
+                if (
+                    step is None
+                    or step.status is not StepStatus.PREPARED
+                    or step.handoff is None
+                    or step.handoff.role not in who.roles
+                ):
+                    continue
+                views.append(self._handoff_view(run, step))
+        return views[: self._limits.max_list]
+
+    def mark_handoff(
+        self,
+        who: Identity,
+        run_id: str,
+        step_id: str,
+        *,
+        done: bool,
+        action_hash: str,
+        reference: str | None = None,
+    ) -> HandoffView:
+        """Record that a person did (or didn't) carry out a prepared action, then let the run go
+        on. Another tenant's run, or a step that was never handed off, is not found."""
+        run = self._find_run(run_id)
+        if run is None or run.tenant_id != who.tenant_id:
+            raise NotFoundError("hand-off not found")
+        step = self._find_step(run_id, step_id)
+        if step is None or step.handoff is None:
+            raise NotFoundError("hand-off not found")
+        try:
+            marked = self._orch.mark_handoff(
+                run_id,
+                step_id,
+                user_id=who.user_id,
+                roles=who.roles,
+                done=done,
+                action_hash=action_hash,
+                reference=reference,
+            )
+        except HandoffError as exc:
+            code = str(exc)
+            if code in {"role_required", "requester_cannot_mark"}:
+                raise ForbiddenError(code) from exc
+            if code == "reference_invalid":
+                raise BadRequestError(code) from exc
+            raise ConflictError(code) from exc
+        except StaleStateError as exc:
+            raise ConflictError("not_waiting_for_a_person") from exc
+        self.kick(run_id)
+        return self._handoff_view(run, marked)
+
     # -- next-day review -----------------------------------------------------------------
 
     def review_items(
@@ -483,6 +551,16 @@ class ApiService:
                     approver_role=decision.approver_role if decision else None,
                     action_hash=step.action_hash,
                     error=step.error,
+                    handoff=(
+                        HandoffMarkView(
+                            role=step.handoff.role,
+                            marked_by=step.handoff.by,
+                            marked_at=step.handoff.at,
+                            reference=step.handoff.reference,
+                        )
+                        if step.handoff
+                        else None
+                    ),
                     verification=next(
                         (
                             v
@@ -544,6 +622,39 @@ class ApiService:
                 if f.kind == "free_text"
             ),
             difference=self._difference(record, run, step, snapshot, classes),
+        )
+
+    def _handoff_view(self, run: RunRecord, step: StepRecord) -> HandoffView:
+        assert step.handoff is not None and step.action_hash is not None
+        decision = step.policy_decision or run.decisions.get(step.step_id)
+        manifest = self._registry.get(step.tool, step.tool_version)
+        shown = fields(step.resolved_args, manifest.field_classes or {})
+        return HandoffView(
+            run_id=run.run_id,
+            step_id=step.step_id,
+            tool=step.tool,
+            risk_tier=manifest.risk_tier,
+            resolved_args=step.resolved_args,
+            preparation=step.preparation,
+            action_hash=step.action_hash,
+            role=step.handoff.role,
+            policy_outcome=decision.outcome if decision else None,
+            reason=decision.reason if decision else "",
+            requested_by=run.acting_user_id,
+            status=step.status.value,
+            marked_by=step.handoff.by,
+            marked_at=step.handoff.at,
+            reference=step.handoff.reference,
+            typed_fields=tuple(
+                TypedFieldView(path=f.path, value=f.value) for f in shown if f.kind == "typed"
+            ),
+            free_text_fields=tuple(
+                FreeTextFieldView(
+                    path=f.path, label=FREE_TEXT_LABEL, length=length(f.value), content=f.value
+                )
+                for f in shown
+                if f.kind == "free_text"
+            ),
         )
 
     def _difference(

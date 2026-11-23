@@ -17,6 +17,7 @@ class RunStatus(StrEnum):
     PLANNING = "planning"
     RUNNING = "running"
     PAUSED_FOR_APPROVAL = "paused_for_approval"
+    WAITING_FOR_PERSON = "waiting_for_person"  # M20: a prepare-only action is a person's to do
     WAITING_VERIFICATION = "waiting_verification"
     UNKNOWN = "unknown"
     COMPLETED = "completed"
@@ -40,6 +41,10 @@ class StepStatus(StrEnum):
     VERIFICATION_UNKNOWN = "verification_unknown"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    # M20: the engine prepared it; a person carries it out and says whether they did.
+    PREPARED = "prepared"
+    DONE_BY_PERSON = "done_by_person"
+    NOT_DONE_BY_PERSON = "not_done_by_person"
 
 
 class IllegalTransitionError(Exception):
@@ -58,6 +63,7 @@ RUN_TRANSITIONS: Final[dict[RunStatus, frozenset[RunStatus]]] = {
         {
             _R.PLANNING,
             _R.PAUSED_FOR_APPROVAL,
+            _R.WAITING_FOR_PERSON,
             _R.COMPLETED,
             _R.FAILED,
             _R.CANCELLED,
@@ -67,6 +73,7 @@ RUN_TRANSITIONS: Final[dict[RunStatus, frozenset[RunStatus]]] = {
         }
     ),
     _R.PAUSED_FOR_APPROVAL: frozenset({_R.RUNNING, _R.CANCELLED, _R.FAILED, _R.DENIED}),
+    _R.WAITING_FOR_PERSON: frozenset({_R.RUNNING, _R.CANCELLED, _R.FAILED, _R.DENIED}),
     _R.WAITING_VERIFICATION: frozenset(
         {_R.RUNNING, _R.CANCELLED, _R.FAILED, _R.UNKNOWN, _R.COMPLETED, _R.DENIED}
     ),
@@ -80,7 +87,13 @@ RUN_TRANSITIONS: Final[dict[RunStatus, frozenset[RunStatus]]] = {
 STEP_TRANSITIONS: Final[dict[StepStatus, frozenset[StepStatus]]] = {
     _S.PENDING: frozenset({_S.READY, _S.FAILED}),
     _S.READY: frozenset({_S.POLICY_CHECKED, _S.FAILED}),
-    _S.POLICY_CHECKED: frozenset({_S.AWAITING_APPROVAL, _S.EXECUTING, _S.DENIED, _S.FAILED}),
+    _S.POLICY_CHECKED: frozenset(
+        {_S.AWAITING_APPROVAL, _S.EXECUTING, _S.DENIED, _S.FAILED, _S.PREPARED}
+    ),
+    # M20: never to executing. A person marks it; a cancelled or ended run fails it.
+    _S.PREPARED: frozenset({_S.DONE_BY_PERSON, _S.NOT_DONE_BY_PERSON, _S.FAILED}),
+    _S.DONE_BY_PERSON: frozenset(),
+    _S.NOT_DONE_BY_PERSON: frozenset(),
     # An expired approval fails the step; getting a fresh approval means replanning.
     _S.AWAITING_APPROVAL: frozenset({_S.APPROVED, _S.REJECTED, _S.FAILED}),
     _S.APPROVED: frozenset({_S.EXECUTING, _S.FAILED}),

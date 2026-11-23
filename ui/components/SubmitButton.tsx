@@ -7,6 +7,7 @@ export function SubmitButton(props: {
   value?: string;
   className?: string;
   disabled?: boolean;
+  formNoValidate?: boolean; // submit without the browser's field checks
 }) {
   const { pending } = useFormStatus();
   return (
@@ -15,6 +16,7 @@ export function SubmitButton(props: {
       name={props.name}
       value={props.value}
       className={props.className}
+      formNoValidate={props.formNoValidate}
       disabled={pending || props.disabled}
     >
       {pending ? "Working…" : props.children}

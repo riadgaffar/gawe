@@ -22,7 +22,19 @@ UNCHECKED_ACTION_HASH = ""
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _HASH_OPTIONAL = frozenset({StepStatus.PENDING, StepStatus.READY, StepStatus.FAILED})
-_UPDATABLE = frozenset({"action_hash", "error", "resolved_args", "preparation", "policy_decision"})
+_UPDATABLE = frozenset(
+    {"action_hash", "error", "resolved_args", "preparation", "policy_decision", "handoff"}
+)
+HANDOFF_REFERENCE_PATTERN = r"^[A-Za-z0-9._:-]{1,120}$"
+
+
+class Handoff(FrozenModel):
+    """A prepare-only action handed to a person (M20): who may mark it, and what they said."""
+
+    role: str = Field(min_length=1, max_length=64)
+    by: str | None = None
+    at: datetime | None = None
+    reference: str | None = Field(default=None, pattern=HANDOFF_REFERENCE_PATTERN)
 
 
 class StepNotFoundError(KeyError):
@@ -50,6 +62,7 @@ class StepRecord(FrozenModel):
     error: str | None = None
     preparation: dict[str, Any] = Field(default_factory=dict)
     policy_decision: PolicyDecision | None = None
+    handoff: Handoff | None = None
 
     @model_validator(mode="after")
     def _hash_required_past_policy(self) -> "StepRecord":

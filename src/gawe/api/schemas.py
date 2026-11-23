@@ -40,6 +40,15 @@ class CheckView(View):
     unreadable: bool
 
 
+class HandoffMarkView(View):
+    """Who may mark a prepare-only step, and what the person said (M20)."""
+
+    role: str
+    marked_by: str | None = None
+    marked_at: datetime | None = None
+    reference: str | None = None
+
+
 class StepView(View):
     step_id: str
     tool: str
@@ -52,6 +61,7 @@ class StepView(View):
     action_hash: str | None = None
     error: str | None = None
     verification: VerificationView | None = None
+    handoff: HandoffMarkView | None = None
 
 
 class RunView(View):
@@ -120,6 +130,29 @@ class ApprovalView(View):
     typed_fields: tuple[TypedFieldView, ...] = ()
     free_text_fields: tuple[FreeTextFieldView, ...] = ()
     difference: DifferenceView = Field(default_factory=DifferenceView)
+
+
+class HandoffView(View):
+    """A prepare-only action waiting for a person to carry it out by hand (M20). The same
+    typed-first layout as an approval; free text is collapsed."""
+
+    run_id: str
+    step_id: str
+    tool: str
+    risk_tier: str
+    resolved_args: dict[str, Any]
+    preparation: dict[str, Any] = Field(default_factory=dict)
+    action_hash: str
+    role: str
+    policy_outcome: str | None = None
+    reason: str
+    requested_by: str
+    status: str
+    marked_by: str | None = None
+    marked_at: datetime | None = None
+    reference: str | None = None
+    typed_fields: tuple[TypedFieldView, ...] = ()
+    free_text_fields: tuple[FreeTextFieldView, ...] = ()
 
 
 class ReviewItemView(View):

@@ -81,6 +81,9 @@ class AppBundle:
     sources: Mapping[str, DocumentSource] = field(default_factory=dict)
     # Which automatic, executed actions the next-day review may draw for a person to check.
     review_sample: SampleCandidate | None = None
+    # (tool, version) -> the role that marks it done. The engine prepares these actions and a
+    # person carries them out; nothing ever lets the agent dispatch them (M20). Empty by default.
+    prepare_only: Mapping[tuple[str, str], str] = field(default_factory=dict)
 
 
 def load_app_rules(bundle: AppBundle) -> tuple[Rule, ...]:
@@ -125,10 +128,27 @@ def load_app_rules(bundle: AppBundle) -> tuple[Rule, ...]:
         bundle.policy_rules, manifests=[m for m in bundle.manifests if not m.retired]
     )
     validate_provenance(rules, bundle.manifests, bundle.policy_sources, bundle.policy_variables)
+    _check_prepare_only(bundle, rules)
     writes = {(m.name, m.version) for m in bundle.manifests if m.side_effect_class != "read"}
     if writes != set(bundle.readbacks):
         raise ValueError("read-back adapters must match write tool versions")
     return rules
+
+
+def _check_prepare_only(bundle: AppBundle, rules: Sequence[Rule]) -> None:
+    """Every prepare-only class names a registered, current write and a role something knows."""
+    manifests = {(m.name, m.version): m for m in bundle.manifests}
+    known_roles = {r.approver_role for r in rules if r.approver_role} | {
+        role for m in bundle.manifests for role in m.required_roles
+    }
+    for (name, version), role in bundle.prepare_only.items():
+        manifest = manifests.get((name, version))
+        if manifest is None or manifest.retired:
+            raise ValueError(f"prepare_only names {name}@{version}, which the app doesn't register")
+        if manifest.side_effect_class == "read":
+            raise ValueError(f"prepare_only names {name}@{version}, a read: nothing to hand over")
+        if role not in known_roles:
+            raise ValueError(f"prepare_only gives {name}@{version} the unknown role {role!r}")
 
 
 @dataclass(frozen=True)
@@ -256,6 +276,7 @@ def build_engine(
         verification=verification,
         retry=retry,
         clock=clock,
+        prepare_only=frozenset(bundle.prepare_only),
     )
     policy = RuleEngine(rules, signer)
     orchestrator = Orchestrator(
@@ -278,6 +299,7 @@ def build_engine(
         preparers=bundle.preparers,
         on_finished=anchorer.anchor_run if anchor_sinks else None,
         clock=clock,
+        prepare_only=bundle.prepare_only,
     )
     runner = MaintenanceRunner(
         store=stores.maintenance,

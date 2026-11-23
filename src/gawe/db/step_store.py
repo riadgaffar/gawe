@@ -20,13 +20,15 @@ from gawe.core.records import UNCHECKED_ACTION_HASH, StaleStateError, StepNotFou
 from gawe.core.statemachine import StepStatus, check_step_transition
 from gawe.db.bind import Bind, connection_for
 
-_UPDATABLE = frozenset({"action_hash", "error", "resolved_args", "preparation", "policy_decision"})
+_UPDATABLE = frozenset(
+    {"action_hash", "error", "resolved_args", "preparation", "policy_decision", "handoff"}
+)
 _UNIQUE_VIOLATION = "23505"
 
 _COLUMNS = (
     "CAST(s.run_id AS text) AS run_id, s.step_key, s.tool_name, s.tool_version, s.args_template, "
     "s.resolved_args, s.action_hash, s.depends_on, s.status, s.error, "
-    "s.preparation, s.policy_decision"
+    "s.preparation, s.policy_decision, s.handoff"
 )
 # Steps of the run's current plan only.
 _CURRENT = (
@@ -53,7 +55,8 @@ _INSERT = text(
 _UPDATE = text(
     "UPDATE steps SET status = :to, action_hash = :action_hash, error = :error, "
     "resolved_args = CAST(:resolved_args AS jsonb), preparation = CAST(:preparation AS jsonb), "
-    "policy_decision = CAST(:policy_decision AS jsonb), updated_at = now() "
+    "policy_decision = CAST(:policy_decision AS jsonb), handoff = CAST(:handoff AS jsonb), "
+    "updated_at = now() "
     "WHERE id = CAST(:id AS uuid) AND status = :expected"
 )
 
@@ -76,6 +79,7 @@ def _to_record(row: Any) -> StepRecord:
         error=row["error"],
         preparation=row["preparation"],
         policy_decision=row["policy_decision"],
+        handoff=row["handoff"],
     )
 
 
@@ -170,6 +174,9 @@ class PostgresStepStore:
                     "preparation": _dumps(changed.preparation),
                     "policy_decision": _dumps(changed.policy_decision.model_dump())
                     if changed.policy_decision
+                    else None,
+                    "handoff": _dumps(changed.handoff.model_dump(mode="json"))
+                    if changed.handoff
                     else None,
                 },
             )

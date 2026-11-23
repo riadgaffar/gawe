@@ -11,6 +11,10 @@ earlier stages:
 4. the tool must be registered at the stored version and its args must satisfy its schema;
 5. the step must be won by compare-and-set into `executing`, so concurrent workers run it once.
 
+Before all of these, a step whose tool version is in the executor's prepare-only setting is
+refused outright (M20). The setting is the one the executor runs with now, never anything stored
+on the step: no decision, approval, retry or recovery can let such an action dispatch.
+
 Shipped writes persist an operation intent and fixed deadline before invocation. Their key binds
 both action hash and plan version. Only a connector-declared pre-dispatch rejection may retry;
 a possible acceptance or saved reply routes exclusively to independent system read-back. Recovery
@@ -135,7 +139,9 @@ class Executor:
         lease: timedelta = timedelta(minutes=5),
         clock: Callable[[], datetime] = _utc_now,
         sleep: Callable[[float], None] = time.sleep,
+        prepare_only: frozenset[tuple[str, str]] = frozenset(),
     ) -> None:
+        self._prepare_only = prepare_only
         self._steps = steps
         self._executions = executions
         self._registry = registry
@@ -161,6 +167,9 @@ class Executor:
             if existing is not None and not existing.continued:
                 # This branch can only read/apply a persisted intent, never dispatch a tool.
                 return self.reconcile(step)
+        if (step.tool, step.tool_version) in self._prepare_only:
+            # M20: whatever was decided or approved, this action is a person's to carry out.
+            self._refuse(step, "prepare_only")
         self._check_authorization(step, decision, recomputed)
         manifest = self._load_manifest(step)  # raises before any state change
         if manifest.retired:

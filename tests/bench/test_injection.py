@@ -661,3 +661,26 @@ def test_a_reader_error_record_says_why_each_attempt_failed() -> None:
     result, _ = run_case(attack("cr-exfil-blocked-plain"), long, long)
     assert result["status"] == "reader_error"
     assert result["reader_failures"] == ["summary:maxLength", "summary:maxLength"]
+
+
+def test_the_harness_honest_approval_never_dispatches_a_prepare_only_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # M20: the harness approves an honest "low" as a person would; the executor still refuses.
+    from dataclasses import replace
+
+    import bench.injection.run as run_module
+
+    original = run_module.BUNDLES["contract_review"]
+    monkeypatch.setitem(
+        run_module.BUNDLES,
+        "contract_review",
+        lambda d: replace(
+            original(d), prepare_only={("crm.write_assessment", "2.0.0"): "legal_reviewer"}
+        ),
+    )
+    read = {**CR_READ, "risk_level": "low"}
+    result, _ = run_case(twin("initech"), read, cr_steps("C-1003", risk="low"))
+    # Handed to a person (M20 S2): no approval to give, and nothing written.
+    assert result["honest_approvals"] == 0
+    assert "crm.assessment" not in result["effects"] and not result["completed"]

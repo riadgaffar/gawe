@@ -43,6 +43,8 @@ Every error is `{"error": {"code": "...", "message": "..."}}`.
 | `GET /v1/runs/{id}/events` | any user in tenant | server-sent events, see below |
 | `GET /v1/approvals` | approver | open approvals this caller could decide now |
 | `POST /v1/approvals/{id}/decision` | approver | `{decision: "approved"\|"rejected", action_hash, comment?}` |
+| `GET /v1/handoffs` | the role the setting names, not the requester | prepared actions this caller could mark now, see [Hand-offs](#hand-offs) |
+| `POST /v1/handoffs/{run_id}/{step_id}` | the same | `{outcome: "done"\|"not_done", action_hash, reference?}`, once |
 | `GET /v1/review-items?status=` | `legal_reviewer` | next-day review items in the tenant; `status` is `open` (default), `confirmed`, `missed_risk` or `all` |
 | `POST /v1/review-items/{id}/verdict` | `legal_reviewer` who did not start the run | `{verdict: "confirmed"\|"missed_risk"}`, once; a second verdict is a `409` |
 
@@ -81,6 +83,31 @@ The approval view also splits the arguments the way the tool declares them:
 
 Values a tool does not declare are listed as free text. `resolved_args` stays in the view for
 clients that need the raw arguments.
+
+## Hand-offs
+
+An app can make a tool version prepare-only (`AppBundle.prepare_only`, empty in both shipped
+apps). GAWE then resolves, prepares and checks such a step as usual but never sends it: the step
+stops at `prepared` and the run at `waiting_for_person`, and a person does it by hand in the target
+system.
+
+- `GET /v1/handoffs` lists prepared steps in the caller's tenant whose role the caller holds, on
+  runs the caller didn't start. Each has the same `typed_fields` and `free_text_fields` as an
+  approval (no `difference`), the `action_hash`, the `role`, the policy outcome and reason, and the
+  preparation record.
+- `POST /v1/handoffs/{run_id}/{step_id}` records what the person did: `done` (with an optional
+  `reference`, up to 120 letters, digits, `.`, `_`, `:` and `-`, such as an envelope id) or
+  `not_done`. The `action_hash` must be the one shown. Refusals carry a code as the message:
+  `role_required` and `requester_cannot_mark` are `403`; `action_hash_mismatch` and
+  `not_waiting_for_a_person` (already marked, cancelled or never prepared) are `409`;
+  `reference_invalid` is `422`. Another tenant's run, or a step that was never handed off, is `404`.
+- Done counts as success for later steps; not done ends the run as `denied` with
+  `handoff_not_done`. Nothing may use a hand-off's output.
+- The run view's step carries `handoff`: the role, who marked it, when, and the reference. The
+  audit trail records the mark by user with the hash, role and the reference's length, never its
+  text.
+
+The engine records the person's word; it can't confirm what they did in the target system.
 
 ## Verifying the audit trail
 
@@ -135,8 +162,8 @@ data: {"status":"completed"}
 ## What responses never contain
 
 Uploaded documents, Reader findings, prompts, model output, policy signatures, tool outputs.
-Resolved tool arguments appear in full only in the approval view, because an approver has to see
-what they are approving. Verification records (on the run view and at `/verification`) are the
+Resolved tool arguments appear in full only in the approval and hand-off views, because an
+approver has to see what they are approving and a person doing it by hand has to see what to do. Verification records (on the run view and at `/verification`) are the
 one other place argument values appear: the bounded fields a read-back compares, such as accepted
 email recipients, contract id, risk level, account, system, level, signer and deal value. Email
 subject and body and CRM summaries appear only as digests. They are visible to users in the run's

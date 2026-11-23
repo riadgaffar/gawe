@@ -299,3 +299,36 @@ def test_unset_hash_cas_cannot_overwrite_refresh(backend: Backend) -> None:
             preparation={"reapproval_required": False},
         )
     assert backend.steps.get(backend.run_id, "s1").preparation["reapproval_required"] is True
+
+
+def test_a_hand_off_round_trips_through_its_states(backend: Backend) -> None:
+    # M20: a prepare-only step is prepared, then a person marks it.
+    from gawe.core.records import Handoff
+
+    add_step(backend, resolved_args={"to": "a@b.com"})
+    backend.steps.transition(
+        backend.run_id, "s1", expected=StepStatus.READY, to=StepStatus.POLICY_CHECKED, action_hash=H
+    )
+    prepared = backend.steps.transition(
+        backend.run_id,
+        "s1",
+        expected=StepStatus.POLICY_CHECKED,
+        to=StepStatus.PREPARED,
+        handoff=Handoff(role="legal_reviewer"),
+    )
+    assert backend.steps.get(backend.run_id, "s1") == prepared
+    done = backend.steps.transition(
+        backend.run_id,
+        "s1",
+        expected=StepStatus.PREPARED,
+        to=StepStatus.DONE_BY_PERSON,
+        expected_action_hash=H,
+        handoff=Handoff(role="legal_reviewer", by=BOB, at=T0, reference="ENV-1"),
+    )
+    stored = backend.steps.get(backend.run_id, "s1")
+    assert stored == done and stored.handoff is not None
+    assert (stored.handoff.by, stored.handoff.reference) == (BOB, "ENV-1")
+    with pytest.raises(IllegalTransitionError):
+        backend.steps.transition(
+            backend.run_id, "s1", expected=StepStatus.DONE_BY_PERSON, to=StepStatus.EXECUTING
+        )

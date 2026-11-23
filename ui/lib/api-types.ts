@@ -33,6 +33,15 @@ export type StepView = {
   approver_role: string | null;
   action_hash: string | null;
   error: string | null;
+  handoff?: HandoffMarkView | null;
+};
+
+// A prepare-only step (M20): the role that may mark it, and what the person said.
+export type HandoffMarkView = {
+  role: string;
+  marked_by: string | null;
+  marked_at: string | null;
+  reference: string | null;
 };
 
 export type RunView = {
@@ -67,6 +76,33 @@ export type ApprovalView = {
   typed_fields: TypedFieldView[];
   free_text_fields: FreeTextFieldView[];
   difference: DifferenceView;
+};
+
+// A prepare-only action waiting for a person to carry it out by hand (M20).
+export type HandoffView = {
+  run_id: string;
+  step_id: string;
+  tool: string;
+  risk_tier: string;
+  resolved_args: Record<string, unknown>;
+  preparation: Record<string, unknown>;
+  action_hash: string;
+  role: string;
+  policy_outcome: string | null;
+  reason: string;
+  requested_by: string;
+  status: string;
+  marked_by: string | null;
+  marked_at: string | null;
+  reference: string | null;
+  typed_fields: TypedFieldView[];
+  free_text_fields: FreeTextFieldView[];
+};
+
+export type HandoffInput = {
+  outcome: "done" | "not_done";
+  action_hash: string;
+  reference?: string;
 };
 
 export type TypedFieldView = {

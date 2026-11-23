@@ -136,6 +136,36 @@ Bob's side after the cancel is refused with 409.
 Start C-1001, stop `make api` while the run is paused, start it again. The run is picked up again
 and still waits for approval; nothing is sent twice.
 
+## 5d. Signatures done by hand (prepare-only)
+
+Some teams want the agent to prepare a signature request and never send it. Stop the server, set
+`GAWE_APP=gawe.apps.contract_review:signatures_by_hand`, and `make api`. That is the same app with
+`esign.send_for_signature` prepare-only, marked by `legal_reviewer`. The default app prepares
+nothing.
+
+Start the C-1002 objective from section 2 as Alice. The read and the assessment run as before; the
+signature step is resolved, prepared and checked by policy, then stops at `prepared` and the run
+at `waiting_for_person`. Policy still records `needs_approval` (finance, for 250,000), but nobody
+is asked to approve: Fiona's inbox stays empty, because an approval could not make GAWE send it.
+
+```bash
+curl -s $API/v1/handoffs -H "Authorization: Bearer $BOB" | jq '.[0] | {run_id, step_id, tool, role, typed_fields, action_hash}'
+curl -s $API/v1/handoffs -H "Authorization: Bearer $ALICE" | jq   # [] (she started the run)
+```
+Bob sees the prepared envelope in the **Approvals** page under **Hand-offs**: typed fields
+first, model-written text collapsed, the action hash. He sends it himself in the e-signature
+system, then marks it done with the envelope id:
+```bash
+read R S H < <(curl -s $API/v1/handoffs -H "Authorization: Bearer $BOB" | jq -r '.[0] | "\(.run_id) \(.step_id) \(.action_hash)"')
+curl -s -X POST $API/v1/handoffs/$R/$S -H "Authorization: Bearer $BOB" \
+  -H 'Content-Type: application/json' -d "{\"outcome\":\"done\",\"action_hash\":\"$H\",\"reference\":\"ENV-2041\"}" | jq
+```
+Check: the run is `completed`, the step is
+`done_by_person` with Bob and `ENV-2041` on the run page, and `grep -c esign.envelope
+.demo-data/ledger.jsonl` didn't change: GAWE sent nothing. Marking `not_done` instead ends the run
+`denied` with `handoff_not_done`. GAWE records what Bob says; it can't check the e-signature
+system.
+
 ## 6. The second workflow
 
 Stop the server, set `GAWE_APP=gawe.apps.it_access:bundle`, `make api`, and use profile

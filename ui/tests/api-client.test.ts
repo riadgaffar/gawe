@@ -81,3 +81,14 @@ test("network failure becomes an unreachable error without leaking details", asy
     return true;
   });
 });
+
+test("hand-offs: listed, and marked at the run and step with the shown hash", async () => {
+  const seen: { url?: string; init?: RequestInit } = {};
+  const client = createClient({ baseUrl: "http://a", token: "t", fetchImpl: fake(200, [], seen) });
+  await client.handoffs();
+  assert.equal(seen.url, "http://a/v1/handoffs");
+  await client.markHandoff("r/1", "sign", { outcome: "done", action_hash: "h", reference: "ENV-1" });
+  assert.equal(seen.url, "http://a/v1/handoffs/r%2F1/sign");
+  assert.equal(seen.init?.method, "POST");
+  assert.equal(seen.init?.body, JSON.stringify({ outcome: "done", action_hash: "h", reference: "ENV-1" }));
+});

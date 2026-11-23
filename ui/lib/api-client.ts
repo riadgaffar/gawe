@@ -5,6 +5,8 @@ import type {
   AuditEventView,
   AuditVerificationView,
   DecisionInput,
+  HandoffInput,
+  HandoffView,
   MeView,
   ReviewItemView,
   RunView,
@@ -64,6 +66,9 @@ export function createClient(options: { baseUrl: string; token: string; fetchImp
     inbox: () => call<ApprovalView[]>("GET", "/v1/approvals"),
     decide: (approvalId: string, input: DecisionInput) =>
       call<ApprovalView>("POST", `/v1/approvals/${enc(approvalId)}/decision`, input),
+    handoffs: () => call<HandoffView[]>("GET", "/v1/handoffs"),
+    markHandoff: (runId: string, stepId: string, input: HandoffInput) =>
+      call<HandoffView>("POST", `/v1/handoffs/${enc(runId)}/${enc(stepId)}`, input),
     reviewItems: () => call<ReviewItemView[]>("GET", "/v1/review-items"),
     reviewVerdict: (itemId: string, verdict: Verdict) =>
       call<ReviewItemView>("POST", `/v1/review-items/${enc(itemId)}/verdict`, { verdict }),

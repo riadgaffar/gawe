@@ -4,6 +4,7 @@ import { Shell } from "@/components/Shell";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ApiError } from "@/lib/api-client";
 import { isFinished, relativeTime, shortHash } from "@/lib/format";
+import { handoffSummary } from "@/lib/handoff-view";
 import { requireSession } from "@/lib/session";
 import { LiveRefresh } from "./LiveRefresh";
 import { RunControls } from "./RunControls";
@@ -23,6 +24,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   const finished = isFinished(run.status);
   const canControl = me.user_id === run.acting_user_id || me.roles.includes("admin");
   const waiting = run.steps.some((step) => step.status === "awaiting_approval");
+  const handedOff = run.steps.some((step) => step.status === "prepared");
   return (
     <Shell me={me}>
       <LiveRefresh runId={run.run_id} finished={finished} />
@@ -47,6 +49,12 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
           with the required role.
         </p>
       )}
+      {handedOff && (
+        <p className="notice wait">
+          A step is prepared for a person to do by hand; GAWE will not send it.{" "}
+          <Link href="/approvals">Open the inbox</Link> as someone with the named role to mark it.
+        </p>
+      )}
       {canControl && !finished && <RunControls runId={run.run_id} />}
       <h2>Steps</h2>
       {run.steps.length === 0 ? (
@@ -67,6 +75,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                 <td>
                   <StatusBadge status={step.status} />
                   {step.error && <div className="muted">{step.error}</div>}
+                  {step.handoff && <div className="muted">{handoffSummary(step.handoff, step.status)}</div>}
                   {step.verification && <details><summary>Verification evidence</summary>
                     <p>Deadline: {step.verification.deadline}</p>
                     <pre>{JSON.stringify(step.verification.evidence, null, 2)}</pre>
@@ -76,7 +85,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                   <StatusBadge status={step.policy_outcome} />
                   {step.policy_rule_ids.length > 0 && <div className="muted">{step.policy_rule_ids.join(", ")}</div>}
                 </td>
-                <td>{step.approver_role ?? "-"}</td>
+                <td>{step.handoff?.role ?? step.approver_role ?? "-"}</td>
                 <td><code title={step.action_hash ?? ""}>{shortHash(step.action_hash)}</code></td>
               </tr>
             ))}

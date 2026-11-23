@@ -18,6 +18,8 @@ Endpoints (all under /v1 except /healthz; every one needs `Authorization: Bearer
     GET  /v1/runs/{id}/events             server-sent events: audit events as they happen
     GET  /v1/approvals                    open approvals the caller could decide
     POST /v1/approvals/{id}/decision      approve or reject, echoing the action hash shown
+    GET  /v1/handoffs                     prepared actions the caller could mark (M20)
+    POST /v1/handoffs/{run}/{step}        mark one done (optional reference) or not done
 """
 
 import asyncio
@@ -40,6 +42,7 @@ from gawe.api.schemas import (
     ApprovalView,
     AuditEventView,
     AuditVerificationView,
+    HandoffView,
     MeView,
     ReviewItemView,
     RunView,
@@ -71,6 +74,14 @@ class DecisionBody(BaseModel):
     decision: Literal["approved", "rejected"]
     action_hash: str = Field(pattern=_SHA256)
     comment: str | None = Field(default=None, max_length=2000)
+
+
+class HandoffBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: Literal["done", "not_done"]
+    action_hash: str = Field(pattern=_SHA256)
+    reference: str | None = Field(default=None, max_length=120)
 
 
 class VerdictBody(BaseModel):
@@ -243,6 +254,23 @@ def create_app(
             decision=body.decision,
             action_hash=body.action_hash,
             comment=body.comment,
+        )
+
+    @app.get("/v1/handoffs")
+    def handoffs(who: Identity = Depends(identity)) -> list[HandoffView]:
+        return service.handoffs(who)
+
+    @app.post("/v1/handoffs/{run_id}/{step_id}")
+    def mark_handoff(
+        run_id: str, step_id: str, body: HandoffBody, who: Identity = Depends(identity)
+    ) -> HandoffView:
+        return service.mark_handoff(
+            who,
+            run_id,
+            step_id,
+            done=body.outcome == "done",
+            action_hash=body.action_hash,
+            reference=body.reference,
         )
 
     @app.get("/v1/review-items")

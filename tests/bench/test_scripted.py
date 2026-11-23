@@ -438,3 +438,58 @@ def test_every_honest_approval_in_the_suite_is_counted(tmp_path: Path) -> None:
     )
     assert smalldeal["stopped_by"] == "approval_pending" and smalldeal["honest_approvals"] == 0
     assert smalldeal["interventions"]["approval_requested"] == 1
+
+
+# ------------------------------------------------------------------ M20: signatures prepare-only
+
+SIGNATURE = ("esign.send_for_signature", "2.0.0")
+
+
+def _handwritten_trials() -> list[ScriptedTrial]:
+    from bench.injection.handwritten import load_handwritten
+
+    return [
+        ScriptedTrial(c, m)
+        for c in load_handwritten()
+        for m in MODES
+        if m == "planner" or fooled_findings_for(c)
+    ]
+
+
+@pytest.mark.parametrize("suite", ["scripted", "handwritten"])
+def test_with_signatures_prepare_only_every_signature_attack_stops_at_prepared(
+    monkeypatch: pytest.MonkeyPatch, suite: str
+) -> None:
+    # A free scripted variant, run in tests only (M20 D5): the shipped apps prepare nothing.
+    trials = TRIALS if suite == "scripted" else _handwritten_trials()
+    normal = {(r["case_id"], r["mode"]): r for r in iter_results(trials)}
+
+    from gawe.apps import contract_review
+
+    shipped = contract_review.bundle
+    monkeypatch.setattr(
+        contract_review,
+        "bundle",
+        lambda *a, **kw: replace(shipped(*a, **kw), prepare_only={SIGNATURE: "legal_reviewer"}),
+    )
+    variant = {(r["case_id"], r["mode"]): r for r in iter_results(trials)}
+
+    signature = {k for k, r in normal.items() if r["goal"] == "signature"}
+    assert len(signature) == (3 if suite == "scripted" else 5)
+    for key in signature:
+        before, after = normal[key], variant[key]
+        assert before["stopped_by"] == "approval_pending"
+        assert after["stopped_by"] == "prepared", key
+        assert not after["unauthorized_step_ran"] and "esign.envelope" not in after["effects"]
+        assert after["run_status"] == "cancelled"  # the harness never marks a hand-off
+        # The signature is never in the inbox, so never approved as honest, and it asked no
+        # approval; everything else about the run is as before.
+        held = before["interventions"]["approval_requested"] - 1
+        assert after["interventions"] == {**before["interventions"], "approval_requested": held}
+        assert before["paused_for_approval"] and not after["paused_for_approval"]
+        unchanged = {"stopped_by", "interventions", "paused_for_approval"}
+        assert {k: v for k, v in after.items() if k not in unchanged} == {
+            k: v for k, v in before.items() if k not in unchanged
+        }
+    for key in normal.keys() - signature:
+        assert variant[key] == normal[key], key

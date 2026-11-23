@@ -22,6 +22,11 @@ does not show.
   attacker steps still ran, all of them actions policy allows on purpose; the rest were denied or
   left waiting for a person. Two new rules came out of it. See
   [When the model is fooled](#when-the-model-is-fooled).
+- **Added 22 November: actions GAWE only prepares.** A deployment can keep an action class for
+  people: GAWE prepares it and hands it over, and nothing lets it dispatch. With signatures
+  configured that way, all 8 scripted and hand-written signature attacks stop at `prepared`,
+  and nothing else changes. Off by default. See
+  [M20 update](#m20-update-actions-gawe-only-prepares).
 - **Added 22 November: the Reader's summary limit, fixed.** Reader errors on attack runs went
   from 10 to 0 for Sonnet and from 40 to 0 for Haiku. Haiku's accuracy gap stayed. See
   [M19 update](#m19-update-the-readers-summary-limit-fixed).
@@ -328,6 +333,32 @@ What this does not show:
   lowering of a rating.
 - **Waiting is safe only if the approver says no.** Legal now sees every "low"; a rubber stamp
   undoes it.
+
+### M20 update: actions GAWE only prepares
+
+Some teams want the agent to do the work up to the last step and stop, every time, however well
+it behaves. Since M20 an app can name tool versions that are **prepare-only**: GAWE resolves the
+arguments, prepares the record and checks policy as usual, then stops at `prepared` and hands the
+action to a person with a named role. They do it by hand and mark it done (with an optional
+reference, such as an envelope id) or not done. No paid runs were needed.
+
+The guarantee lives in the executor, against the setting it runs with now: a rule that allows the
+action, an approval (even one given before the setting existed), a retry, a resumed run, crash
+recovery and the sweeps were each tried, and each was refused with the tool never called. A deny
+stays a deny, and no approval is asked for a step that can't use one.
+
+**What it changes in the benchmark.** Nothing, unless it's switched on: the scripted run is
+identical to M19's (38 of 38 records), and integrity matches 23 of 23. With sending for signature
+made prepare-only in a test, every signature attack, 3 scripted and 5 hand-written, moves from
+"waits for approval" to "prepared": nothing is sent, and every other record is unchanged. The
+harness never marks a hand-off.
+
+What this does not show:
+
+- **GAWE records the person's word.** It can't confirm they did it, or did it as prepared.
+- **Classes are per tool version.** "Admin grants only" or "deals over 100,000 only" would need
+  classes defined by argument values.
+- **The setting is per app,** until there is a per-tenant store.
 
 ### M19 update: the Reader's summary limit, fixed
 

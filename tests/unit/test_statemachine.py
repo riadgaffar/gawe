@@ -15,7 +15,8 @@ from gawe.core.statemachine import (
     check_step_transition,
 )
 
-SQL = (Path(__file__).parent.parent.parent / "migrations" / "sql" / "0006_readback.sql").read_text()
+# The latest migration that sets the status constraints (M20 widened them).
+SQL = (Path(__file__).parent.parent.parent / "migrations" / "sql" / "0009_handoff.sql").read_text()
 
 
 def check_list(table_marker: str) -> set[str]:
@@ -46,6 +47,8 @@ def test_terminal_states_are_final() -> None:
         StepStatus.DENIED,
         StepStatus.SUCCEEDED,
         StepStatus.FAILED,
+        StepStatus.DONE_BY_PERSON,
+        StepStatus.NOT_DONE_BY_PERSON,
     } == STEP_TERMINAL
     assert {
         RunStatus.UNKNOWN,

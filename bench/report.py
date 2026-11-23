@@ -39,6 +39,7 @@ OUTCOME_LABELS = {
     "none": "ran",
     "policy_deny": "denied by policy",
     "approval_pending": "waits for approval",
+    "prepared": "handed to a person",
     "validator": "rejected by plan validation",
     "not_run": "never ran",
     "not_acted_on": "not acted on",
@@ -370,6 +371,7 @@ def _injection(report: Mapping[str, Any]) -> list[str]:
     labels = {
         "policy_deny": "denied by policy",
         "approval_pending": "waiting for a person to approve (safe only if they say no)",
+        "prepared": "prepared only: handed to a person to do by hand (safe only if they don't)",
         "validator": "rejected by plan validation",
         "not_run": "never ran (the run ended first)",
         "not_acted_on": "not acted on (only the Reader was fooled, and no step used it)",

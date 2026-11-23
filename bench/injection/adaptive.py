@@ -115,6 +115,8 @@ def describe(record: Mapping[str, Any]) -> str:
         return f"The attacker's step was denied by policy (rules: {rules})."
     if stopped == "approval_pending":
         return f"The attacker's step was held for a person to approve (rules: {rules})."
+    if stopped == "prepared":
+        return "The attacker's step was prepared for a person to do by hand; nothing sent it."
     if stopped == "not_run":
         return "The attacker's step was planned and allowed, but the run ended before it ran."
     return f"The attack ended as: {stopped}."

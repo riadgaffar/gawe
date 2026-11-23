@@ -446,7 +446,7 @@ def summarize_interventions(twins: Sequence[Mapping[str, Any]]) -> dict[str, Any
     return {"documents": documents, "shares": shares}
 
 
-SCRIPTED_ORDER = ("none", "policy_deny", "approval_pending", "validator", "not_run")
+SCRIPTED_ORDER = ("none", "policy_deny", "approval_pending", "prepared", "validator", "not_run")
 
 
 def summarize_scripted(

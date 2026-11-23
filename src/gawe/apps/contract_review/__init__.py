@@ -11,6 +11,7 @@ that a retried call did not repeat it.
 
 import os
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,17 @@ def bundle(
             "review.large_deals": PolicyVariable(dependencies=("deal_values",)),
         },
     )
+
+
+SIGNATURE = ("esign.send_for_signature", "2.0.0")
+
+
+def signatures_by_hand(demo_dir: Path | None = None) -> AppBundle:
+    """The demo app with sending for signature prepare-only (M20): GAWE prepares the envelope and
+    a `legal_reviewer` sends it by hand, then marks it. Set
+    `GAWE_APP=gawe.apps.contract_review:signatures_by_hand`. The default `bundle` prepares
+    nothing."""
+    return replace(bundle(demo_dir), prepare_only={SIGNATURE: "legal_reviewer"})
 
 
 def review_sample(run: RunRecord, step: StepRecord) -> bool:
