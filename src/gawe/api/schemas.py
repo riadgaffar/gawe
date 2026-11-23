@@ -219,3 +219,78 @@ class EventsPage(View):
     events: tuple[AuditEventView, ...]
     run_status: str
     finished: bool
+
+
+# --- step trace (M23) ------------------------------------------------------------------------
+# Hashes, ids, codes and times only, like the audit trail: never argument values, model text or
+# read-back evidence.
+
+
+class TraceDecisionView(View):
+    outcome: str
+    rule_ids: tuple[str, ...]
+    approver_role: str | None = None
+    action_hash: str
+    signature_valid: bool | None  # None: this service has no key to check it with
+    audited: bool  # its `policy.decided` event is in the run's audit trail
+
+
+class TraceApprovalView(View):
+    approval_id: str
+    action_hash: str
+    current: bool  # bound to the step's current action hash
+    approver_role: str
+    requested_by: str
+    requested_at: datetime
+    decision: str | None = None
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+    audited: bool  # its request and (a person's) decision are in the audit trail
+
+
+class TraceAttemptView(View):
+    attempt: int
+    status: str
+    operation_key: str
+    action_hash: str | None  # the hash the key was derived from; None when it matches none
+    error: str | None = None
+    output_hash: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+
+
+class TraceConditionView(View):
+    result: str  # "held", "changed:<condition>" or "unreadable:<condition>"
+    count: int
+
+
+class TraceReadbackView(View):
+    job_id: str
+    operation_key: str
+    plan_version: int
+    action_hash: str
+    current: bool
+    outcome: str | None = None
+    code: str | None = None
+
+
+class StepTraceView(View):
+    """One step's records joined by the hash or key that links them, and the links that fail."""
+
+    run_id: str
+    step_id: str
+    plan_version: int
+    tool: str
+    tool_version: str
+    status: str
+    error: str | None = None
+    args_hash: str | None  # hash of the resolved arguments, never the arguments
+    action_hash: str | None
+    superseded_hashes: tuple[str, ...] = ()  # earlier hashes a recipient change replaced
+    decision: TraceDecisionView | None = None
+    approvals: tuple[TraceApprovalView, ...] = ()
+    attempts: tuple[TraceAttemptView, ...] = ()
+    conditions: tuple[TraceConditionView, ...] = ()
+    handoff: HandoffMarkView | None = None
+    readback: tuple[TraceReadbackView, ...] = ()
+    gaps: tuple[str, ...] = ()

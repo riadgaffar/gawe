@@ -46,6 +46,7 @@ from gawe.api.schemas import (
     MeView,
     ReviewItemView,
     RunView,
+    StepTraceView,
     ToolView,
     VerificationView,
 )
@@ -211,6 +212,10 @@ def create_app(
         run_id: str, who: Identity = Depends(identity)
     ) -> list[VerificationView]:
         return service.verification_evidence(who, run_id)
+
+    @app.get("/v1/runs/{run_id}/steps/{step_id}/trace")
+    def step_trace(run_id: str, step_id: str, who: Identity = Depends(identity)) -> StepTraceView:
+        return service.step_trace(who, run_id, step_id)
 
     @app.post("/v1/runs/{run_id}/cancel")
     def cancel_run(run_id: str, who: Identity = Depends(identity)) -> RunView:

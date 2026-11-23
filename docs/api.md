@@ -36,6 +36,7 @@ Every error is `{"error": {"code": "...", "message": "..."}}`.
 | `GET /v1/runs?limit=` | any user | the tenant's runs, newest first |
 | `GET /v1/runs/{id}` | any user in tenant | run, steps, policy outcome and evaluated checks per step, each write step's verification record, and the conditions it is only checked against (`checked_not_enforced`, see [What targets guarantee](#what-targets-guarantee)) |
 | `GET /v1/runs/{id}/verification` | any user in tenant | independent read-back records for the run, see [Independent write verification](#independent-write-verification) |
+| `GET /v1/runs/{id}/steps/{step_id}/trace` | any user in tenant | one step's records joined by hash and key, with any broken link named, see [Tracing a step](#tracing-a-step) |
 | `POST /v1/runs/{id}/cancel` | starter or `admin` | cancel (409 if a step is executing) |
 | `POST /v1/runs/{id}/resume` | starter or `admin` | drive the run again, e.g. after a restart; `202` |
 | `GET /v1/runs/{id}/audit` | any user in tenant | audit events (type, actor, payload hash, chain hash) |
@@ -131,6 +132,64 @@ audited as `condition.checked` with the condition names and `held`, `changed:<na
 `unreadable:<name>`, never what was read. A run's steps list these conditions in
 `checked_not_enforced`. The window between that read and the write remains: a ticket closed in
 it still gets its grant, which then expires as usual.
+
+## Tool credentials and control systems
+
+Each app gives each tool a credential scoped to what the tool does (`tool_scopes`; M23): a read
+tool only `<thing>:read` scopes, a write tool the scope of each resource it declares it writes
+(`write_scopes`). The target system checks that credential before every operation and refuses
+anything outside it with `credential_scope`, before reading or writing. Startup refuses a tool
+with no credential, a read tool holding a scope that changes anything, and a write tool whose
+credential lacks or exceeds the scopes of its declared writes.
+
+The IT app's `tenant.control_systems` names the systems that hold another app's controls: `crm`,
+where contract review's deal values live. Write or admin access to one waits for a
+`security_admin` (`control-system-change-needs-security`); read access doesn't. A tenant setting
+without the list denies every grant.
+
+## Tracing a step
+
+`GET /v1/runs/{id}/steps/{step_id}/trace` joins what GAWE stored about one step, by the hash or key
+that links each record to it (M23). Another tenant's run, or a step not in the run's current plan,
+is a `404`.
+
+| Field | What it holds |
+|---|---|
+| `tool`, `tool_version`, `status`, `error` | the step |
+| `args_hash`, `action_hash` | the hash of its resolved arguments, and its action hash |
+| `superseded_hashes` | earlier action hashes a recorded recipient change replaced |
+| `decision` | outcome, rule ids, approver role, the hash it's bound to, `signature_valid`, and `audited` (its `policy.decided` event is in the trail) |
+| `approvals` | each approval: id, hash, `current` (bound to the current hash), role, who asked and when, the decision, who and when, `audited` |
+| `attempts` | each attempt: number, status, operation key, the hash that key derives from (`null` when none), error code, output hash, times |
+| `conditions` | the step's `condition.checked` events, counted by result |
+| `handoff` | the hand-off, if the step is prepare-only |
+| `readback` | each read-back job: id, operation key, plan version, hash, `current`, outcome and code |
+| `gaps` | each link that's missing or doesn't match, by code; empty when every link holds |
+
+The audit trail keeps only payload hashes, so the trace rebuilds the payload each record should
+have produced and looks its hash up; a record with no matching event is a gap. A recipient change
+(M16a) is the one legitimate way a step's hash changes: a hash is superseded only when an attempt
+or read-back job for it ended `recipient_changed`. Records bound to a superseded hash are shown,
+not current, and aren't gaps.
+
+| Gap | Meaning |
+|---|---|
+| `decision_missing` | the step is past policy but has no decision |
+| `decision_for_other_step`, `decision_hash_mismatch` | the decision names another step or another action |
+| `decision_signature_invalid` | the decision's signature doesn't verify |
+| `decision_not_audited`, `approval_not_audited` | a record with no matching audit event |
+| `approval_missing` | the decision needs an approval and none is bound to the current hash |
+| `approval_hash_mismatch` | an approval bound to a hash that is neither current nor superseded |
+| `attempt_key_mismatch` | an attempt's operation key derives from no known hash |
+| `dispatched_after_denial`, `dispatched_without_approval`, `dispatched_after_handoff` | an attempt for the current hash that its decision, approvals or hand-off didn't allow |
+| `condition_not_checked` | dispatched, with conditions declared, and no check recorded |
+| `handoff_missing` | the step is handed to a person but carries no hand-off |
+| `readback_hash_mismatch`, `readback_plan_mismatch`, `readback_key_mismatch` | a read-back job for another action, plan version or operation key |
+| `readback_missing` | a write that was dispatched with no read-back job for the current action |
+
+The trace carries hashes, ids, codes and times only: never argument values, model text or read-back
+evidence. It reads GAWE's own records, so it can't link what happened outside GAWE beyond what the
+read-back saw.
 
 ## Verifying the audit trail
 

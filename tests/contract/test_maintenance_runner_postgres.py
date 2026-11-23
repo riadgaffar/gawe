@@ -161,7 +161,11 @@ class Grants:
         bundle = replace(
             it_access.bundle(self.directory, iam=self.iam, tickets=self.tickets, clock=self.clock),
             variables=lambda run: {
-                "tenant": {"internal_domains": ["acme.example"], "max_grant_lifetime_hours": 720},
+                "tenant": {
+                    "internal_domains": ["acme.example"],
+                    "max_grant_lifetime_hours": 720,
+                    "control_systems": ["crm"],
+                },
                 "request": {
                     "reported_requester": "dana.ortiz@acme.example",
                     "submitters": ["dana.ortiz@acme.example"],

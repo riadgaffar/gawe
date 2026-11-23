@@ -27,6 +27,15 @@ def bundle(connector: FakeConnector | None = None) -> tuple[AppBundle, FakeConne
             readbacks={
                 (m.name, m.version): read for m in catalog.values() if m.side_effect_class != "read"
             },
+            # Test connector: credentials aren't enforced by it, but each tool still declares its
+            # scopes, as every app must (M23).
+            tool_scopes={
+                m.name: frozenset({f"{m.name}:read"})
+                if m.side_effect_class == "read"
+                else frozenset(f"{w}:change" for w in m.writes or ())
+                for m in catalog.values()
+            },
+            write_scopes={w: f"{w}:change" for m in catalog.values() for w in (m.writes or ())},
             # The fake connector keeps one effect per key and reads it back by that key (M22).
             guarantees={
                 (m.name, m.version): EVERY_WRITE

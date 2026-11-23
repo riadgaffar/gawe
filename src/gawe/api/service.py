@@ -5,7 +5,8 @@ Every method takes the caller's `Identity` and enforces, in this order: the tena
 The routes only translate HTTP to these calls, so the rules are tested here once.
 
 Who may do what:
-* start a run, list/view runs, view a run's audit trail: any authenticated user in the tenant;
+* start a run, list/view runs, view a run's audit trail or a step's trace: any authenticated
+  user in the tenant;
 * cancel or resume a run: the user who started it, or anyone with the `admin` role;
 * see an approval in the inbox: someone holding the approver role the policy named, who did not
   request it themselves;
@@ -23,6 +24,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from gawe.api import trace as step_trace
 from gawe.api.auth import Identity
 from gawe.api.background import Background
 from gawe.api.errors import (
@@ -46,6 +48,7 @@ from gawe.api.schemas import (
     HandoffView,
     ReviewItemView,
     RunView,
+    StepTraceView,
     StepView,
     ToolView,
     TypedFieldView,
@@ -69,7 +72,14 @@ from gawe.core.audit import AnchorPoint, AuditLog
 from gawe.core.fields import FREE_TEXT_LABEL, difference, fields, length
 from gawe.core.maintenance import MaintenanceStore, run_target
 from gawe.core.models import AuditEvent
-from gawe.core.records import StaleStateError, StepNotFoundError, StepRecord, StepStore
+from gawe.core.policy.signing import PolicySigner
+from gawe.core.records import (
+    ExecutionStore,
+    StaleStateError,
+    StepNotFoundError,
+    StepRecord,
+    StepStore,
+)
 from gawe.core.registry import ToolNotFoundError, ToolRegistry
 from gawe.core.review import (
     InMemoryReviewStore,
@@ -128,8 +138,14 @@ class ApiService:
         reviews: ReviewStore | None = None,
         sources: Mapping[str, DocumentSource] | None = None,
         checked_not_enforced: Mapping[tuple[str, str], tuple[str, ...]] | None = None,
+        executions: ExecutionStore | None = None,
+        signer: PolicySigner | None = None,
+        readback_tools: frozenset[tuple[str, str]] = frozenset(),
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
+        self._executions = executions
+        self._signer = signer
+        self._readback_tools = readback_tools
         self._checked_not_enforced = dict(checked_not_enforced or {})
         self._orch = orchestrator
         self._runs = runs
@@ -480,6 +496,38 @@ class ApiService:
             run_status=run.status.value,
             finished=finished,
         )
+
+    # -- step trace (M23) ----------------------------------------------------------------
+
+    def step_trace(self, who: Identity, run_id: str, step_id: str) -> StepTraceView:
+        """One step's records joined by hash and key, with the links that fail named as gaps."""
+        run = self._own_run(who, run_id)
+        planned = {s.id for s in run.plan.steps} if run.plan else set()
+        step = self._find_step(run_id, step_id) if step_id in planned else None
+        if step is None:
+            raise NotFoundError("step not found")
+        jobs = (
+            [
+                j
+                for j in self._maintenance.for_run(run.tenant_id, run_id)
+                if j.kind == READBACK_KIND and j.step_id == step_id
+            ]
+            if self._maintenance is not None
+            else []
+        )
+        records = step_trace.StepRecords(
+            run=run,
+            step=step,
+            approvals=self._approval_store.for_step(run_id, step_id),
+            attempts=(
+                self._executions.attempts(run_id, step_id) if self._executions is not None else []
+            ),
+            readback_jobs=jobs,
+            events=self._audit.events(run_id),
+            has_readback=(step.tool, step.tool_version) in self._readback_tools,
+            conditions=self._checked_not_enforced.get((step.tool, step.tool_version), ()),
+        )
+        return step_trace.trace(records, self._signer)
 
     # -- internals ------------------------------------------------------------------------
 

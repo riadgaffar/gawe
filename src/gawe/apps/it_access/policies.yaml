@@ -17,6 +17,18 @@ rules:
       args:
         level: {eq: admin}
 
+  # A system that holds another app's controls (M23): write or admin there could change what
+  # that app's policy reads, so a person decides. Read access stays automatic.
+  - id: control-system-change-needs-security
+    effect: needs_approval
+    approver_role: security_admin
+    reason: Changing a system that holds another app's controls needs security approval
+    when:
+      tool: iam.grant_access
+      args:
+        system: {in: $tenant.control_systems}
+        level: {in: [write, admin]}
+
   - id: production-database-needs-security
     effect: needs_approval
     approver_role: security_admin

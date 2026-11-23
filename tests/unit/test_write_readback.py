@@ -68,6 +68,7 @@ class Env:
                     "tenant": {
                         "internal_domains": ["acme.example"],
                         "max_grant_lifetime_hours": 720,
+                        "control_systems": ["crm"],
                     },
                     "request": {
                         "reported_requester": IAM["email"],

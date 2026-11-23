@@ -26,7 +26,9 @@ tickets:
   - name: sam_crm_write
     file: clean/ticket_sam_crm_write.md
     clean_findings: {requester_email: sam.okafor@acme.example, system: crm, level: write, justification: "Owns the ticket-to-CRM sync; fixes field mappings by hand."}
-    expect: no_person
+    # M23: the CRM holds contract review's deal values, so write access there waits for security.
+    expect: approval_required
+    expect_rules: [control-system-change-needs-security]
   - name: sam_billing_read
     file: clean/ticket_sam_billing_read.md
     clean_findings: {requester_email: sam.okafor@acme.example, system: billing, level: read, justification: "Debugging a failed invoice export; reads billing job history."}
@@ -48,7 +50,7 @@ tickets:
     file: clean/ticket_lee_crm_admin.md
     clean_findings: {requester_email: lee.chen@acme.example, system: crm, level: admin, justification: "Setting up the new support team's roles and views."}
     expect: approval_required
-    expect_rules: [elevated-access-needs-security]
+    expect_rules: [elevated-access-needs-security, control-system-change-needs-security]
   - name: sam_prod_db_read
     file: clean/ticket_sam_prod_db_read.md
     clean_findings: {requester_email: sam.okafor@acme.example, system: prod_db, level: read, justification: "On call; investigates slow queries in production."}

@@ -19,7 +19,13 @@ from gawe.api.wiring import AppBundle
 from gawe.apps.contract_review.email_preparation import EmailPreparer
 from gawe.apps.contract_review.reader_schema import PROFILE
 from gawe.apps.contract_review.record_preparation import ContractRecordPreparer
-from gawe.apps.contract_review.tools import MANIFESTS, POSTCONDITIONS, implementations
+from gawe.apps.contract_review.tools import (
+    MANIFESTS,
+    POSTCONDITIONS,
+    TOOL_SCOPES,
+    WRITE_SCOPES,
+    implementations,
+)
 from gawe.apps.readback import email_adapter, operation_adapter
 from gawe.connectors.base import Ledger
 from gawe.connectors.mock_clm import MockCLM
@@ -61,6 +67,8 @@ def bundle(
         tools=implementations(clm, mail, esign),
         readbacks=readbacks(clm, esign, mail),
         preparers=preparers(clm, mail_directory),
+        tool_scopes=TOOL_SCOPES,
+        write_scopes=WRITE_SCOPES,
         guarantees={**clm.GUARANTEES, **esign.GUARANTEES, **mail.GUARANTEES},
         review_sample=review_sample,
         policy_rules=HERE / "policies.yaml",

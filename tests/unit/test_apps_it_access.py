@@ -161,7 +161,11 @@ def test_missing_role_is_denied_before_policy_rules(tmp_path: Path) -> None:
     ("system", "level", "outcome"),
     [
         ("wiki", "read", "allow"),
-        ("crm", "write", "allow"),
+        ("wiki", "write", "allow"),
+        ("crm", "read", "allow"),
+        # M23: the CRM holds contract review's deal values, a control of that app.
+        ("crm", "write", "needs_approval"),
+        ("crm", "admin", "needs_approval"),
         ("billing", "admin", "needs_approval"),
         ("prod_db", "read", "needs_approval"),
     ],
@@ -253,7 +257,11 @@ def test_grant_matches_reported_requester_exactly(
             ),
             roles=["it_agent"],
             variables={
-                "tenant": {"internal_domains": [internal], "max_grant_lifetime_hours": 720},
+                "tenant": {
+                    "internal_domains": [internal],
+                    "max_grant_lifetime_hours": 720,
+                    "control_systems": ["crm"],
+                },
                 "request": request,
             },
         )

@@ -8,6 +8,7 @@ from gawe.api.background import InlineBackground
 from gawe.api.service import ApiService, Limits
 from gawe.core.anchor import Anchorer, AnchorSink
 from tests.engine_flow import EngineFlow
+from tests.helpers import signer
 
 T1, T2 = "tenant-1", "tenant-2"
 ALICE = Identity(T1, "alice", frozenset({"case_manager"}))
@@ -43,6 +44,8 @@ class ApiFlow(EngineFlow):
             profiles=frozenset({"contract_review"}),
             limits=limits,
             anchorer=self.anchorer,
+            executions=self.executions,
+            signer=signer(),
         )
 
     def start_as(self, who: Identity = ALICE, **kw: Any) -> str:

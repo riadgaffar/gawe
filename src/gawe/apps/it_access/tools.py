@@ -11,6 +11,7 @@ from typing import Any
 
 from gawe.apps.it_access.grant_preparation import MAX_LIFETIME_HOURS, MIN_LIFETIME_HOURS
 from gawe.apps.record_binding import bound
+from gawe.connectors.credentials import Credential, ScopedClient
 from gawe.connectors.mock_iam import MockIAM
 from gawe.core.executor import ToolCall, ToolImplementation
 from gawe.core.fields import FieldClass
@@ -130,12 +131,30 @@ POSTCONDITIONS: Mapping[str, PostCondition] = {
 }
 
 
+# What each tool's credential may do (M23): only what the tool itself does.
+TOOL_SCOPES: dict[str, frozenset[str]] = {
+    "iam.lookup_user": frozenset({"user:read"}),
+    "iam.grant_access": frozenset({"grant:write"}),
+}
+WRITE_SCOPES: dict[str, str] = {"iam.grant": "grant:write"}
+
+
+def tool_clients(iam: MockIAM) -> dict[str, ScopedClient]:
+    """Each tool's client: the IAM system, bound to the tool's own credential."""
+    return {
+        tool: ScopedClient(iam, Credential(f"gawe-tool:{tool}", scopes))
+        for tool, scopes in TOOL_SCOPES.items()
+    }
+
+
 def implementations(iam: MockIAM) -> dict[str, ToolImplementation]:
+    clients = tool_clients(iam)
+
     def lookup(args: Mapping[str, Any], call: ToolCall) -> Mapping[str, Any]:
-        return iam.lookup_user(args["email"])
+        return clients["iam.lookup_user"].lookup_user(args["email"])  # type: ignore[no-any-return]
 
     def grant(args: Mapping[str, Any], call: ToolCall) -> Mapping[str, Any]:
-        return iam.grant_access(
+        return clients["iam.grant_access"].grant_access(  # type: ignore[no-any-return]
             call.idempotency_key,
             args["email"],
             args["system"],

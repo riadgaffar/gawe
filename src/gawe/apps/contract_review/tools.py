@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from gawe.apps.record_binding import bound
+from gawe.connectors.credentials import Credential, ScopedClient, ScopedSystem
 from gawe.connectors.mock_clm import MockCLM
 from gawe.connectors.mock_email import MockEmail
 from gawe.connectors.mock_esign import MockESign
@@ -240,14 +241,45 @@ POSTCONDITIONS: Mapping[str, PostCondition] = {
 }
 
 
+# What each tool's credential may do (M23): only what the tool itself does.
+TOOL_SCOPES: dict[str, frozenset[str]] = {
+    "clm.get_contract": frozenset({"contract:read"}),
+    "crm.write_assessment": frozenset({"assessment:write"}),
+    "email.send": frozenset({"mail:send"}),
+    "esign.send_for_signature": frozenset({"envelope:send"}),
+}
+# The scope each declared write needs (startup checks the tools' scopes against them).
+WRITE_SCOPES: dict[str, str] = {
+    "crm.assessment": "assessment:write",
+    "email.sent": "mail:send",
+    "esign.envelope": "envelope:send",
+}
+
+
+def tool_clients(clm: MockCLM, email: MockEmail, esign: MockESign) -> dict[str, ScopedClient]:
+    """Each tool's client: its system, bound to the tool's own credential."""
+    system: dict[str, ScopedSystem] = {
+        "clm.get_contract": clm,
+        "crm.write_assessment": clm,
+        "email.send": email,
+        "esign.send_for_signature": esign,
+    }
+    return {
+        tool: ScopedClient(system[tool], Credential(f"gawe-tool:{tool}", scopes))
+        for tool, scopes in TOOL_SCOPES.items()
+    }
+
+
 def implementations(
     clm: MockCLM, email: MockEmail, esign: MockESign
 ) -> dict[str, ToolImplementation]:
+    clients = tool_clients(clm, email, esign)
+
     def get_contract(args: Mapping[str, Any], call: ToolCall) -> Mapping[str, Any]:
-        return clm.get_contract(args["contract_id"])
+        return clients["clm.get_contract"].get_contract(args["contract_id"])  # type: ignore[no-any-return]
 
     def write_assessment(args: Mapping[str, Any], call: ToolCall) -> Mapping[str, Any]:
-        return clm.write_assessment(
+        return clients["crm.write_assessment"].write_assessment(  # type: ignore[no-any-return]
             call.idempotency_key,
             args["contract_id"],
             args["risk_level"],
@@ -256,11 +288,11 @@ def implementations(
         )
 
     def send_email(args: Mapping[str, Any], call: ToolCall) -> Mapping[str, Any]:
-        return email.send_prepared(call.idempotency_key, args)
+        return clients["email.send"].send_prepared(call.idempotency_key, args)  # type: ignore[no-any-return]
 
     def send_for_signature(args: Mapping[str, Any], call: ToolCall) -> Mapping[str, Any]:
         # No separate read first: revision and deal value are checked inside the write.
-        return esign.send_for_signature(
+        return clients["esign.send_for_signature"].send_for_signature(  # type: ignore[no-any-return]
             call.idempotency_key,
             args["contract_id"],
             args["signer_email"],

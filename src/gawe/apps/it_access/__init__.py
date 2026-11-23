@@ -13,7 +13,13 @@ from typing import Any
 from gawe.api.wiring import AppBundle
 from gawe.apps.it_access.grant_preparation import DEFAULT_LIFETIME_HOURS, GrantPreparer
 from gawe.apps.it_access.reader_schema import PROFILE
-from gawe.apps.it_access.tools import MANIFESTS, POSTCONDITIONS, implementations
+from gawe.apps.it_access.tools import (
+    MANIFESTS,
+    POSTCONDITIONS,
+    TOOL_SCOPES,
+    WRITE_SCOPES,
+    implementations,
+)
 from gawe.apps.readback import operation_adapter
 from gawe.connectors.base import Ledger
 from gawe.connectors.mock_iam import MockIAM
@@ -32,6 +38,9 @@ TENANT_VARIABLES: Mapping[str, Any] = {
     "tenant": {
         "internal_domains": ["acme.example"],
         "max_grant_lifetime_hours": MAX_GRANT_LIFETIME_HOURS,
+        # Systems that hold another app's controls (M23): contract review's deal values, which
+        # decide whether a signature needs finance, live in the CRM. Changing them takes a person.
+        "control_systems": ["crm"],
     }
 }
 
@@ -89,6 +98,8 @@ def bundle(
                 iam, lifetime_hours=grant_lifetime_hours, clock=clock, tickets=tickets
             )
         },
+        tool_scopes=TOOL_SCOPES,
+        write_scopes=WRITE_SCOPES,
         guarantees=iam.GUARANTEES,
         # The ticket lives in another system, so the IAM write can't check it: it is read again
         # just before a grant is sent (M22).
@@ -111,6 +122,7 @@ def bundle(
         policy_variables={
             "tenant.internal_domains": PolicyVariable(dependencies=("tenant_config",)),
             "tenant.max_grant_lifetime_hours": PolicyVariable(dependencies=("tenant_config",)),
+            "tenant.control_systems": PolicyVariable(dependencies=("tenant_config",)),
             "request.reported_requester": PolicyVariable(dependencies=("reader_findings",)),
             "request.submitters": PolicyVariable(dependencies=("ticket_system",)),
             "request.portal_submitters": PolicyVariable(dependencies=("ticket_system",)),

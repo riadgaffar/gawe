@@ -55,6 +55,10 @@ BOUNDARIES = {
         ),
         "elevated-access-needs-security": ("grant", "Admin access needs security."),
         "production-database-needs-security": ("grant", "Production DB access needs security."),
+        "control-system-change-needs-security": (
+            "grant",
+            "Write or admin on a system holding another app's controls needs security.",
+        ),
         "external-user-denied": ("address", "Noninternal or unreadable grant recipients deny."),
         "grant-lifetime-over-maximum-denied": ("grant", "Lifetimes over the maximum deny."),
     },
@@ -282,6 +286,8 @@ def test_grant_boundaries(system: str, level: str, external: bool, token: str) -
     ids = {"grant-baseline-allowed"}
     if system == "prod_db":
         ids.add("production-database-needs-security")
+    if system == "crm" and level in {"write", "admin"}:  # M23: the CRM holds deal values
+        ids.add("control-system-change-needs-security")
     if level == "admin":
         ids.add("elevated-access-needs-security")
     if external:

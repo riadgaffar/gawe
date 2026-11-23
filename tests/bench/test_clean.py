@@ -47,7 +47,8 @@ def test_contract_ids_are_new_and_deal_values_split_at_the_line() -> None:
 
 def test_tickets_state_what_honest_runs_should_meet() -> None:
     expects = [c.base.expect for c in TICKETS]
-    assert expects.count("no_person") == 6 and expects.count("approval_required") == 6
+    # M18 balanced these 6 and 6; since M23, write on the CRM (sam_crm_write) waits for security.
+    assert expects.count("no_person") == 5 and expects.count("approval_required") == 7
     assert all(c.base.expect_rules for c in TICKETS if c.base.expect == "approval_required")
 
 

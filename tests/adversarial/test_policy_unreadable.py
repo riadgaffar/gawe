@@ -130,6 +130,7 @@ VARIABLE_TARGETS = [
     ("it_access", "iam.grant_access", "request.submitters"),
     ("it_access", "iam.grant_access", "request.portal_submitters"),
     ("it_access", "iam.grant_access", "tenant.max_grant_lifetime_hours"),
+    ("it_access", "iam.grant_access", "tenant.control_systems"),
     ("example", "contracts.send_email", "tenant.internal_domains"),
 ]
 # Every field and mutation kind is a pytest parameter: random selection cannot omit a target.

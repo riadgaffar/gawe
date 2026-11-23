@@ -69,7 +69,11 @@ class Desk:
         return replace(
             b,
             variables=lambda run: {
-                "tenant": {"internal_domains": ["acme.example"], "max_grant_lifetime_hours": 720},
+                "tenant": {
+                    "internal_domains": ["acme.example"],
+                    "max_grant_lifetime_hours": 720,
+                    "control_systems": ["crm"],
+                },
                 "request": {
                     "reported_requester": DANA,
                     "submitters": [DANA],

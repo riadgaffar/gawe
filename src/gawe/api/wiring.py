@@ -14,6 +14,7 @@ from typing import Any
 
 from gawe.api.background import Background
 from gawe.api.service import ApiService, Limits
+from gawe.connectors.credentials import is_read_scope
 from gawe.core.anchor import Anchorer, AnchorSink
 from gawe.core.approvals import (
     ApprovalRecord,
@@ -76,6 +77,10 @@ class AppBundle:
     # (tool, version) -> what its target system guarantees (M22, `gawe.core.guarantees`).
     # Declared by the connectors, not by the manifests; startup checks each write's needs.
     guarantees: Mapping[tuple[str, str], frozenset[str]] = field(default_factory=dict)
+    # Tool name -> the scopes of the credential its code is given; declared write resource ->
+    # the scope it needs (M23). Startup checks each tool holds what it does and nothing more.
+    tool_scopes: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    write_scopes: Mapping[str, str] = field(default_factory=dict)
     # (tool, version) -> conditions in other systems, checked just before sending (M22).
     dispatch_conditions: Mapping[tuple[str, str], tuple[DispatchCondition, ...]] = field(
         default_factory=dict
@@ -143,6 +148,7 @@ def load_app_rules(bundle: AppBundle) -> tuple[Rule, ...]:
     validate_provenance(rules, bundle.manifests, bundle.policy_sources, bundle.policy_variables)
     _check_prepare_only(bundle, rules)
     _check_guarantees(bundle, rules)
+    _check_credentials(bundle)
     writes = {(m.name, m.version) for m in bundle.manifests if m.side_effect_class != "read"}
     if writes != set(bundle.readbacks):
         raise ValueError("read-back adapters must match write tool versions")
@@ -200,6 +206,32 @@ def _check_guarantees(bundle: AppBundle, rules: Sequence[Rule]) -> None:
                 f"{manifest.name}@{manifest.version} relies on {sorted(missing)}, which its "
                 "target doesn't guarantee; declare it, or make the action prepare-only"
             )
+
+
+def _check_credentials(bundle: AppBundle) -> None:
+    """Each current tool's credential covers what it does and no change it doesn't make (M23)."""
+    for m in bundle.manifests:
+        if m.retired:
+            continue
+        identity = f"{m.name}@{m.version}"
+        scopes = bundle.tool_scopes.get(m.name)
+        if scopes is None:
+            raise ValueError(f"{identity} has no credential (tool_scopes)")
+        changes = {s for s in scopes if not is_read_scope(s)}
+        if m.side_effect_class == "read":
+            if changes:
+                raise ValueError(
+                    f"{identity} is a read; its credential can change {sorted(changes)}"
+                )
+            continue
+        unknown = [r for r in (m.writes or ()) if r not in bundle.write_scopes]
+        if unknown:
+            raise ValueError(f"{identity} writes {unknown}, which no scope names (write_scopes)")
+        needed = {bundle.write_scopes[r] for r in (m.writes or ())}
+        if not needed <= scopes:
+            raise ValueError(f"{identity}'s credential lacks {sorted(needed - scopes)}")
+        if changes - needed:
+            raise ValueError(f"{identity}'s credential can also change {sorted(changes - needed)}")
 
 
 @dataclass(frozen=True)
@@ -458,6 +490,9 @@ def assemble(
         checked_not_enforced={
             k: tuple(c.name for c in v) for k, v in bundle.dispatch_conditions.items()
         },
+        executions=stores.executions,
+        signer=signer,
+        readback_tools=frozenset(bundle.readbacks),
         clock=clock,
     )
     services.append(service)
