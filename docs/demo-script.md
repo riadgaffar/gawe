@@ -26,9 +26,10 @@ Everything below is a `make` target.
    (`GAWE_POLICY_SIGNING_KEY`, `GAWE_APP`, `GAWE_API_TOKENS_FILE`, `GAWE_STORE`). It never
    changes a line that is already there. Then edit `.env` yourself: set `ANTHROPIC_API_KEY` and
    `GAWE_LLM_MODEL` (never commit this file).
-3. `make up migrate app-role seed dev-tokens` (`app-role` needs `GAWE_APP_DB_PASSWORD` in `.env`;
-   skip it and the API runs as the database owner with a warning). The last command prints one
-   token per person; keep them:
+3. `make up migrate app-role seed dev-tokens`. `app-role` lets the API log in as the limited
+   `gawe_app` database role, which can't change or delete audit rows. It uses
+   `GAWE_APP_DB_PASSWORD` from `.env`, or generates one and adds it there; skip it and the API runs
+   as the database owner, with a warning. The last command prints one token per person; keep them:
 
    | Person | Roles | Does |
    |---|---|---|
