@@ -15,7 +15,13 @@ the UI, and an Anthropic API key.
 
 Everything below is a `make` target.
 
-1. `make install`, then the model SDK, which `make install` leaves out: `pip install -e ".[llm]"`.
+1. Install the dependencies, then the Anthropic SDK, which `make install` doesn't include and the
+   API needs to call the model:
+
+   ```bash
+   make install
+   pip install -e ".[llm]"
+   ```
 2. `make env env-fill` creates `.env` if needed and adds any missing demo settings
    (`GAWE_POLICY_SIGNING_KEY`, `GAWE_APP`, `GAWE_API_TOKENS_FILE`, `GAWE_STORE`). It never
    changes a line that is already there. Then edit `.env` yourself: set `ANTHROPIC_API_KEY` and
