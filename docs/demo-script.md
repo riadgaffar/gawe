@@ -8,8 +8,22 @@ do not. To try the same flows without a model, see [Without a model](#without-a-
 
 ## What you need
 
-Python 3.12 or newer, Docker (Postgres runs in a container on port 5432), Node 22.6 or newer for
-the UI, and an Anthropic API key.
+Python 3.12 or newer, Docker, Node 22.6 or newer for the UI, and an Anthropic API key.
+
+Postgres runs in a container on port 5432, so nothing else may be using that port: stop a local
+Postgres, or another GAWE checkout's (`make down` in that folder), before you start.
+
+**Before you run anything:** open a terminal in the repository's folder and create and activate a
+virtual environment there. Every command below runs from that folder with it active; your prompt
+should start with `(.venv)`. In a new terminal, activate it again:
+
+```bash
+python3 -m venv .venv          # once
+source .venv/bin/activate      # in every new terminal
+```
+
+If something fails, see [Troubleshooting](#troubleshooting): the common errors are listed by
+what they say.
 
 ## Setup (once)
 
@@ -24,12 +38,30 @@ Everything below is a `make` target.
    ```
 2. `make env env-fill` creates `.env` if needed and adds any missing demo settings
    (`GAWE_POLICY_SIGNING_KEY`, `GAWE_APP`, `GAWE_API_TOKENS_FILE`, `GAWE_STORE`). It never
-   changes a line that is already there. Then edit `.env` yourself: set `ANTHROPIC_API_KEY` and
-   `GAWE_LLM_MODEL` (never commit this file).
-3. `make up migrate app-role seed dev-tokens`. `app-role` lets the API log in as the limited
-   `gawe_app` database role, which can't change or delete audit rows. It uses
-   `GAWE_APP_DB_PASSWORD` from `.env`, or generates one and adds it there; skip it and the API runs
-   as the database owner, with a warning. The last command prints one token per person; keep them:
+   changes a line that is already there. Then edit `.env` yourself and fill in the two model
+   settings; `make api` won't start without them:
+   - `ANTHROPIC_API_KEY`: create a key in the Claude Console (https://console.anthropic.com, under
+     API keys). Every run is billed to that account.
+   - `GAWE_LLM_MODEL`: a Claude model id, for example `claude-sonnet-5-5`, which the benchmarks
+     were run and priced with. `bench/prices.yaml` lists the models GAWE has prices for.
+
+   Never commit `.env`: it holds the key.
+3. Start Postgres, then set up the database and the demo users:
+
+   ```bash
+   make up
+   make migrate app-role seed dev-tokens
+   ```
+
+   If `make migrate` says "connection refused", wait a few seconds (a brand-new database takes a
+   moment to start the first time) and run the second line again. If it still fails, run
+   `make down up` and try again: that recreates a container left without its port by an earlier
+   failed start, for instance one that found port 5432 taken.
+
+   `app-role` lets the API log in as the limited `gawe_app` database role, which can't change or
+   delete audit rows. It uses `GAWE_APP_DB_PASSWORD` from `.env`, or generates one and adds it
+   there; skip it and the API runs as the database owner, with a warning. `dev-tokens` prints one
+   token per person; keep them:
 
    | Person | Roles | Does |
    |---|---|---|
@@ -43,8 +75,6 @@ Everything below is a `make` target.
    documents with **no side effects** and prints what it extracted, the plan it proposes and what
    policy would decide. It shows how the real model behaves before you demo.
 
-Or steps 2 and 3 plus the server in one go: `make demo` (after step 1 and the key in `.env`).
-
 Tokens are shown only once, when `make dev-tokens` creates `.dev-tokens.json`, and each token's
 roles are fixed when it is made. If you lose them, or after an upgrade that adds a role (M25 added
 `billing_operator` for alice), delete `.dev-tokens.json` and run `make dev-tokens` again; the old
@@ -55,20 +85,23 @@ tokens stop working.
 In two terminals:
 
 ```bash
-make api      # http://127.0.0.1:8000, interactive docs at /docs (`make up` first if Docker is stopped)
+make up       # only if Postgres isn't running (after a reboot, or `make down`)
+make api      # http://127.0.0.1:8000, interactive docs at /docs
 ```
 
 ```bash
 make ui-dev   # http://localhost:3000
 ```
 
-Open http://localhost:3000 and sign in by pasting a token. To start from a clean slate, stop the
-API and delete `.demo-data/`: that resets every mock system (contracts, the IAM, tickets, the
-billing platform's events and its daily total).
+Open http://localhost:3000 and sign in by pasting a token. To stop, or to start over, see
+[Stop and reset](#stop-and-reset).
 
-## Pick an app
+## Choose which app the API runs
 
-The API runs one app at a time. Set `GAWE_APP` in `.env` and restart `make api` to switch.
+There's no app picker in the UI: the API runs one app, chosen by `GAWE_APP` in `.env`, and the UI
+talks to whichever one that is. To switch, stop `make api` (Ctrl-C), change `GAWE_APP`, and start
+`make api` again. A new `.env` starts with contract review. Runs from the other apps stay in the
+database.
 
 | App | `GAWE_APP` | Profile | Input | Starts | Approves |
 |---|---|---|---|---|---|
@@ -79,9 +112,13 @@ The API runs one app at a time. Set `GAWE_APP` in `.env` and restart `make api` 
 
 ## In the UI
 
-- **Runs** (alice): pick a sample from the dropdown, which fills the objective, profile and
-  document or ticket id; or type your own. **Start run**. The run page updates live: each step,
-  its policy outcome and the rules that matched.
+- **Runs** (alice): the **Start a run** form has a **Use a synthetic sample** dropdown, then
+  **Objective**, **Profile**, **Ticket id** and **Document**. A sample fills those fields in. The
+  dropdown always lists all five samples (three contracts, two IT tickets), whatever app the API is
+  running: pick one for the running app, or the run is refused with `unknown profile`. Event replay
+  has no sample: type the objective and the profile `event_replay` yourself and leave the rest
+  empty. **Start run**. The run page updates live: each step, its policy outcome and the rules that
+  matched.
 - **Approvals** (bob, fiona): the exact arguments, typed fields first and model-written text
   collapsed, a list of records (a replay batch) as a table, any earlier actions a rule counted, and
   the `action_hash` the decision is bound to. Approve or Reject. Alice sees nothing to approve in
@@ -288,6 +325,71 @@ python -m bench integrity   # 23 execution-integrity scenarios (poisoned tool ou
 python -m bench replay      # 9 event replay cases (another tenant, widened scope, the daily limit,
                             # the same events twice, a changed event, a late delivery, a lost reply)
 ```
+
+## Stop and reset
+
+**Stop for the day.** Press Ctrl-C in the API's terminal and in the UI's, then stop Postgres:
+
+```bash
+make down
+```
+
+Everything is kept: runs, approvals and the audit trail in the database, the mock systems in
+`.demo-data/`, your tokens. Next time, `make up`, then `make api` and `make ui-dev`. A run that was
+waiting for approval is still waiting; one interrupted mid-step is picked up when the API starts.
+
+**Reset the mock systems** (contracts, the IAM's grants, tickets, the billing platform's events
+and daily total) but keep the runs: stop the API, then
+
+```bash
+rm -rf .demo-data
+```
+
+and start the API again. Earlier runs still show in the UI, but the systems they acted on start
+fresh, so, for instance, the replay events are failed again. GAWE's own records are kept, so rules
+on earlier actions still count them: the IT app still sees Dana's earlier wiki grants.
+
+**If you delete or recreate `.env`** after the database exists, `make env` generates a new
+database password that the database doesn't know, and everything that logs in fails with
+"password authentication failed". Either put the old `GAWE_DB_PASSWORD` back, or start completely
+fresh (below).
+
+**Start completely fresh.** Stop the API and the UI, then delete the database's data along with
+the mock systems, and set them up again:
+
+```bash
+docker compose down -v
+rm -rf .demo-data
+make up
+make migrate app-role seed
+```
+
+If `make migrate` says "connection refused", see step 3 of the setup. `down -v` deletes the
+database volume: every run, approval and audit event is gone. Your tokens still work (they live
+in `.dev-tokens.json`, and `seed` recreates the same people), and `.env` is untouched. Make new
+tokens only if you lost them or a role changed: delete `.dev-tokens.json` and run
+`make dev-tokens`.
+
+## Troubleshooting
+
+Find the message you see. Each fix assumes you're in the repository's folder with `(.venv)` in
+your prompt.
+
+| You see | Why | Do |
+|---|---|---|
+| `alembic: command not found`, `uvicorn: command not found` or `No module named gawe` | the virtual environment isn't active, or you're in another folder | `cd` to the repository, `source .venv/bin/activate`, try again |
+| `Cannot connect to the Docker daemon` | Docker isn't running | start Docker Desktop, wait until it says it's running, try again |
+| `Bind for 0.0.0.0:5432 failed: port is already allocated` (from `make up`) | another Postgres has port 5432 | stop it (`make down` in another GAWE checkout, or your local Postgres), then `make down up` |
+| `connection refused` on port 5432 (from `make migrate`, `make seed` or `make api`) | Postgres isn't up yet, or its container was left without its port by a failed start | wait a few seconds and retry; if it persists, `make down up` and retry |
+| `password authentication failed for user "gawe"` | `.env` was recreated after the database was made | put the old `GAWE_DB_PASSWORD` back, or [start completely fresh](#stop-and-reset) |
+| `make api` stops with `set GAWE_LLM_MODEL` or `... is not set` | a setting is missing from `.env` | fill it in (setup step 2) and run `make api` again |
+| `the anthropic package is not installed` | the model SDK isn't installed | `pip install -e ".[llm]"` |
+| `.dev-tokens.json already exists` | tokens were made before; they're shown only once | use the ones you kept, or delete `.dev-tokens.json` and run `make dev-tokens` for new ones |
+| The UI says `Cannot reach the GAWE API. Is make api running?` | the API isn't running | start `make api` in another terminal |
+| The UI says `That token was not accepted.` | a token from another checkout, a lost token, or tokens replaced by a newer `make dev-tokens` | use a token printed by `make dev-tokens` in this folder; if in doubt, make new ones |
+| Starting a run says `unknown profile` | the API runs a different app from the sample or profile you used | pick a sample for the running app, or set `GAWE_APP` for the app you want ([Choose which app the API runs](#choose-which-app-the-api-runs)) and restart `make api` |
+| A step is denied with `rbac.missing_role` | the token's roles are older than the app (alice and replay before M25) | delete `.dev-tokens.json` and run `make dev-tokens` |
+| A run ends `planning_failed` or `reading_failed` | the model call failed: a wrong key or model name, no credit, or a network problem | check the `make api` terminal for the error, fix `.env`, restart `make api`, start a new run |
 
 ## Failure injection
 
