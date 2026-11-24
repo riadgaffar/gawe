@@ -6,8 +6,8 @@ requesting signatures, granting access) where the documents they read can't be t
 **The model proposes, deterministic code decides.** A quarantined Reader turns an untrusted
 document into structured findings; a Planner that never sees the document proposes a plan; a
 default-deny YAML policy engine decides each step (allow, needs approval, deny) and signs the
-decision; approvals bind to a hash of the exact action; and every event lands in a hash-chained,
-externally anchored audit log.
+decision; approvals bind to a hash of the exact action; and every event lands in a hash-chained
+audit log whose head can be anchored outside the database.
 
 It's measured, not just claimed ([docs/results.md](docs/results.md)):
 
@@ -50,8 +50,10 @@ python -m bench scripted     # every attack, model fooled on purpose; writes a r
   person completes it, with nothing able to dispatch it.
 - **Access is bounded:** a grant to anyone other than whoever filed the ticket, or from a ticket
   that came in by email or a public form, waits for a security approver; automatic grants expire.
-- **The audit log is tamper-evident:** each event hashes its predecessor, and the chain's head is
-  anchored outside the database with signed timestamps.
+- **The audit log is tamper-evident:** each event hashes its predecessor. Anchoring the chain's
+  head outside the database is opt-in (`GAWE_ANCHOR_SINKS`): a local file sink needs storage the
+  database owner can't modify, and an RFC 3161 timestamp proves the head existed at a time, not
+  that the events before it were correct.
 
 Design: [docs/architecture.md](docs/architecture.md). Every attack and the test that covers it:
 [docs/threat-model.md](docs/threat-model.md). Milestones and what's next:
