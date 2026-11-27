@@ -43,6 +43,7 @@ BOUNDARIES = {
             "Low on a listed large deal needs legal.",
         ),
         "low-risk-needs-legal": ("assessment", "Every low rating needs legal (M17)."),
+        "remove-rating-needs-legal": ("assessment", "Removing a rating needs legal."),
         "rating-lowered-needs-legal": (
             "assessment",
             "A level below the contract's last rating needs legal (M24).",
@@ -788,3 +789,37 @@ def test_replay_boundaries(count: int, total: int, customers: int, left: str) ->
         denied.add("replay-over-daily-limit-denied")
     outcome = "deny" if denied else "needs_approval" if len(ids) > 1 else "allow"
     assert_decision("event_replay", "billing.replay_events", args, variables, outcome, ids | denied)
+
+
+@pytest.mark.parametrize("level", ["none", "low", "medium", "high"])
+@pytest.mark.parametrize("last", list(BELOW))
+@pytest.mark.parametrize("unsupported", [False, True])
+@pytest.mark.parametrize("large", [False, True])
+def test_restore_boundaries(level: str, last: str | None, unsupported: bool, large: bool) -> None:
+    args = deepcopy(CASES["contract_review"]["crm.restore_assessment"][0])
+    args["risk_level"] = level
+    variables = deepcopy(VARIABLES["contract_review"])
+    variables["review"] = {
+        "unsupported_levels": ["low"] if unsupported else [],
+        "large_deals": ["C-1001"] if large else [],
+    }
+    variables["history"] = {"lower_ratings": BELOW[last]}
+    ids = {"crm-assessment-allowed"}
+    if level == "none":
+        ids.add("remove-rating-needs-legal")
+    if level == "low":
+        ids.add("low-risk-needs-legal")
+        if unsupported:
+            ids.add("low-risk-contradicted-needs-legal")
+        if large:
+            ids.add("low-risk-large-deal-needs-legal")
+    if level in BELOW[last]:
+        ids.add("rating-lowered-needs-legal")
+    assert_decision(
+        "contract_review",
+        "crm.restore_assessment",
+        args,
+        variables,
+        "needs_approval" if len(ids) > 1 else "allow",
+        ids,
+    )

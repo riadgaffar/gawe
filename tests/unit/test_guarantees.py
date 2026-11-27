@@ -123,9 +123,20 @@ def test_a_write_judged_by_a_running_total_needs_atomic_reservation(
         ValueError, match=r"iam.grant_access@2.0.0 relies on \['atomic_reservation'\]"
     ):
         load_app_rules(bundle)
-    reserving = {**bundle.guarantees, GRANT: bundle.guarantees[GRANT] | {"atomic_reservation"}}
+    affected = {
+        (m.name, m.version) for m in bundle.manifests if m.name == GRANT[0] and not m.retired
+    }
+    reserving = {
+        **bundle.guarantees,
+        **{key: bundle.guarantees[key] | {"atomic_reservation"} for key in affected},
+    }
     assert load_app_rules(replace(bundle, guarantees=reserving))
-    assert load_app_rules(replace(bundle, prepare_only={GRANT: "security_admin"}))
+    assert load_app_rules(replace(bundle, prepare_only={key: "security_admin" for key in affected}))
+    # Every executable version needs the guarantee, including compatibility versions.
+    for key in affected:
+        missing_one = {**reserving, key: bundle.guarantees[key]}
+        with pytest.raises(ValueError, match=rf"{key[0]}@{key[1]} relies on .*atomic_reservation"):
+            load_app_rules(replace(bundle, guarantees=missing_one))
 
 
 def test_a_running_total_no_rule_reads_needs_nothing(tmp_path: Path) -> None:
@@ -146,13 +157,13 @@ def test_a_running_total_no_rule_reads_needs_nothing(tmp_path: Path) -> None:
 
 def test_one_prepare_only_action_exempts_only_itself(tmp_path: Path) -> None:
     bundle = contract_review.bundle(tmp_path)
-    assessment = ("crm.write_assessment", "2.0.0")
+    assessment = ("crm.write_assessment", "3.0.0")
     signature = ("esign.send_for_signature", "2.0.0")
     without = {
         **bundle.guarantees,
         assessment: bundle.guarantees[assessment] - {"conditional_write"},
     }
-    with pytest.raises(ValueError, match="crm.write_assessment@2.0.0 relies on"):
+    with pytest.raises(ValueError, match="crm.write_assessment@3.0.0 relies on"):
         load_app_rules(
             replace(bundle, guarantees=without, prepare_only={signature: "legal_reviewer"})
         )

@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from gawe.core.record_changes import FieldChange, RecordObservation, RecordSnapshot
+
 
 class View(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -17,7 +19,33 @@ class MeView(View):
     roles: tuple[str, ...]
 
 
+class RecordTargetView(View):
+    resource: str
+    subject: str
+    guard_revision: str
+    state: Literal[
+        "captured",
+        "changed",
+        "unchanged",
+        "no_fields_tracked",
+        "snapshot_unavailable",
+        "observation_unavailable",
+        "record_missing",
+    ]
+    snapshot: RecordSnapshot | None = None
+    observation: RecordObservation | None = None
+    rows: tuple[FieldChange, ...] = ()
+
+
+class RecordEvidenceView(View):
+    action_hash: str
+    code: Literal["record_changed", "event_changed"] | None = None
+    coverage: Literal["complete", "partial", "unavailable"] = "unavailable"
+    records: tuple[RecordTargetView, ...] = ()
+
+
 class VerificationView(View):
+    record_evidence: RecordEvidenceView | None = None
     job_id: str
     step_id: str
     plan_version: int
@@ -50,6 +78,7 @@ class HandoffMarkView(View):
 
 
 class StepView(View):
+    record_evidence: RecordEvidenceView | None = None
     step_id: str
     tool: str
     status: str
@@ -125,6 +154,7 @@ class HistoryItemView(View):
 
 
 class ApprovalView(View):
+    record_evidence: RecordEvidenceView | None = None
     preparation: dict[str, Any] = Field(default_factory=dict)
     approval_id: str
     run_id: str

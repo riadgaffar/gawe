@@ -37,7 +37,7 @@ from gawe.core.records import Handoff
 from gawe.core.statemachine import RunStatus, StepStatus
 from gawe.llm.fake import FakeProvider
 
-GRANT = ("iam.grant_access", "2.0.0")
+GRANT = ("iam.grant_access", "3.0.0")
 OTHER_HASH = "0" * 64
 
 

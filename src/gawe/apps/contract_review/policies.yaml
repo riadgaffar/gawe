@@ -7,7 +7,7 @@ rules:
 
   - id: crm-assessment-allowed
     effect: allow
-    when: {tool: crm.write_assessment}
+    when: {tool: crm.*assessment}
 
   - id: email-baseline-allowed
     effect: allow
@@ -38,7 +38,7 @@ rules:
     approver_role: legal_reviewer
     reason: A low risk rating contradicts a high-severity clause the Reader flagged
     when:
-      tool: crm.write_assessment
+      tool: crm.*assessment
       args:
         risk_level: {in: $review.unsupported_levels}
 
@@ -47,7 +47,7 @@ rules:
     approver_role: legal_reviewer
     reason: Rating a deal over 100,000 as low risk needs legal review
     when:
-      tool: crm.write_assessment
+      tool: crm.*assessment
       args:
         risk_level: {eq: low}
         contract_id: {in: $review.large_deals}
@@ -62,7 +62,7 @@ rules:
     approver_role: legal_reviewer
     reason: A low risk rating needs legal review
     when:
-      tool: crm.write_assessment
+      tool: crm.*assessment
       args:
         risk_level: {eq: low}
 
@@ -74,7 +74,7 @@ rules:
     approver_role: legal_reviewer
     reason: This rating is lower than the contract's last one
     when:
-      tool: crm.write_assessment
+      tool: crm.*assessment
       args:
         risk_level: {in: $history.lower_ratings}
 
@@ -104,3 +104,12 @@ rules:
       tool: email.send
       args:
         delivery.reapproval_required: {eq: true}
+
+  - id: remove-rating-needs-legal
+    effect: needs_approval
+    approver_role: legal_reviewer
+    reason: Removing a rating needs legal review
+    when:
+      tool: crm.restore_assessment
+      args:
+        risk_level: {eq: none}

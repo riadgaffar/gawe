@@ -186,3 +186,20 @@ def test_finishing_clears_nothing_the_caller_did_not_ask_for(store: RunStore) ->
     got = store.get(run.run_id)
     assert got == done and got.error == "planning_failed"
     assert BOB != ALICE  # fixtures sanity
+
+
+@pytest.mark.parametrize("version", [None, "1.0.0"])
+def test_trusted_pin_and_legacy_plan_shape_survive_storage(
+    store: RunStore, version: str | None
+) -> None:
+    raw = {"id": "restore", "tool": "crm.restore_assessment", "args": {}, "depends_on": []}
+    if version is not None:
+        raw["tool_version"] = version
+    plan = Plan.model_validate({"steps": [raw]})
+    run = make_run(profile="undo")
+    store.add(run)
+    store.update(run.run_id, plan=plan, plan_version=1)
+    loaded = store.get(run.run_id).plan
+    assert loaded is not None
+    assert loaded.model_dump(mode="json") == {"steps": [raw]}
+    assert loaded.steps[0].tool_version == version

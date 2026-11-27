@@ -159,8 +159,13 @@ def validate_plan(
 
     manifests: dict[str, ToolManifest] = {}
     for step in steps:
+        if "tool_version" in step.model_fields_set:
+            issues.append(Issue("TOOL_VERSION", "model plans cannot pin tool versions", step.id))
         try:
-            manifests[step.id] = registry.get(step.tool)
+            registered = registry.get(step.tool)
+            if registered.trusted_only:
+                raise ToolNotFoundError(step.tool)
+            manifests[step.id] = registered
         except ToolNotFoundError:
             issues.append(Issue("UNKNOWN_TOOL", f"tool '{step.tool}' is not registered", step.id))
         for dep in step.depends_on:

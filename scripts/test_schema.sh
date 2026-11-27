@@ -31,11 +31,21 @@ status=0
 passes=0
 for f in tests/sql/*.sql; do
     echo "running $f"
-    out=$($PSQL -d "$DB" -v ON_ERROR_STOP=1 -q < "$f" 2>&1) || status=1
+    # Expand repository-local SQL includes on the host before streaming to psql. Docker's
+    # psql cannot open host paths; use the real migration file rather than a copied test body.
+    out=$(awk '
+        $1 == "\\i" {
+            while ((result = getline line < $2) > 0) print line
+            if (result < 0) { print "ERROR: cannot include " $2 > "/dev/stderr"; exit 1 }
+            close($2)
+            next
+        }
+        { print }
+    ' "$f" | $PSQL -d "$DB" -v ON_ERROR_STOP=1 -q 2>&1) || status=1
     file_passes=$(printf '%s\n' "$out" | grep -c 'PASS:' || true)
     passes=$((passes + file_passes))
     if [ "$status" -ne 0 ]; then
-        printf '%s\n' "$out" | grep -E 'PASS:|FAIL:|ERROR' >&2
+        printf '%s\n' "$out" >&2
         break
     fi
 done

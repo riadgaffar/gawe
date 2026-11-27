@@ -1,6 +1,7 @@
 // Mirrors src/gawe/api/schemas.py. Keep in sync with docs/api.md.
 
 export type VerificationView = {
+  record_evidence?: RecordEvidenceView | null;
   job_id: string;
   step_id: string;
   plan_version: number;
@@ -22,6 +23,7 @@ export type CheckView = {
 };
 
 export type StepView = {
+  record_evidence?: RecordEvidenceView | null;
   verification?: VerificationView | null;
   step_id: string;
   tool: string;
@@ -61,6 +63,7 @@ export type RunView = {
 };
 
 export type ApprovalView = {
+  record_evidence?: RecordEvidenceView | null;
   approval_id: string;
   run_id: string;
   step_id: string;
@@ -199,4 +202,44 @@ export type DecisionInput = {
   decision: "approved" | "rejected";
   action_hash: string;
   comment?: string;
+};
+
+
+// GET /v1/runs/{run}/steps/{step}/undo. The record is captured state, not a live CRM read.
+export type UndoRecordView = {
+  undo_id: string;
+  run_id: string;
+  step_id: string;
+  action_hash: string;
+  state: "pending" | "armed" | "unavailable" | "requested" | "used" | "failed";
+  prior: { risk_level: string; summary: string } | null;
+  result_version: string | null;
+  reason: string | null;
+};
+export type UndoView = {
+  record: UndoRecordView | null;
+  later_steps: { step_id: string; tool: string; outcome: string }[];
+  notice: string;
+};
+
+export type CapturedField = { path: string; present: boolean; value: string | number | boolean | null };
+export type RecordSnapshot = {
+  resource: string; subject: string; revision: string; captured_at: string;
+  basis: "preparation" | "confirmed_original"; source_action_hash: string | null;
+  fields: CapturedField[];
+};
+export type RecordObservation = {
+  resource: string; subject: string; revision: string | null; observed_at: string;
+  timing: "at_guard" | "after_refusal"; status: "observed" | "missing" | "unavailable";
+  reason: "unreadable" | "not_recorded" | "invalid" | null; fields: CapturedField[];
+};
+export type RecordTargetView = {
+  resource: string; subject: string; guard_revision: string;
+  state: "captured" | "changed" | "unchanged" | "no_fields_tracked" | "snapshot_unavailable" | "observation_unavailable" | "record_missing";
+  snapshot: RecordSnapshot | null; observation: RecordObservation | null;
+  rows: { before: CapturedField; observed: CapturedField; changed: boolean }[];
+};
+export type RecordEvidenceView = {
+  action_hash: string; code: "record_changed" | "event_changed" | null;
+  coverage: "complete" | "partial" | "unavailable"; records: RecordTargetView[];
 };

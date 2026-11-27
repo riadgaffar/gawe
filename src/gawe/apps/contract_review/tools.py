@@ -7,6 +7,9 @@ themselves as well:
   see it, but the model supplies arguments, so the write checks the value against the contract
   system and refuses on a mismatch. A planner that understates the value to dodge the finance
   approval gets a refused call, not a signature request.
+* Since M26 the assessment write is 3.0.0: it sets the contract's current rating and moves its
+  revision, and trusted preparation adds the rating it replaces (`prior`) inside the hash, so an
+  undo record knows exactly what to restore. 2.0.0 stays registered (retired) to verify.
 * The two contract writes (version 2.0.0) carry the contract's revision, added by trusted
   preparation before policy and hashing. The contract system accepts the write only while the
   contract still has that revision, checked in the write's own transaction, so an approval never
@@ -20,7 +23,7 @@ themselves as well:
 from collections.abc import Mapping
 from typing import Any
 
-from gawe.apps.record_binding import bound
+from gawe.apps.record_binding import bound, with_snapshots
 from gawe.connectors.credentials import Credential, ScopedClient, ScopedSystem
 from gawe.connectors.mock_clm import MockCLM
 from gawe.connectors.mock_email import MockEmail
@@ -46,6 +49,28 @@ SIGNATURE_FIELDS: dict[str, FieldClass] = {
     "contract_id": "typed",
 }
 BOUND_VERSION: dict[str, FieldClass] = {"record.contract_version": "typed"}
+# M26: the rating a 3.0.0 write replaces, added by trusted preparation from the same read as the
+# bound revision. The level is typed; the summary was written by a model in an earlier run.
+PRIOR_FIELDS: dict[str, FieldClass] = {"prior.risk_level": "typed", "prior.summary": "free_text"}
+NO_RATING = "none"  # prior.risk_level when the contract had no rating
+PRIOR_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "risk_level": {"enum": [NO_RATING, "low", "medium", "high"]},
+        "summary": {"type": "string", "maxLength": 500},
+    },
+    "required": ["risk_level", "summary"],
+}
+
+
+def with_prior(schema: dict[str, Any]) -> dict[str, Any]:
+    """An execution schema plus the trusted `prior` preparation adds."""
+    return {
+        **schema,
+        "properties": {**schema["properties"], "prior": PRIOR_SCHEMA},
+        "required": [*schema["required"], "prior"],
+    }
 
 
 ASSESSMENT_PROPOSAL: dict[str, Any] = {
@@ -83,7 +108,7 @@ SIGNATURE_OUTPUT: dict[str, Any] = {
     "required": ["envelope_id", "contract_id"],
 }
 
-MANIFESTS = (
+MANIFESTS: tuple[ToolManifest, ...] = (
     ToolManifest(
         name="clm.get_contract",
         writes=(),
@@ -134,6 +159,22 @@ MANIFESTS = (
         proposal_schema=ASSESSMENT_PROPOSAL,
         input_schema=bound(ASSESSMENT_PROPOSAL, "contract_version"),
         field_classes={**ASSESSMENT_FIELDS, **BOUND_VERSION},
+        output_schema=ASSESSMENT_OUTPUT,
+        side_effect_class="write",
+        risk_tier="medium",
+        postcondition="crm.assessment_matches",
+        retired=True,
+    ),
+    ToolManifest(
+        name="crm.write_assessment",
+        writes=("crm.assessment",),
+        version="3.0.0",
+        description="Record the risk assessment for a contract in the CRM.",
+        preparation_required=True,
+        record_binding="clm.contract",
+        proposal_schema=ASSESSMENT_PROPOSAL,
+        input_schema=with_prior(bound(ASSESSMENT_PROPOSAL, "contract_version")),
+        field_classes={**ASSESSMENT_FIELDS, **BOUND_VERSION, **PRIOR_FIELDS},
         output_schema=ASSESSMENT_OUTPUT,
         side_effect_class="write",
         risk_tier="medium",
@@ -231,6 +272,42 @@ MANIFESTS = (
     ),
 )
 
+RESTORE_PROPOSAL = {
+    **ASSESSMENT_PROPOSAL,
+    "properties": {
+        **ASSESSMENT_PROPOSAL["properties"],
+        "risk_level": {"enum": ["none", "low", "medium", "high"]},
+        "undo_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    },
+    "required": [*ASSESSMENT_PROPOSAL["required"], "undo_id"],
+}
+MANIFESTS += (
+    ToolManifest(
+        name="crm.restore_assessment",
+        version="1.0.0",
+        trusted_only=True,
+        description="Restore the rating captured before an earlier action.",
+        writes=("crm.assessment.restore",),
+        preparation_required=True,
+        record_binding="clm.contract",
+        proposal_schema=bound(RESTORE_PROPOSAL, "contract_version"),
+        input_schema=bound(RESTORE_PROPOSAL, "contract_version"),
+        field_classes={**ASSESSMENT_FIELDS, **BOUND_VERSION, "undo_id": "typed"},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "restore_id": {"type": "string"},
+                "contract_id": {"type": "string"},
+                "restored_level": {"type": ["string", "null"]},
+            },
+            "required": ["restore_id", "contract_id", "restored_level"],
+        },
+        side_effect_class="write",
+        risk_tier="medium",
+        required_roles=("case_manager",),
+    ),
+)
+
 POSTCONDITIONS: Mapping[str, PostCondition] = {
     "crm.assessment_matches": lambda args, out: (
         out.get("contract_id") == args.get("contract_id")
@@ -244,6 +321,7 @@ POSTCONDITIONS: Mapping[str, PostCondition] = {
 # What each tool's credential may do (M23): only what the tool itself does.
 TOOL_SCOPES: dict[str, frozenset[str]] = {
     "clm.get_contract": frozenset({"contract:read"}),
+    "crm.restore_assessment": frozenset({"assessment:restore"}),
     "crm.write_assessment": frozenset({"assessment:write"}),
     "email.send": frozenset({"mail:send"}),
     "esign.send_for_signature": frozenset({"envelope:send"}),
@@ -251,6 +329,7 @@ TOOL_SCOPES: dict[str, frozenset[str]] = {
 # The scope each declared write needs (startup checks the tools' scopes against them).
 WRITE_SCOPES: dict[str, str] = {
     "crm.assessment": "assessment:write",
+    "crm.assessment.restore": "assessment:restore",
     "email.sent": "mail:send",
     "esign.envelope": "envelope:send",
 }
@@ -261,6 +340,7 @@ def tool_clients(clm: MockCLM, email: MockEmail, esign: MockESign) -> dict[str, 
     system: dict[str, ScopedSystem] = {
         "clm.get_contract": clm,
         "crm.write_assessment": clm,
+        "crm.restore_assessment": clm,
         "email.send": email,
         "esign.send_for_signature": esign,
     }
@@ -279,11 +359,25 @@ def implementations(
         return clients["clm.get_contract"].get_contract(args["contract_id"])  # type: ignore[no-any-return]
 
     def write_assessment(args: Mapping[str, Any], call: ToolCall) -> Mapping[str, Any]:
-        return clients["crm.write_assessment"].write_assessment(  # type: ignore[no-any-return]
+        # Only the current version (3.0.0) is ever sent; retired versions only verify.
+        return clients["crm.write_assessment"].set_assessment(  # type: ignore[no-any-return]
             call.idempotency_key,
             args["contract_id"],
             args["risk_level"],
             args["summary"],
+            contract_version=args["record"]["contract_version"],
+        )
+
+    def restore_assessment(args: Mapping[str, Any], call: ToolCall) -> Mapping[str, Any]:
+        prior = (
+            None
+            if args["risk_level"] == NO_RATING
+            else {"risk_level": args["risk_level"], "summary": args["summary"]}
+        )
+        return clients["crm.restore_assessment"].restore_assessment(  # type: ignore[no-any-return]
+            call.idempotency_key,
+            args["contract_id"],
+            prior,
             contract_version=args["record"]["contract_version"],
         )
 
@@ -303,6 +397,33 @@ def implementations(
     return {
         "clm.get_contract": get_contract,
         "crm.write_assessment": write_assessment,
+        "crm.restore_assessment": restore_assessment,
         "email.send": send_email,
         "esign.send_for_signature": send_for_signature,
     }
+
+
+# M27: versioned snapshots; preceding versions still serve persisted plans/approvals.
+
+MANIFESTS += (
+    with_snapshots(
+        next(m for m in MANIFESTS if m.name == "crm.write_assessment" and m.version == "3.0.0"),
+        "4.0.0",
+        maximum=1,
+    ),
+)
+MANIFESTS += (
+    with_snapshots(
+        next(m for m in MANIFESTS if m.name == "esign.send_for_signature" and m.version == "2.0.0"),
+        "3.0.0",
+        maximum=1,
+    ),
+)
+
+# S4: only the trusted undo service supplies these arguments, including original evidence.
+RESTORE_2 = with_snapshots(
+    next(m for m in MANIFESTS if m.name == "crm.restore_assessment" and m.version == "1.0.0"),
+    "2.0.0",
+    minimum=0,
+)
+MANIFESTS += (RESTORE_2.model_copy(update={"proposal_schema": RESTORE_2.input_schema}),)

@@ -29,6 +29,8 @@ ROUTES = {
     ("GET", "/v1/runs/{run_id}"),
     ("GET", "/v1/runs/{run_id}/verification"),
     ("GET", "/v1/runs/{run_id}/steps/{step_id}/trace"),
+    ("GET", "/v1/runs/{run_id}/steps/{step_id}/undo"),  # reads captured state and dependents
+    ("POST", "/v1/runs/{run_id}/steps/{step_id}/undo"),  # starts a policy-governed reversal
     ("POST", "/v1/runs/{run_id}/cancel"),  # ends a run
     ("POST", "/v1/runs/{run_id}/resume"),  # drives a run
     ("GET", "/v1/runs/{run_id}/audit"),

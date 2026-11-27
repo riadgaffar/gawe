@@ -10,6 +10,7 @@
     python -m bench scripted
     python -m bench integrity
     python -m bench replay
+    python -m bench record-changes
 
 `scripted` runs every attack with a model fooled on purpose (M13): no model is called, nothing is
 spent, so it takes no cap and no model. It writes a run directory and its report.
@@ -88,7 +89,9 @@ from bench.harness import (
 )
 from bench.injection.cases import load_suite
 from bench.integrity.scenarios import run_suite
+from bench.integrity.undo import run_suite as run_undo_suite
 from bench.liability import cap_groups, write_liability
+from bench.record_changes import run_suite as run_record_changes_suite
 from bench.replay.cases import run_suite as run_replay_suite
 from bench.report import write_report
 from bench.results import ResultsWriter
@@ -131,6 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     commands.add_parser("integrity", help="run the execution-integrity scenarios (free, no model)")
     commands.add_parser("replay", help="run the event replay app's scripted cases (free, no model)")
+
+    commands.add_parser(
+        "record-changes", help="test saved record-change explanations (free, no model)"
+    )
 
     report = commands.add_parser("report", help="write report.json and report.md for a run")
     report.add_argument("directory", help="a run directory under bench-results/")
@@ -277,13 +284,19 @@ def main(
         return _report(directory, out, err)
     if args.command == "integrity":
         deps = deps or Deps()
-        ok = run_suite(
-            deps.results_dir, stamp=deps.now().strftime("%Y%m%dT%H%M%SZ"), git=deps.git(), out=out
-        )
-        return EXIT_OK if ok else EXIT_STOPPED
+        stamp, git = deps.now().strftime("%Y%m%dT%H%M%SZ"), deps.git()
+        ok = run_suite(deps.results_dir, stamp=stamp, git=git, out=out)
+        undo_ok = run_undo_suite(deps.results_dir, stamp=stamp, git=git, out=out)
+        return EXIT_OK if ok and undo_ok else EXIT_STOPPED
     if args.command == "replay":
         deps = deps or Deps()
         ok = run_replay_suite(
+            deps.results_dir, stamp=deps.now().strftime("%Y%m%dT%H%M%SZ"), git=deps.git(), out=out
+        )
+        return EXIT_OK if ok else EXIT_STOPPED
+    if args.command == "record-changes":
+        deps = deps or Deps()
+        ok = run_record_changes_suite(
             deps.results_dir, stamp=deps.now().strftime("%Y%m%dT%H%M%SZ"), git=deps.git(), out=out
         )
         return EXIT_OK if ok else EXIT_STOPPED

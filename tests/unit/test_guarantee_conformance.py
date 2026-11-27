@@ -28,6 +28,7 @@ from gawe.core.runs import RunRecord
 
 SYSTEM = {
     "crm.write_assessment": "crm",
+    "crm.restore_assessment": "crm",
     "esign.send_for_signature": "esign",
     "iam.grant_access": "iam",
     "email.send": "mail",
@@ -44,22 +45,53 @@ class Target:
         self.e = Env(path, self.system)
         self.e.advance()  # the normal flow prepares (and sends) once
         self.args = dict(self.e.stores.steps.get(self.e.run_id, "write").resolved_args)
+        if self.system == "crm":
+            # Since M26 that write moved the contract's revision: bind the one it left.
+            current, revision = self.e.clm.current_assessment(self.args["contract_id"])
+            self.args["record"] = {"contract_version": revision}
+            self.args["prior"] = current or {"risk_level": "none", "summary": ""}
+        if tool == "crm.restore_assessment":
+            self.args.pop("prior", None)
+            self.args["undo_id"] = "a" * 64
         self.read_back = self.e.bundle.readbacks[(tool, version)]
 
     def write(self, key: str) -> Any:
-        if self.version == "2.0.0":
+        if self.version in ACTIVE.get(self.tool, ("2.0.0",)):
             impl = self.e.bundle.tools[self.tool]
             return impl(self.args, ToolCall(self.e.run_id, "write", 1, key))
+        if (self.tool, self.version) == ("crm.write_assessment", "2.0.0"):
+            # Retired by M26: the conditional write that only appends, with no current code.
+            a = self.args
+            return self.e.clm.write_assessment(
+                key,
+                a["contract_id"],
+                a["risk_level"],
+                a["summary"],
+                contract_version=a["record"]["contract_version"],
+            )
         # A 1.0.0 write went to the system's older store; there is no current code for it.
         legacy = {"crm": self.e.clm, "esign": self.e.esign, "iam": self.e.iam}[self.system]
         return legacy.legacy_operations.accept(key, self.args)
+
+    def state(self) -> tuple[Any, str]:
+        """The rating and revision the contract system holds now (M26)."""
+        return self.e.clm.current_assessment(self.args["contract_id"])
+
+    def restore(self, key: str, prior: Any, version: str) -> Any:
+        return self.e.clm.restore_assessment(
+            key, self.args["contract_id"], prior, contract_version=version
+        )
 
     def effects(self, key: str) -> int:
         if self.system == "mail":
             server = MockMailServer(MockDirectory(self.e.ledger_dir))
             return sum(r.operation_key == key for r in server.records())
         owner = {"crm": self.e.clm, "esign": self.e.esign, "iam": self.e.iam}[self.system]
-        store = owner.operations if self.version == "2.0.0" else owner.legacy_operations
+        store = (
+            owner.legacy_operations
+            if self.version == "1.0.0" and self.tool != "crm.restore_assessment"
+            else owner.operations
+        )
         return sum(r.get("operation_key") == key for r in store.records())
 
     def read(self, key: str) -> Any:
@@ -82,6 +114,22 @@ def authoritative_readback(t: Target) -> None:
     t.write("conformance-key")
     assert t.read("conformance-key").status == "agreement"
     assert t.read("never-sent").status != "agreement"  # the system's own record, by key
+
+
+def reversible(t: Target) -> None:
+    """M26: the state a write replaced can be put back, only at the revision it left, which
+    read-back reports; afterwards the revision has moved again, so a second restore is refused."""
+    before, _ = t.state()
+    t.write("conformance-key")
+    observed = t.read("conformance-key")
+    assert observed.status == "agreement"
+    after = observed.facts["result_version"]
+    assert t.state()[1] == after
+    t.restore("restore-key", before, after)
+    state, version = t.state()
+    assert state == before and version != after
+    with pytest.raises(ToolPreDispatchError):
+        t.restore("restore-again", before, after)
 
 
 def conditional_write(t: Target) -> None:
@@ -159,6 +207,14 @@ CHECKS: dict[str, Callable[[Any], None]] = {
     "authoritative_readback": authoritative_readback,
     "conditional_write": conditional_write,
     "atomic_reservation": atomic_reservation,
+    "reversible": reversible,
+}
+# The version GAWE sends today, where it isn't 2.0.0.
+ACTIVE = {
+    "crm.write_assessment": ("3.0.0", "4.0.0"),
+    "crm.restore_assessment": ("1.0.0", "2.0.0"),
+    "esign.send_for_signature": ("2.0.0", "3.0.0"),
+    "iam.grant_access": ("2.0.0", "3.0.0"),
 }
 
 
@@ -180,6 +236,13 @@ def test_every_declared_guarantee_has_a_check(declarations: list[tuple[str, str,
 
 
 CASES = [
+    ("crm.restore_assessment", "1.0.0", "idempotent_by_key"),
+    ("crm.restore_assessment", "1.0.0", "authoritative_readback"),
+    ("crm.restore_assessment", "1.0.0", "conditional_write"),
+    ("crm.write_assessment", "3.0.0", "idempotent_by_key"),
+    ("crm.write_assessment", "3.0.0", "authoritative_readback"),
+    ("crm.write_assessment", "3.0.0", "conditional_write"),
+    ("crm.write_assessment", "3.0.0", "reversible"),
     ("crm.write_assessment", "2.0.0", "idempotent_by_key"),
     ("crm.write_assessment", "2.0.0", "authoritative_readback"),
     ("crm.write_assessment", "2.0.0", "conditional_write"),
@@ -201,6 +264,19 @@ CASES = [
     ("billing.replay_events", "1.0.0", "authoritative_readback"),
     ("billing.replay_events", "1.0.0", "conditional_write"),
     ("billing.replay_events", "1.0.0", "atomic_reservation"),
+]
+
+CASES += [
+    (tool, new, guarantee)
+    for tool, old, new in (
+        ("crm.restore_assessment", "1.0.0", "2.0.0"),
+        ("crm.write_assessment", "3.0.0", "4.0.0"),
+        ("esign.send_for_signature", "2.0.0", "3.0.0"),
+        ("iam.grant_access", "2.0.0", "3.0.0"),
+        ("billing.replay_events", "1.0.0", "2.0.0"),
+    )
+    for name, version, guarantee in CASES
+    if name == tool and version == old
 ]
 
 

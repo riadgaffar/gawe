@@ -92,3 +92,23 @@ test("hand-offs: listed, and marked at the run and step with the shown hash", as
   assert.equal(seen.init?.method, "POST");
   assert.equal(seen.init?.body, JSON.stringify({ outcome: "done", action_hash: "h", reference: "ENV-1" }));
 });
+
+
+test("undo reads and requests are scoped to encoded run and step; no editable rating is submitted", async () => {
+  const seen: { url?: string; init?: RequestInit } = {};
+  const client = createClient({ baseUrl: "http://a", token: "t", fetchImpl: fake(200, {}, seen) });
+  await client.undoView("run/1", "write?x");
+  assert.equal(seen.url, "http://a/v1/runs/run%2F1/steps/write%3Fx/undo");
+  assert.equal(seen.init?.method, "GET");
+  await client.requestUndo("run/1", "write?x");
+  assert.equal(seen.url, "http://a/v1/runs/run%2F1/steps/write%3Fx/undo");
+  assert.equal(seen.init?.method, "POST");
+  assert.equal(seen.init?.body, "{}");
+});
+
+test("undo refusal keeps its code for a human-readable explanation", async () => {
+  const client = createClient({ baseUrl: "http://a", token: "t",
+    fetchImpl: fake(409, { error: { code: "already_undone", message: "already_undone" } }) });
+  await assert.rejects(client.requestUndo("r", "s"), (e: unknown) =>
+    e instanceof ApiError && e.code === "already_undone");
+});

@@ -15,6 +15,9 @@ class ReadbackResult:
     observed: Mapping[str, Any] = field(default_factory=dict)
     output: Mapping[str, Any] | None = None
     code: str = "readback_unavailable"
+    # What the target reports about the write that isn't compared with the authorized action,
+    # such as the record's revision after it (M26, for an undo record). Empty for most writes.
+    facts: Mapping[str, Any] = field(default_factory=dict)
 
 
 class ReadbackAdapter(Protocol):
@@ -28,6 +31,7 @@ def compare(
     observed: Mapping[str, Any] | None,
     *,
     output: Mapping[str, Any] | None = None,
+    facts: Mapping[str, Any] | None = None,
 ) -> ReadbackResult:
     if observed is None:
         return ReadbackResult("unavailable", expected=expected)
@@ -38,6 +42,7 @@ def compare(
         observed,
         output,
         "readback_agreed" if matches else "readback_mismatch",
+        dict(facts or {}),
     )
 
 

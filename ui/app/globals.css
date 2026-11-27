@@ -37,3 +37,6 @@ th { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; }
 .notice.error { color: var(--bad); border-color: var(--bad); }
 .notice.ok { color: var(--good); border-color: var(--good); }
 .notice.wait { color: var(--wait); border-color: var(--wait); }
+
+.record-table { overflow-x: auto; }
+.record-table td { overflow-wrap: anywhere; }

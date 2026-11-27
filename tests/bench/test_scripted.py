@@ -442,7 +442,7 @@ def test_every_honest_approval_in_the_suite_is_counted(tmp_path: Path) -> None:
 
 # ------------------------------------------------------------------ M20: signatures prepare-only
 
-SIGNATURE = ("esign.send_for_signature", "2.0.0")
+SIGNATURE = ("esign.send_for_signature", "3.0.0")
 
 
 def _handwritten_trials() -> list[ScriptedTrial]:

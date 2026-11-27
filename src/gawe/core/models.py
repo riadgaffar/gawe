@@ -7,7 +7,14 @@ All models are frozen and reject unknown fields: anything crossing a trust bound
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 SEMVER_PATTERN = r"^\d+\.\d+\.\d+$"
 TOOL_NAME_PATTERN = r"^[a-z][a-z0-9_.]{0,127}$"
@@ -49,6 +56,8 @@ class ToolManifest(FrozenModel):
     # Kept registered only so writes dispatched before retirement can still be verified;
     # a step pinned to a retired version that has not dispatched fails closed.
     retired: bool = False
+    # Only trusted code may construct plans naming this tool.
+    trusted_only: bool = False
 
 
 class PlanStep(FrozenModel):
@@ -57,8 +66,18 @@ class PlanStep(FrozenModel):
 
     id: str = Field(pattern=STEP_ID_PATTERN)
     tool: str = Field(pattern=TOOL_NAME_PATTERN)
+    # Persisted trusted plans may pin a version. Model-plan validation rejects a supplied pin.
+    tool_version: str | None = Field(default=None, pattern=SEMVER_PATTERN)
     args: dict[str, Any] = Field(default_factory=dict)
     depends_on: tuple[str, ...] = ()
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_pin(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        # Preserve the serialized shape of pre-M27/model plans and their audit payloads.
+        data: dict[str, Any] = handler(self)
+        if self.tool_version is None:
+            data.pop("tool_version", None)
+        return data
 
 
 class Plan(FrozenModel):

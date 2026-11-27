@@ -34,6 +34,7 @@ from gawe.api.errors import (
     ForbiddenError,
     NotFoundError,
 )
+from gawe.api.record_evidence import RecordPresenter
 from gawe.api.schemas import (
     AnchorView,
     ApprovalView,
@@ -55,6 +56,7 @@ from gawe.api.schemas import (
     TypedFieldView,
     VerificationView,
 )
+from gawe.api.undo import UndoRefused, UndoRuns
 from gawe.core.anchor import Anchorer
 from gawe.core.approvals import (
     ActionHashMismatchError,
@@ -132,6 +134,8 @@ class ApiService:
         audit: AuditLog,
         background: Background,
         profiles: frozenset[str],
+        undo: UndoRuns | None = None,
+        record_presenter: RecordPresenter | None = None,
         limits: Limits | None = None,
         anchorer: Anchorer | None = None,
         maintenance: MaintenanceStore | None = None,
@@ -157,6 +161,8 @@ class ApiService:
         self._audit = audit
         self._background = background
         self._profiles = profiles
+        self._undo = undo
+        self._record_presenter = record_presenter
         self._limits = limits or Limits()
         self._anchorer = anchorer or Anchorer(audit, [])
         self._maintenance = maintenance
@@ -198,7 +204,7 @@ class ApiService:
             raise BadRequestError("objective is required")
         if len(objective) > MAX_OBJECTIVE_CHARS:
             raise BadRequestError(f"objective is longer than {MAX_OBJECTIVE_CHARS} characters")
-        if profile not in self._profiles:
+        if profile == "undo" or profile not in self._profiles:
             raise BadRequestError("unknown profile")
         source = self._sources.get(profile)
         if source is None and source_id is not None:
@@ -233,6 +239,49 @@ class ApiService:
         self.kick(run.run_id)
         return self._run_view(run)
 
+    def request_undo(self, who: Identity, run_id: str, step_id: str) -> RunView:
+        run = self._own_run(who, run_id)
+        step = self._find_step(run_id, step_id)
+        if step is None:
+            raise NotFoundError("step not found")
+        if self._undo is None:
+            raise UndoRefused("not_reversible")
+        undone = self._undo.request(who, run, step)
+        self.kick(undone.run_id)
+        return self._run_view(self._runs.get(undone.run_id))
+
+    def undo_view(self, who: Identity, run_id: str, step_id: str) -> dict[str, Any]:
+        run = self._own_run(who, run_id)
+        if self._find_step(run_id, step_id) is None:
+            raise NotFoundError("step not found")
+        records = [] if self._undo is None else self._undo.r.undo.for_run(who.tenant_id, run_id)
+        record = next((r for r in records if r.step_id == step_id), None)
+        later = []
+        after = False
+        for item in run.plan.steps if run.plan else ():
+            if item.id == step_id:
+                after = True
+                continue
+            if after and any(
+                isinstance(v, dict)
+                and isinstance(v.get("$ref"), str)
+                and v["$ref"].split(".output")[0] == step_id
+                for v in item.args.values()
+            ):
+                step = self._find_step(run_id, item.id)
+                later.append(
+                    {
+                        "step_id": item.id,
+                        "tool": item.tool,
+                        "outcome": step.status.value if step else "pending",
+                    }
+                )
+        return {
+            "record": record.model_dump(mode="json") if record else None,
+            "later_steps": later,
+            "notice": "Effects of later steps stay as they are.",
+        }
+
     def get_run(self, who: Identity, run_id: str) -> RunView:
         return self._run_view(self._own_run(who, run_id))
 
@@ -243,7 +292,7 @@ class ApiService:
     def _verification_views(self, run: RunRecord) -> list[VerificationView]:
         if self._maintenance is None:
             return []
-        return [
+        views = [
             VerificationView(
                 job_id=j.job_id,
                 step_id=run_target(j).step_id,
@@ -260,6 +309,22 @@ class ApiService:
             for j in self._maintenance.for_run(run.tenant_id, run.run_id)
             if j.kind == READBACK_KIND
         ]
+        if self._record_presenter is not None:
+            for i, view in enumerate(views):
+                step = self._find_step(run.run_id, view.step_id)
+                if (
+                    step is not None
+                    and view.plan_version == run.plan_version
+                    and view.action_hash == step.action_hash
+                ):
+                    views[i] = view.model_copy(
+                        update={
+                            "record_evidence": self._record_presenter.project(
+                                run, step, verification=view
+                            )
+                        }
+                    )
+        return views
 
     def list_runs(self, who: Identity, *, limit: int = 50) -> list[RunView]:
         limit = max(1, min(limit, self._limits.max_list))
@@ -587,8 +652,25 @@ class ApiService:
             if step is None:
                 continue
             decision = step.policy_decision or run.decisions.get(step.step_id)
+            matched = next(
+                (
+                    v
+                    for v in evidence
+                    if v.step_id == step.step_id
+                    and v.plan_version == run.plan_version
+                    and v.action_hash == step.action_hash
+                ),
+                None,
+            )
             steps.append(
                 StepView(
+                    record_evidence=(
+                        matched.record_evidence
+                        if matched
+                        else self._record_presenter.project(run, step)
+                        if self._record_presenter
+                        else None
+                    ),
                     step_id=step.step_id,
                     tool=step.tool,
                     status=step.status.value,
@@ -615,16 +697,7 @@ class ApiService:
                         if step.handoff
                         else None
                     ),
-                    verification=next(
-                        (
-                            v
-                            for v in evidence
-                            if v.step_id == step.step_id
-                            and v.plan_version == run.plan_version
-                            and v.action_hash == step.action_hash
-                        ),
-                        None,
-                    ),
+                    verification=matched,
                 )
             )
         return RunView(
@@ -650,6 +723,11 @@ class ApiService:
         classes = manifest.field_classes or {}
         shown = fields(snapshot, classes)
         return ApprovalView(
+            record_evidence=(
+                self._record_presenter.project(run, step, args=snapshot, digest=record.action_hash)
+                if self._record_presenter
+                else None
+            ),
             approval_id=record.approval_id,
             run_id=record.run_id,
             step_id=record.step_id,

@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from gawe.apps.it_access.grant_preparation import MAX_LIFETIME_HOURS, MIN_LIFETIME_HOURS
-from gawe.apps.record_binding import bound
+from gawe.apps.record_binding import bound, with_snapshots
 from gawe.connectors.credentials import Credential, ScopedClient
 from gawe.connectors.mock_iam import MockIAM
 from gawe.core.executor import ToolCall, ToolImplementation
@@ -60,7 +60,7 @@ GRANT_INPUT: dict[str, Any] = {
 
 GRANT_FIELDS: dict[str, FieldClass] = {"email": "typed", "system": "typed", "level": "typed"}
 
-MANIFESTS = (
+MANIFESTS: tuple[ToolManifest, ...] = (
     ToolManifest(
         name="iam.lookup_user",
         writes=(),
@@ -166,3 +166,14 @@ def implementations(iam: MockIAM) -> dict[str, ToolImplementation]:
         )
 
     return {"iam.lookup_user": lookup, "iam.grant_access": grant}
+
+
+# M27: versioned snapshots; preceding versions still serve persisted plans/approvals.
+
+MANIFESTS += (
+    with_snapshots(
+        next(m for m in MANIFESTS if m.name == "iam.grant_access" and m.version == "2.0.0"),
+        "3.0.0",
+        maximum=1,
+    ),
+)

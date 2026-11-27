@@ -102,6 +102,15 @@ def validate_job_change(current: MaintenanceJob, changed: MaintenanceJob) -> Non
         raise JobConflictError("immutable job identity or intent changed")
     if changed.revision != current.revision + 1:
         raise JobConflictError("job revision changed")
+    proof = current.evidence.get("refusal")
+    if proof is not None:
+        if changed.evidence.get("refusal") != proof:
+            raise JobConflictError("refusal proof cannot change")
+        if changed.result is not None and changed.result != {
+            "outcome": "not_dispatched",
+            "code": proof["code"],
+        }:
+            raise JobConflictError("a refusal cannot become another outcome")
     if current.result is not None and changed.result != current.result:
         raise JobConflictError("terminal job result cannot change")
     if current.result is not None and (

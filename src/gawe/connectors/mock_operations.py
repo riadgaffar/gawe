@@ -21,6 +21,7 @@ from gawe.connectors.base import Ledger
 
 T = TypeVar("T")
 Guard = Callable[[sqlite3.Connection], None]
+Effect = Callable[[sqlite3.Connection], Mapping[str, Any]]
 _TABLE = re.compile(r"[a-z][a-z0-9_]*")
 
 
@@ -95,10 +96,17 @@ class MockOperations:
         self.drop_reply = False
 
     def accept(
-        self, key: str, fields: Mapping[str, Any], *, guard: Guard | None = None
+        self,
+        key: str,
+        fields: Mapping[str, Any],
+        *,
+        guard: Guard | None = None,
+        effect: Effect | None = None,
     ) -> dict[str, Any]:
         """Accept once per key. A guard runs only for a new operation, inside the transaction;
-        an exception from it rolls everything back, so nothing is accepted."""
+        an exception from it rolls everything back, so nothing is accepted. An effect then
+        changes the system's own records in the same transaction (M26: a current rating) and
+        returns fields stored with the operation, such as the record's revision after it."""
 
         def save(conn: sqlite3.Connection) -> dict[str, Any]:
             row = conn.execute(
@@ -108,7 +116,8 @@ class MockOperations:
                 return dict(json.loads(row[0]))
             if guard is not None:
                 guard(conn)
-            data = {**fields, **self.applied_override, "operation_key": key}
+            applied = dict(effect(conn)) if effect is not None else {}
+            data = {**fields, **applied, **self.applied_override, "operation_key": key}
             conn.execute(
                 f"INSERT INTO {self._table} VALUES (?, ?, ?)",
                 (

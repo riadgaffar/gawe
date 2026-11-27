@@ -120,7 +120,9 @@ def test_the_it_app_revokes_old_grants_but_expires_only_current_ones_at_dispatch
     )
     verification = service._orch._executor.verification
     assert verification is not None
-    assert verification.expiring == frozenset({("iam.grant_access", "2.0.0")})
+    assert verification.expiring == frozenset(
+        {("iam.grant_access", "2.0.0"), ("iam.grant_access", "3.0.0")}
+    )
 
 
 def test_only_a_retired_version_of_an_expiring_tool_may_have_a_revoker(tmp_path: Path) -> None:

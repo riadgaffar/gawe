@@ -85,7 +85,8 @@ _NO_FINDINGS = '{"note": "no document findings were provided"}'
 def _catalog(registry: ToolRegistry) -> str:
     entries: list[dict[str, Any]] = []
     for manifest in registry.list():
-        entries.append(_entry(manifest))
+        if not manifest.trusted_only:
+            entries.append(_entry(manifest))
     return json.dumps(entries, sort_keys=True, indent=1)
 
 
@@ -137,6 +138,8 @@ class Planner:
 
         system = _SYSTEM.format(max_steps=self._max_steps, catalog=_catalog(self._registry))
         schema = Plan.model_json_schema()
+        # Version pins are persisted trusted metadata, never part of a model's output schema.
+        schema["$defs"]["PlanStep"]["properties"].pop("tool_version")
         issues: tuple[Issue, ...] = ()
         request_hashes: list[str] = []
         response_hashes: list[str] = []

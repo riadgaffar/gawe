@@ -37,6 +37,8 @@ Every error is `{"error": {"code": "...", "message": "..."}}`.
 | `GET /v1/runs/{id}` | any user in tenant | run, steps, policy outcome and evaluated checks per step, each write step's verification record, and the conditions it is only checked against (`checked_not_enforced`, see [What targets guarantee](#what-targets-guarantee)) |
 | `GET /v1/runs/{id}/verification` | any user in tenant | independent read-back records for the run, see [Independent write verification](#independent-write-verification) |
 | `GET /v1/runs/{id}/steps/{step_id}/trace` | any user in tenant | one step's records joined by hash and key, with any broken link named, see [Tracing a step](#tracing-a-step) |
+| `GET /v1/runs/{id}/steps/{step_id}/undo` | any user in tenant | captured undo record and later direct output consumers; see [Undoing a rating](#undoing-a-rating) |
+| `POST /v1/runs/{id}/steps/{step_id}/undo` | `case_manager` in tenant | request a separate, policy-checked reversal run; `201` with its run view |
 | `POST /v1/runs/{id}/cancel` | starter or `admin` | cancel (409 if a step is executing) |
 | `POST /v1/runs/{id}/resume` | starter or `admin` | drive the run again, e.g. after a restart; `202` |
 | `GET /v1/runs/{id}/audit` | any user in tenant | audit events (type, actor, payload hash, chain hash) |
@@ -90,6 +92,69 @@ The approval view also splits the arguments the way the tool declares them:
 Values a tool does not declare are listed as free text. `resolved_args` stays in the view for
 clients that need the raw arguments.
 
+## Undoing a rating
+
+M26 supports a person undoing `crm.write_assessment@3.0.0` in Contract Review. The contract
+system holds one current rating and summary. Before dispatch, GAWE saves the prior fields and
+bound revision in an undo record. An unreadable current rating fails preparation with
+`record_version_unavailable`, before policy or dispatch. The record becomes `armed` only when
+independent read-back agrees with the original write and observes its resulting revision. Earlier assessment versions,
+email, e-signature, replay and grants are not reversible through this endpoint.
+
+`GET /v1/runs/{id}/steps/{step_id}/undo` returns:
+
+| Field | Meaning |
+|---|---|
+| `record` | The stored undo record, or `null`: original tenant/run/step, tool/version, action hash and operation key, subject, prior rating and summary (or `null` for no rating), bound and resulting revisions, state, reason, creation time and store revision |
+| `later_steps` | Later steps in the original plan whose top-level arguments directly reference this step's output, each with `step_id`, `tool` and `outcome` |
+| `notice` | `Effects of later steps stay as they are.` |
+
+This view is available to tenant members and includes the captured prior summary. Its state is
+stored evidence, not a live check of the contract's revision. The UI shows the written and prior
+ratings as captured values, collapses the model-written summary, and offers Undo to a case
+manager only while the matching record is armed and unused. The later-step list is not a
+transitive dependency graph or a list of everything people did after reading the rating.
+
+To request undo, POST to the same path with no body. The caller need not have started the original
+run, but must be a `case_manager` in its tenant. Trusted code supplies the prior fields and the
+original write's resulting revision; no model supplies restore arguments. The response is `201`
+with the new run view, which may still be running or waiting for approval. Poll that run by its
+returned `run_id` or open it in the UI.
+
+The run has profile `undo` and one trusted-only `crm.restore_assessment@1.0.0` step. Neither Reader
+nor Planner is called. Public `POST /v1/runs` refuses profile `undo` with `422 bad_request`; model
+plans cannot name the restore tool. The restore goes through normal policy, separation of duties,
+execution and read-back. Restoring low or no rating needs legal approval; other rating rules,
+including a downgrade relative to counted history, can also require review.
+
+| HTTP status | `error.code` | Refusal before a reversal run starts |
+|---|---|---|
+| 404 | `not_found` | Run or step missing, or run belongs to another tenant |
+| 403 | `forbidden` | Caller lacks `case_manager` |
+| 409 | `not_reversible` | Original tool/version has no undo capability |
+| 409 | `undo_unavailable` | Missing, unreadable, pending or unavailable undo record; includes an unknown or mismatched original outcome |
+| 409 | `already_undone` | Undo already requested, used or failed, or its durable request already exists |
+| 409 | `undo_of_undo` | The requested step belongs to an undo run |
+
+These categories are distinct: a restore is classified as `undo_of_undo`, and an already-requested
+record as `already_undone`, rather than being caught by an earlier unavailable/non-reversible
+check. Repeated requests return `already_undone`; they do not create another reversal.
+
+`record_changed` is a **restore-step failure**, not an endpoint refusal: the target compares the
+bound resulting revision inside the restore transaction, and accepts nothing if any change has
+occurred since the original write, even a change away and back. Two writes at the same revision
+cannot both land. Inspect the undo run's step/error and verification evidence for its outcome.
+An uncertain restore is reconciled by its own operation key, never blindly sent again.
+
+Undo states are `pending` before confirmation, `armed` after agreement, `unavailable` when the
+original cannot be confirmed, `requested` after a durable request, `used` after confirmed restore,
+and `failed` when the reversal run ends unsuccessfully. The key derives deterministically from
+the original operation key using domain `gawe.undo.v1`. A durable `undo_request` job repairs a
+crash between the request and run creation and completes the linking bookkeeping. The original
+run gets `step.undo_requested`, then `step.undone` or `step.undo_failed`; each links both runs,
+steps and action hashes. The undo run has its own audit chain. Later effects stay: undo does not
+recall an email, signature, or decision someone made after seeing the rating.
+
 ## Hand-offs
 
 An app can make a tool version prepare-only (`AppBundle.prepare_only`, empty in both shipped
@@ -125,6 +190,7 @@ refuses a write that relies on something its target doesn't (M22):
 | `idempotent_by_key` | The system records an operation once per GAWE's key | Every write |
 | `authoritative_readback` | Its own record of the operation can be read by that key; labels or delayed history don't count | Every write |
 | `conditional_write` | It checks the bound record's revision in the write's own transaction | A write that binds a record |
+| `reversible` | The target can restore captured prior state conditionally on the original write's resulting revision | A tool/version declared in `AppBundle.undoable`; currently the 3.0.0 rating write only |
 | `atomic_reservation` | It reserves against a running total in the write's own transaction | A write that a rule judges with a `counter` policy source |
 
 A write that the app makes prepare-only needs none of them; GAWE never sends it.
@@ -163,7 +229,9 @@ a denial: startup refuses a `history.*` variable in an `allow` rule.
 
 - Contract Review keys on `contract_id`. A `risk_level` lower than the contract's standing rating
   (the highest of the last rating that took effect and every counted one after it) waits for a
-  `legal_reviewer` (`rating-lowered-needs-legal`).
+  `legal_reviewer` (`rating-lowered-needs-legal`). Writes and restores share this history and its
+  subject lock (M26). A successful restore becomes a rating in that history; restoring no rating
+  clears the standing rating, while later in-flight/unknown ratings still count.
 - IT access keys on the grantee's `email`, lower-cased. Tenant settings `automatic_grants` (2) and
   `history_days` (30): once a person has been granted a system `automatic_grants` times, at any
   level, in the `history_days` before the run started, the next grant waits for a
@@ -310,7 +378,7 @@ data: {"status":"completed"}
 Uploaded documents, Reader findings, prompts, model output, policy signatures, tool outputs.
 Resolved tool arguments appear in full only in the approval and hand-off views, because an
 approver has to see what they are approving and a person doing it by hand has to see what to do. Verification records (on the run view and at `/verification`) are the
-one other place argument values appear: the bounded fields a read-back compares, such as accepted
+other place argument values appear, along with M27’s validated `record_evidence` projection: the bounded fields a read-back compares, such as accepted
 email recipients, contract id, risk level, account, system, level, signer and deal value. Email
 subject and body and CRM summaries appear only as digests. They are visible to users in the run's
 tenant, like the run itself.
@@ -571,3 +639,42 @@ step returns to policy and a fresh approval. A mismatch found by read-back after
 message or the record holds other values. Blocking the step does not undo it. `unknown` means the
 effect may have happened and was not repeated. Read-back proves the mock target's record of the
 operation; real mail and directory behaviour (delivery, forwarding, list membership) is not checked.
+
+
+## Captured record fields and refusal comparisons (M27)
+
+Approval views, run steps and matching verification views include optional `record_evidence`.
+It is a display projection of saved evidence; fetching it never reads a live target or changes
+an action, approval, diagnostic or audit record. Existing resolved arguments and verification
+JSON remain available through their established API fields.
+
+The projection binds to `action_hash`. A refusal has `code: record_changed | event_changed`
+and observation `coverage: complete | partial | unavailable`. Complete means every target has
+an observation, not that every target was readable. Records follow the authorized target order;
+a partially observed batch includes its unobserved targets with explicit unavailable states.
+
+Each record identifies `resource`, `subject`, and `guard_revision`, with a validated `snapshot`,
+`observation`, comparison `rows`, and one of these states:
+
+- `captured`: a saved snapshot shown before an action, without a refusal comparison.
+- `changed` or `unchanged`: selected captured and observed fields differ or match. Either state
+  leaves the revision-refused action refused; a fresh run is required to reassess it.
+- `no_fields_tracked`: the app explicitly tracks no record fields, as with IAM account profiles.
+- `snapshot_unavailable`: no trustworthy original capture is available, including old records.
+- `observation_unavailable`: no usable saved observation; this never means unchanged.
+- `record_missing`: the target was missing or outside the permitted scope when observed.
+
+Fields distinguish `present: false`, a present `value: null`, and unavailable evidence.
+Observations retain their saved time and `at_guard` or `after_refusal` timing. A later read is
+not evidence of historical guard values. Matching fields in a later read do not establish what
+those fields contained at refusal. Refresh never replaces the saved observation.
+
+Undo snapshots are labeled `confirmed_original`, with the original capture timestamp, revision
+and source action hash. The server validates them against the tenant-scoped immutable undo record.
+The original snapshot revision can differ from `guard_revision`, which is the revision left by
+the original write and required for restoration. A source hash alone is insufficient provenance.
+
+Malformed, misbound, undeclared or unavailable evidence produces an unavailable view, without
+exposing its values through this projection. The UI renders selected values as text, keeps
+model-written prose collapsed, and adds no retry or reapproval controls. Its existing comparison
+with the last approved call remains separate from the record-refusal comparison.

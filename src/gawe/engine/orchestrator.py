@@ -42,13 +42,14 @@ from gawe.core.models import REF_KEY, PolicyDecision, is_ref
 from gawe.core.policy.audit_payload import decided_payload
 from gawe.core.policy.engine import PolicyEngine
 from gawe.core.policy.rules import EvaluationContext
-from gawe.core.preparation import PreparationError, Preparer
+from gawe.core.preparation import ActionVariables, PreparationError, Preparer
 from gawe.core.records import ExecutionStore, Handoff, StaleStateError, StepRecord, StepStore
 from gawe.core.refs import RefResolutionError, resolve_args
 from gawe.core.registry import RegistryError, ToolRegistry
 from gawe.core.runs import RunRecord, RunStore, StaleRunError
 from gawe.core.statemachine import RUN_TERMINAL, STEP_TERMINAL, RunStatus, StepStatus
 from gawe.core.telemetry import NoopTelemetry, Telemetry
+from gawe.core.undo import legacy_restore_version
 from gawe.core.verification import READBACK_KIND
 from gawe.llm.planner import Planner, PlanningError
 from gawe.llm.provider import LLMUnavailableError
@@ -115,6 +116,7 @@ class Orchestrator:
         telemetry: Telemetry | None = None,
         variables: Callable[[RunRecord], Mapping[str, Any]] | None = None,
         preparers: Mapping[tuple[str, str], Preparer] | None = None,
+        action_variables: Mapping[tuple[str, str], ActionVariables] | None = None,
         on_finished: Callable[[RunRecord], object] | None = None,
         clock: Callable[[], datetime] = _utc_now,
         prepare_only: Mapping[tuple[str, str], str] | None = None,
@@ -135,6 +137,7 @@ class Orchestrator:
         self._telemetry: Telemetry = telemetry or NoopTelemetry()
         self._variables = variables or (lambda run: {})
         self._preparers = dict(preparers or {})
+        self._action_variables = dict(action_variables or {})
         self._on_finished = on_finished
         self._clock = clock
         self._locks: dict[str, threading.Lock] = {}
@@ -232,6 +235,10 @@ class Orchestrator:
             run = self._runs.get(run_id)
             if run.status in _RUN_TERMINAL:
                 return run
+            if run.profile == "undo" and run.plan is not None:
+                # Trusted undo plans exist before their first advance; cancellation still needs
+                # step records to terminate. Materialization is idempotent and performs no IO.
+                self._materialize(run)
             plan_steps = run.plan.steps if run.plan else ()
             current = [self._steps.get(run_id, s.id) for s in plan_steps]
             if any(s.status in _IN_FLIGHT for s in current):
@@ -278,6 +285,8 @@ class Orchestrator:
             )
             self._audit.record(run.run_id, "run.planning", ACTOR, {})
         if run.plan is None:
+            if run.profile == "undo":
+                return run  # durable undo-request recovery supplies the trusted plan
             if self._planner is None:
                 # A maintenance-only driver never plans; the run stays where it is.
                 raise PlanningUnavailableError("this process does not plan runs")
@@ -355,11 +364,19 @@ class Orchestrator:
     def _materialize(self, run: RunRecord) -> None:
         assert run.plan is not None
         for planned in run.plan.steps:
+            version = planned.tool_version
+            if run.profile == "undo":
+                version = version or legacy_restore_version(planned.tool)
+            elif version is not None:
+                raise ValueError("tool version pins require a trusted undo plan")
+            manifest = self._registry.get(planned.tool, version)
+            if run.profile == "undo" and not manifest.trusted_only:
+                raise ValueError("an undo plan must use a trusted-only tool")
             record = StepRecord(
                 run_id=run.run_id,
                 step_id=planned.id,
                 tool=planned.tool,
-                tool_version=self._registry.get(planned.tool).version,
+                tool_version=manifest.version,
                 args_template=dict(planned.args),
                 depends_on=planned.depends_on,
             )
@@ -533,7 +550,14 @@ class Orchestrator:
         # M24: reading history, evaluating and storing the decision happen under one lock per
         # subject, so a second run judging the same subject sees this step in flight.
         with hold:
-            variables = dict(self._variables(run))
+            action_variables = self._action_variables.get((step.tool, step.tool_version))
+            try:
+                variables = dict(
+                    action_variables(run, resolved) if action_variables else self._variables(run)
+                )
+            except PreparationError as exc:
+                self._fail_step(run.run_id, step.step_id, str(exc))
+                return
             read = self._read_history(run, step, resolved)
             if read is not None:
                 variables[HISTORY_VARIABLE] = read.variables

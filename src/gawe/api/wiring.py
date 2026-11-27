@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from gawe.api.background import Background
+from gawe.api.record_evidence import RecordPresenter
 from gawe.api.service import ApiService, Limits
+from gawe.api.undo import UndoRuns
 from gawe.connectors.credentials import is_read_scope
 from gawe.core.anchor import Anchorer, AnchorSink
 from gawe.core.approvals import (
@@ -41,7 +43,7 @@ from gawe.core.policy.engine import RuleEngine
 from gawe.core.policy.provenance import PolicySource, PolicyVariable, validate_provenance
 from gawe.core.policy.rules import Rule, load_rules
 from gawe.core.policy.signing import PolicySigner
-from gawe.core.preparation import Preparer
+from gawe.core.preparation import ActionVariables, Preparer
 from gawe.core.readback import ReadbackAdapter
 from gawe.core.records import (
     ExecutionStore,
@@ -50,11 +52,13 @@ from gawe.core.records import (
     StepNotFoundError,
     StepStore,
 )
+from gawe.core.refusals import RefusalObserver
 from gawe.core.registry import ToolRegistry
 from gawe.core.review import InMemoryReviewStore, ReviewKey, ReviewStore
 from gawe.core.runs import InMemoryRunStore, RunNotFoundError, RunRecord, RunStore
 from gawe.core.sources import DocumentSource
 from gawe.core.telemetry import NoopTelemetry, Telemetry
+from gawe.core.undo import InMemoryUndoStore, Undoable, UndoStore
 from gawe.core.verification import VerificationResolver
 from gawe.core.verifier import PostCondition, Verifier
 from gawe.engine.orchestrator import Orchestrator
@@ -82,7 +86,9 @@ class AppBundle:
     policy_sources: Mapping[str, PolicySource] = field(default_factory=dict)
     policy_variables: Mapping[str, PolicyVariable] = field(default_factory=dict)
     preparers: Mapping[tuple[str, str], Preparer] = field(default_factory=dict)
+    action_variables: Mapping[tuple[str, str], ActionVariables] = field(default_factory=dict)
     readbacks: Mapping[tuple[str, str], ReadbackAdapter] = field(default_factory=dict)
+    refusal_observers: Mapping[tuple[str, str], RefusalObserver] = field(default_factory=dict)
     # (tool, version) -> what its target system guarantees (M22, `gawe.core.guarantees`).
     # Declared by the connectors, not by the manifests; startup checks each write's needs.
     guarantees: Mapping[tuple[str, str], frozenset[str]] = field(default_factory=dict)
@@ -110,6 +116,9 @@ class AppBundle:
     # How long a grant lasts when the app makes one today. A grant made before end dates existed
     # is ended as if made that way, after a notice period (M21). None: the app grants nothing.
     grant_lifetime: timedelta | None = None
+    # (tool, version) -> how to read an undo record from its prepared arguments (M26). Each gets
+    # one before dispatch; its connector must declare `reversible`. Empty by default.
+    undoable: Mapping[tuple[str, str], Undoable] = field(default_factory=dict)
 
 
 def load_app_rules(bundle: AppBundle) -> tuple[Rule, ...]:
@@ -160,6 +169,7 @@ def load_app_rules(bundle: AppBundle) -> tuple[Rule, ...]:
     validate_provenance(rules, bundle.manifests, bundle.policy_sources, bundle.policy_variables)
     _check_prepare_only(bundle, rules)
     _check_guarantees(bundle, rules)
+    _check_undoable(bundle)
     _check_credentials(bundle)
     _check_history(bundle)
     writes = {(m.name, m.version) for m in bundle.manifests if m.side_effect_class != "read"}
@@ -182,6 +192,19 @@ def _check_prepare_only(bundle: AppBundle, rules: Sequence[Rule]) -> None:
             raise ValueError(f"prepare_only names {name}@{version}, a read: nothing to hand over")
         if role not in known_roles:
             raise ValueError(f"prepare_only gives {name}@{version} the unknown role {role!r}")
+
+
+def _check_undoable(bundle: AppBundle) -> None:
+    """Every undoable entry names a current write whose target declares it `reversible` (M26).
+    A deployment may still make it prepare-only: GAWE then never sends it, so it gets no undo
+    record (`build_engine` leaves it out)."""
+    manifests = {(m.name, m.version): m for m in bundle.manifests}
+    for name, version in bundle.undoable:
+        manifest = manifests.get((name, version))
+        if manifest is None or manifest.retired or manifest.side_effect_class == "read":
+            raise ValueError(f"undoable names {name}@{version}, which isn't a current write")
+        if "reversible" not in bundle.guarantees.get((name, version), frozenset()):
+            raise ValueError(f"undoable {name}@{version}: its target doesn't declare reversible")
 
 
 _CONDITION = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -254,6 +277,19 @@ def _check_history(bundle: AppBundle) -> None:
     settings."""
     current = [m for m in bundle.manifests if not m.retired]
     for tool, subject in bundle.history.items():
+        if subject.tools:
+            family = set(subject.tools)
+            if len(family) != len(subject.tools) or tool not in family:
+                raise ValueError("history family must include its tool exactly once")
+            for member in family:
+                peer = bundle.history.get(member)
+                if (
+                    peer is None
+                    or set(peer.tools) != family
+                    or peer.argument != subject.argument
+                    or peer.lower != subject.lower
+                ):
+                    raise ValueError("history family must share members and subject identity")
         versions = [m for m in current if m.name == tool]
         if not versions:
             raise ValueError(f"history declared for unknown tool {tool}")
@@ -301,6 +337,8 @@ class Stores:
     # M24: an app's own history, read from the run and step stores above, and the subject locks.
     history: HistoryReader | None = None
     locks: SubjectLocks = field(default_factory=InMemorySubjectLocks)
+    # M26: undo records, written before each undoable write.
+    undo: UndoStore = field(default_factory=InMemoryUndoStore)
 
 
 def memory_stores() -> Stores:
@@ -334,6 +372,7 @@ def postgres_stores(engine: Any) -> Stores:
     from gawe.db.review_store import PostgresReviewStore
     from gawe.db.run_store import PostgresRunStore
     from gawe.db.step_store import PostgresStepStore
+    from gawe.db.undo_store import PostgresUndoStore
 
     return Stores(
         runs=PostgresRunStore(engine),
@@ -345,6 +384,7 @@ def postgres_stores(engine: Any) -> Stores:
         reviews=PostgresReviewStore(engine),
         history=PostgresHistoryReader(engine),
         locks=PostgresSubjectLocks(engine),
+        undo=PostgresUndoStore(engine),
     )
 
 
@@ -363,6 +403,7 @@ class Engine:
     verification: VerificationResolver
     orchestrator: Orchestrator
     runner: MaintenanceRunner
+    undo: UndoRuns
 
 
 def build_engine(
@@ -404,6 +445,7 @@ def build_engine(
         runs=stores.runs,
         registry=registry,
         adapters=bundle.readbacks,
+        refusal_observers=bundle.refusal_observers,
         audit=audit,
         clock=clock,
         window=settings.deadline,
@@ -414,6 +456,8 @@ def build_engine(
             for k in bundle.revokers
             if k in {(m.name, m.version) for m in bundle.manifests if not m.retired}
         ),
+        undoable={k: v for k, v in bundle.undoable.items() if k not in bundle.prepare_only},
+        undo=stores.undo,
     )
     executor = Executor(
         steps=stores.steps,
@@ -438,6 +482,14 @@ def build_engine(
         if bundle.history and stores.history is not None
         else None
     )
+    undo_handlers: list[UndoRuns] = []
+
+    def finished(run: RunRecord) -> None:
+        for handler in undo_handlers:
+            handler.finished(run)
+        if anchor_sinks:
+            anchorer.anchor_run(run)
+
     orchestrator = Orchestrator(
         runs=stores.runs,
         steps=stores.steps,
@@ -456,14 +508,18 @@ def build_engine(
         telemetry=telemetry,
         variables=bundle.variables,
         preparers=bundle.preparers,
-        on_finished=anchorer.anchor_run if anchor_sinks else None,
+        action_variables=bundle.action_variables,
+        on_finished=finished,
         clock=clock,
         prepare_only=bundle.prepare_only,
         history=history,
     )
+    undo = UndoRuns(verification, orchestrator, stores.locks, telemetry)
+    undo_handlers.append(undo)
     runner = MaintenanceRunner(
         store=stores.maintenance,
         handlers=[
+            *([undo] if bundle.undoable else []),
             ReadbackJobs(verification, continuation or orchestrator.advance),
             *(
                 [
@@ -504,7 +560,7 @@ def build_engine(
         max_jobs=settings.max_jobs,
         retry_after=settings.interval,
     )
-    return Engine(registry, audit, anchorer, approvals, verification, orchestrator, runner)
+    return Engine(registry, audit, anchorer, approvals, verification, orchestrator, runner, undo)
 
 
 def assemble(
@@ -552,6 +608,8 @@ def assemble(
         audit=engine.audit,
         background=background,
         profiles=bundle.profiles,
+        undo=engine.undo,
+        record_presenter=RecordPresenter(engine.registry, bundle.refusal_observers, stores.undo),
         limits=limits,
         anchorer=engine.anchorer,
         maintenance=stores.maintenance,

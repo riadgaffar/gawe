@@ -19,6 +19,8 @@ Metric names used by the engine:
     gawe.maintenance.jobs       count, labels: kind, outcome (done, blocked, newly_unknown, ...)
     gawe.maintenance.backlog    histogram (observed value per ok tick), labels: kind, state
                                 (waiting = unresolved jobs, unknown = retained terminal unknowns)
+    gawe.undo.records          histogram (count snapshot per tick), labels: tenant_id, state,
+                                reason (bounded codes only); failed reversals count as unavailable
     gawe.maintenance.tick_seconds  histogram, labels: kind, status
 """
 

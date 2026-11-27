@@ -20,33 +20,65 @@ from typing import Any
 from gawe.api.wiring import AppBundle
 from gawe.apps.contract_review.email_preparation import EmailPreparer
 from gawe.apps.contract_review.reader_schema import PROFILE
-from gawe.apps.contract_review.record_preparation import ContractRecordPreparer
+from gawe.apps.contract_review.record_preparation import (
+    AssessmentPreparer,
+    ContractRecordPreparer,
+    ContractSnapshotPreparer,
+    RestorePreparer,
+)
 from gawe.apps.contract_review.tools import (
     MANIFESTS,
+    NO_RATING,
     POSTCONDITIONS,
     TOOL_SCOPES,
     WRITE_SCOPES,
     implementations,
 )
 from gawe.apps.readback import email_adapter, operation_adapter
+from gawe.apps.refusal_observers import contracts as refusal_observers
 from gawe.connectors.base import Ledger
 from gawe.connectors.mock_clm import MockCLM
 from gawe.connectors.mock_directory import MockDirectory
 from gawe.connectors.mock_email import MockEmail
 from gawe.connectors.mock_esign import MockESign
+from gawe.core.canonical import canonical_json, sha256_hex
 from gawe.core.history import HistoryEntry, HistorySubject
 from gawe.core.policy.provenance import PolicySource, PolicyVariable
 from gawe.core.preparation import Preparer
-from gawe.core.readback import ReadbackAdapter
+from gawe.core.readback import ReadbackAdapter, compare
+from gawe.core.record_changes import RecordSnapshot
 from gawe.core.records import StepRecord
 from gawe.core.runs import RunRecord
 from gawe.core.statemachine import StepStatus
+from gawe.core.undo import Undoable
 
 HERE = Path(__file__).parent
 LARGE_DEAL_THRESHOLD = 100_000  # the same line the signature rule draws for finance approval
 PROFILE_NAME = "contract_review"
 ASSESSMENT = "crm.write_assessment"
 RATINGS = ("low", "medium", "high")  # lowest first
+ASSESSMENT_3 = (ASSESSMENT, "3.0.0")
+ASSESSMENT_4 = (ASSESSMENT, "4.0.0")
+
+
+def _prior(args: Mapping[str, Any]) -> dict[str, str] | None:
+    prior = args["prior"]
+    if prior["risk_level"] == NO_RATING:
+        return None
+    return {"risk_level": str(prior["risk_level"]), "summary": str(prior["summary"])}
+
+
+# M26: a rating can be undone. The record comes from the prepared, hashed arguments.
+UNDOABLE = {
+    ASSESSMENT_3: Undoable(
+        subject=lambda args: {"contract_id": str(args["contract_id"])},
+        prior=_prior,
+        bound_version=lambda args: str(args["record"]["contract_version"]),
+    )
+}
+UNDOABLE[ASSESSMENT_4] = replace(
+    UNDOABLE[ASSESSMENT_3], snapshots=lambda args: (_captured_contract(args),)
+)
 TENANT_VARIABLES: Mapping[str, Any] = {
     "tenant": {
         "internal_domains": ["acme.example"],
@@ -70,19 +102,22 @@ def bundle(
     assert mail.server is not None
     return AppBundle(
         manifests=MANIFESTS,
+        refusal_observers=refusal_observers(clm, MANIFESTS),
         tools=implementations(clm, mail, esign),
         readbacks=readbacks(clm, esign, mail),
         preparers=preparers(clm, mail_directory),
         tool_scopes=TOOL_SCOPES,
         write_scopes=WRITE_SCOPES,
         guarantees={**clm.GUARANTEES, **esign.GUARANTEES, **mail.GUARANTEES},
+        undoable=UNDOABLE,
         review_sample=review_sample,
         policy_rules=HERE / "policies.yaml",
         profiles=frozenset({PROFILE_NAME}),
         reader_profile=PROFILE,
         variables=_variables_for(clm),
+        action_variables={ASSESSMENT_4: captured_variables, SIGNATURE: captured_variables},
         postconditions=POSTCONDITIONS,
-        history={ASSESSMENT: RATING_HISTORY},
+        history={ASSESSMENT: RATING_HISTORY, "crm.restore_assessment": RATING_HISTORY},
         policy_sources={
             "tenant_config": PolicySource(kind="configuration", resource="config.tenant"),
             "reader_findings": PolicySource(kind="findings", resource="run.findings"),
@@ -99,7 +134,7 @@ def bundle(
     )
 
 
-SIGNATURE = ("esign.send_for_signature", "2.0.0")
+SIGNATURE = ("esign.send_for_signature", "3.0.0")
 
 
 def signatures_by_hand(demo_dir: Path | None = None) -> AppBundle:
@@ -131,7 +166,38 @@ def readbacks(
 ) -> dict[tuple[str, str], ReadbackAdapter]:
     """Version-specific read-back. 1.0.0 reads the older stores, for earlier dispatches only."""
     assert mail.server is not None
-    return {
+
+    def restore_readback(key: str, args: Mapping[str, Any], now: Any) -> Any:
+        row = clm.operations.read(key, now)
+        prior = (
+            None
+            if args["risk_level"] == NO_RATING
+            else {"risk_level": args["risk_level"], "summary": args["summary"]}
+        )
+        expected = {
+            "operation_key": key,
+            "contract_id": args["contract_id"],
+            "record": args["record"],
+            "restored": prior,
+        }
+        observed = None if row is None else {k: row.get(k) for k in expected}
+        output = (
+            None
+            if row is None
+            else {
+                "restore_id": row.get("restore_id"),
+                "contract_id": row.get("contract_id"),
+                "restored_level": (row.get("restored") or {}).get("risk_level"),
+            }
+        )
+        expected["restored"] = sha256_hex(canonical_json(expected["restored"]))
+        if observed is not None:
+            observed["restored"] = sha256_hex(canonical_json(observed["restored"]))
+        return compare(expected, observed, output=output)
+
+    adapters = {
+        ("crm.restore_assessment", "1.0.0"): restore_readback,
+        ("crm.restore_assessment", "2.0.0"): restore_readback,
         ("crm.write_assessment", "1.0.0"): operation_adapter(
             clm.legacy_operations,
             ("contract_id", "risk_level"),
@@ -143,6 +209,14 @@ def readbacks(
             ("contract_id", "risk_level", "record"),
             ("assessment_id", "contract_id", "risk_level"),
             text_fields=("summary",),
+        ),
+        # The same record; the revision after the write is reported, not compared (M26).
+        ASSESSMENT_3: operation_adapter(
+            clm.operations,
+            ("contract_id", "risk_level", "record"),
+            ("assessment_id", "contract_id", "risk_level"),
+            text_fields=("summary",),
+            facts=("result_version",),
         ),
         ("esign.send_for_signature", "1.0.0"): operation_adapter(
             esign.legacy_operations,
@@ -157,11 +231,20 @@ def readbacks(
         ("email.send", "2.0.0"): email_adapter(mail.server),
     }
 
+    adapters[ASSESSMENT_4] = adapters[ASSESSMENT_3]
+    adapters[SIGNATURE] = adapters[("esign.send_for_signature", "2.0.0")]
+    return adapters
+
 
 def preparers(clm: MockCLM, directory: MockDirectory) -> dict[tuple[str, str], Preparer]:
     contract = ContractRecordPreparer(clm)
     return {
-        ("crm.write_assessment", "2.0.0"): contract,
+        ASSESSMENT_3: AssessmentPreparer(clm),
+        ASSESSMENT_4: ContractSnapshotPreparer(clm, assessment=True),
+        SIGNATURE: ContractSnapshotPreparer(clm, assessment=False),
+        ("crm.restore_assessment", "1.0.0"): RestorePreparer(),
+        ("crm.restore_assessment", "2.0.0"): RestorePreparer(),
+        ("crm.write_assessment", "2.0.0"): contract,  # retired; registered with its schema
         ("esign.send_for_signature", "2.0.0"): contract,
         ("email.send", "2.0.0"): EmailPreparer(directory),
     }
@@ -194,7 +277,10 @@ def rating_history(
 
 
 RATING_HISTORY = HistorySubject(
-    argument="contract_id", variables=rating_history, shown=("risk_level",)
+    argument="contract_id",
+    variables=rating_history,
+    shown=("risk_level",),
+    tools=(ASSESSMENT, "crm.restore_assessment"),
 )
 
 
@@ -218,3 +304,32 @@ def review_variables(
             cid for cid, value in deal_values.items() if value > LARGE_DEAL_THRESHOLD
         ),
     }
+
+
+def _captured_contract(args: Mapping[str, Any]) -> RecordSnapshot:
+    """Validate trusted preparation evidence before policy use or undo persistence."""
+    from gawe.apps.record_binding import CONTRACT_FIELDS
+    from gawe.core.preparation import PreparationError
+
+    try:
+        (raw,) = args["snapshots"]
+        snapshot = RecordSnapshot.model_validate(raw)
+        CONTRACT_FIELDS.validate_fields(snapshot)
+        if (
+            snapshot.resource != CONTRACT_FIELDS.resource
+            or snapshot.subject != args["contract_id"]
+            or snapshot.revision != args["record"]["contract_version"]
+            or snapshot.basis != "preparation"
+        ):
+            raise ValueError("snapshot binding changed")
+    except Exception as exc:
+        raise PreparationError("record_version_unavailable") from exc
+    return snapshot
+
+
+def captured_variables(run: RunRecord, args: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Authorization for new versions never reads a different deal value after preparation."""
+    snapshot = _captured_contract(args)
+    value = snapshot.fields[0].value
+    assert isinstance(value, (int, float)) and not isinstance(value, bool)
+    return {**TENANT_VARIABLES, "review": review_variables(run.findings, {snapshot.subject: value})}

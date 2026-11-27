@@ -28,6 +28,7 @@ class MockESign:
     # revision in the write's transaction; 1.0.0 (the older store) doesn't.
     GUARANTEES = {
         ("esign.send_for_signature", "2.0.0"): EVERY_WRITE | {"conditional_write"},
+        ("esign.send_for_signature", "3.0.0"): EVERY_WRITE | {"conditional_write"},
         ("esign.send_for_signature", "1.0.0"): EVERY_WRITE,
     }
 

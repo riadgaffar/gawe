@@ -47,8 +47,10 @@ class GrantPreparer:
         lifetime_hours: int,
         clock: Callable[[], datetime],
         tickets: MockTickets | None = None,
+        snapshots: bool = False,
     ) -> None:
         self.iam = iam
+        self.snapshots = snapshots
         self.lifetime_hours = validate_lifetime(lifetime_hours)  # startup fails otherwise
         self.clock = clock
         # With a ticket system, every grant needs its run's ticket, still open (M16c D5).
@@ -67,10 +69,24 @@ class GrantPreparer:
             raise PreparationError("record_version_unavailable") from exc
         if not isinstance(revision, str) or not revision:
             raise PreparationError("record_version_unavailable")
-        expires_at = format_expiry(self.clock() + timedelta(hours=self.lifetime_hours))
+        now = self.clock()
+        expires_at = format_expiry(now + timedelta(hours=self.lifetime_hours))
+        extra: dict[str, Any] = {}
+        if self.snapshots:
+            from gawe.apps.record_binding import ACCOUNT_FIELDS, capture
+
+            try:
+                extra["snapshots"] = [
+                    capture(
+                        ACCOUNT_FIELDS, args["email"].strip().lower(), {}, revision, lambda: now
+                    )
+                ]
+            except Exception as exc:
+                raise PreparationError("record_version_unavailable") from exc
         return PreparedAction(
             args={
                 **args,
+                **extra,
                 "record": {"user_version": revision},
                 "expires_at": expires_at,
                 "lifetime_hours": self.lifetime_hours,

@@ -26,6 +26,7 @@ from gawe.apps.event_replay.tools import (
     WRITE_SCOPES,
     implementations,
 )
+from gawe.apps.refusal_observers import events as refusal_observers
 from gawe.connectors.base import Ledger
 from gawe.connectors.mock_billing import MockBilling
 from gawe.core.policy.provenance import PolicySource, PolicyVariable
@@ -65,11 +66,13 @@ def bundle(
     )
     return AppBundle(
         manifests=MANIFESTS,
+        refusal_observers=refusal_observers(billing, MANIFESTS),
         tools=implementations(billing),
-        readbacks={REPLAY: readback(billing)},
+        readbacks={(REPLAY[0], v): readback(billing) for v in ("1.0.0", "2.0.0")},
         preparers={
             ("events.list_failed", "1.0.0"): ListPreparer(),
             REPLAY: ReplayPreparer(billing),
+            (REPLAY[0], "2.0.0"): ReplayPreparer(billing, snapshots=True, clock=clock),
         },
         tool_scopes=TOOL_SCOPES,
         write_scopes=WRITE_SCOPES,

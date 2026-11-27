@@ -16,6 +16,7 @@ def operation_adapter(
     output_fields: tuple[str, ...],
     *,
     text_fields: tuple[str, ...] = (),
+    facts: tuple[str, ...] = (),
 ) -> ReadbackAdapter:
     def scalar(value: Any) -> Any:
         if value is None or isinstance(value, (bool, int, float)):
@@ -37,7 +38,8 @@ def operation_adapter(
             {"operation_key": record.get("operation_key"), **bounded(record)} if record else None
         )
         output = {f: record.get(f) for f in output_fields} if record else None
-        return compare(expected, observed, output=output)
+        reported = {f: record.get(f) for f in facts} if record else None
+        return compare(expected, observed, output=output, facts=reported)
 
     return read
 

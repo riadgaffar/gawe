@@ -503,6 +503,24 @@ Both are revisited once real traffic shows how often they fire.
 The full generated report for this run is in
 [`results-scripted-20261110.md`](results-scripted-20261110.md).
 
+### M27 update: saved explanations for refused record changes
+
+The separate, free `python -m bench record-changes` control group matches **18 of 18** literal
+expected records. It uses fixed saved plans, the shipped engine and local mock targets, with no
+model calls. It tests changed and unchanged selected fields, later reads, missing/unreadable and
+historical evidence, undo provenance, partial replay batches and tenant isolation, snapshot and
+diagnostic tampering, false coverage claims, IAM's empty field set, and refusal-proof crash
+recovery. Every refused action has zero effects and one attempt, no open approval, a valid audit
+chain and stable saved evidence. Tampering scenarios project copies rather than alter immutable
+store records. These are predetermined control cases, not an estimate of model attack success.
+
+Artifacts have their own `record-changes` suffix and `record_changes` kind. The original scripted
+38, integrity 23, undo 4 and replay 9 records are unchanged in every field, scalar type, key set
+and array order. Existing B02 encoded-content behavior remains a documented gap. M27 explains
+selected fields; it does not reconstruct unavailable history or prove what a guard saw from a
+later read. Real targets still need the declared revision and conditional-write guarantees.
+See [M27's design and final verification](m27-design.md).
+
 ## What this does and does not show
 
 - **The model was never fooled, so GAWE's defenses were never tested live.** Policy, approvals and
@@ -554,6 +572,7 @@ make bench-estimate MAX_USD=1                   # free: exact input cost and the
 make bench MAX_USD=25                           # the run; refuses if it may not fit the cap
 python -m bench scripted                        # free: every attack with a model fooled on purpose
 python -m bench integrity                       # free: poisoned tool output and encoded short fields
+python -m bench record-changes                  # free: 18 record-change explanation cases
 ```
 
 Every command that can spend money needs a cap. The design, including how each number is defined,

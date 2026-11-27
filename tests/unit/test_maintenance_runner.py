@@ -270,7 +270,8 @@ def test_stale_completion_write_cannot_overwrite_the_new_owner(tmp_path: Path) -
     a_service, b_service = e.service, restart(e)
     resolver, b_resolver = (s._orch._executor.verification for s in (a_service, b_service))
     assert resolver is not None and b_resolver is not None
-    key = ("crm.write_assessment", "2.0.0")
+    step = e.stores.steps.get(e.run_id, "write")
+    key = (step.tool, step.tool_version)
     read = resolver.adapters[key]
     # B's observation is distinguishable from A's, so the surviving result shows who won.
     b_resolver.adapters[key] = lambda *args: ReadbackResult(
@@ -302,7 +303,8 @@ def test_explicit_resume_and_startup_recovery_respect_the_runner_lease(tmp_path:
     e.clock.advance(seconds=60)
     resolver = e.orch._executor.verification
     assert resolver is not None
-    key = ("crm.write_assessment", "2.0.0")
+    step = e.stores.steps.get(e.run_id, "write")
+    key = (step.tool, step.tool_version)
     read = resolver.adapters[key]
     reads: list[str] = []
 
@@ -831,7 +833,7 @@ def test_cli_sweep_resolves_durable_work_without_a_model_or_planning(
     monkeypatch.delenv("GAWE_ANCHOR_SINKS", raising=False)
     assert cli.sweep_once(clock=e.clock) == 0
     beats = {b["kind"]: b for b in map(json.loads, capsys.readouterr().out.splitlines())}
-    assert set(beats) == {"write_readback", "daily_review"}
+    assert set(beats) == {"write_readback", "daily_review", "undo_request"}
     assert beats["write_readback"]["outcomes"]["done"] == 1
     assert status(e) == (RunStatus.COMPLETED, StepStatus.SUCCEEDED)
     assert e.stores.steps.get(e.run_id, "next").status is StepStatus.SUCCEEDED

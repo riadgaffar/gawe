@@ -27,7 +27,7 @@ import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -206,6 +206,14 @@ def create_app(
     @app.get("/v1/runs/{run_id}")
     def get_run(run_id: str, who: Identity = Depends(identity)) -> RunView:
         return service.get_run(who, run_id)
+
+    @app.post("/v1/runs/{run_id}/steps/{step_id}/undo", status_code=201)
+    def undo(run_id: str, step_id: str, who: Identity = Depends(identity)) -> RunView:
+        return service.request_undo(who, run_id, step_id)
+
+    @app.get("/v1/runs/{run_id}/steps/{step_id}/undo")
+    def undo_view(run_id: str, step_id: str, who: Identity = Depends(identity)) -> dict[str, Any]:
+        return service.undo_view(who, run_id, step_id)
 
     @app.get("/v1/runs/{run_id}/verification")
     def verification_evidence(

@@ -86,8 +86,12 @@ def test_preparation_binds_the_current_revision_into_the_hashed_arguments(
     assert e.execute() is RunStatus.COMPLETED
     step = e.stores.steps.get(e.run_id, "write")
     (field,) = step.resolved_args["record"]
-    assert step.resolved_args["record"] == {field: current_revision(e)}
-    assert e.target.records()[0]["record"] == {field: current_revision(e)}
+    assert e.target.records()[0]["record"] == step.resolved_args["record"]
+    if system == "crm":  # M26: the rating write moves the revision and records the one it left
+        assert e.target.records()[0]["result_version"] == current_revision(e)
+        assert step.resolved_args["record"] != {field: current_revision(e)}
+    else:
+        assert step.resolved_args["record"] == {field: current_revision(e)}
     if system == "iam":
         assert step.resolved_args["expires_at"] == "2026-01-08T12:00:00Z"
         assert step.resolved_args["lifetime_hours"] == 168
@@ -260,7 +264,8 @@ def test_grant_lifetime_bounds_are_inclusive() -> None:
 @pytest.mark.parametrize("app", [contract_review, it_access])
 def test_a_bound_tool_without_a_conditional_write_fails_startup(tmp_path: Path, app: Any) -> None:
     bundle = app.bundle(tmp_path)
-    bound = [(m.name, m.version) for m in bundle.manifests if m.record_binding]
+    # Retired versions are never sent, so they rely on nothing (M22).
+    bound = [(m.name, m.version) for m in bundle.manifests if m.record_binding and not m.retired]
     assert bound
     for identity in bound:
         without = {
@@ -296,6 +301,7 @@ def test_every_shipped_write_that_names_a_record_is_bound() -> None:
             if app is it_access
             else {
                 "crm.write_assessment",
+                "crm.restore_assessment",
                 "esign.send_for_signature",
             }
         )
@@ -382,15 +388,16 @@ def _legacy_bundle(e: Env, system: str) -> Any:
     """The pre-M16b app: the 1.0.0 write was the executable version."""
     name = TOOLS[system]
     v1 = next(m for m in e.bundle.manifests if m.name == name and m.version == "1.0.0")
+    later = {(m.name, m.version) for m in e.bundle.manifests if m.name == name and m is not v1}
     manifests = [
         m.model_copy(update={"retired": False}) if m is v1 else m
         for m in e.bundle.manifests
-        if not (m.name == name and m.version == "2.0.0")
+        if (m.name, m.version) not in later
     ]
-    preparers = {k: v for k, v in e.bundle.preparers.items() if k != (name, "2.0.0")}
-    readbacks = {k: v for k, v in e.bundle.readbacks.items() if k != (name, "2.0.0")}
+    preparers = {k: v for k, v in e.bundle.preparers.items() if k not in later}
+    readbacks = {k: v for k, v in e.bundle.readbacks.items() if k not in later}
     # Before M16b the 1.0.0 write was the current one: idempotent and read back, not conditional.
-    guarantees = {k: v for k, v in e.bundle.guarantees.items() if k != (name, "2.0.0")}
+    guarantees = {k: v for k, v in e.bundle.guarantees.items() if k not in later}
     revokers = {k: v for k, v in e.bundle.revokers.items() if k[0] != name}  # none before M16b
 
     def legacy_write(args: Any, call: ToolCall) -> Any:
@@ -407,12 +414,14 @@ def _legacy_bundle(e: Env, system: str) -> Any:
         e.bundle,
         manifests=manifests,
         preparers=preparers,
+        action_variables={k: v for k, v in e.bundle.action_variables.items() if k not in later},
         readbacks=readbacks,
         guarantees=guarantees,
         dispatch_conditions={  # none before M22, and none for the 1.0.0 write
             k: v for k, v in e.bundle.dispatch_conditions.items() if k[0] != name
         },
         revokers=revokers,
+        undoable={k: v for k, v in e.bundle.undoable.items() if k not in later},
         policy_rules=path,
         tools={**e.bundle.tools, name: legacy_write},
     )

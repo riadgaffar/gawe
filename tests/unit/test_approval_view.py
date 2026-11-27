@@ -64,6 +64,7 @@ def test_every_shipped_version_is_completely_classified() -> None:
         ("email.send", "2.0.0", {"subject", "body"}),
         ("crm.write_assessment", "1.0.0", {"summary"}),
         ("crm.write_assessment", "2.0.0", {"summary"}),
+        ("crm.write_assessment", "3.0.0", {"summary", "prior.summary"}),
         ("esign.send_for_signature", "2.0.0", set()),
         ("iam.grant_access", "2.0.0", set()),
         ("clm.get_contract", "1.0.0", set()),
@@ -79,6 +80,7 @@ def test_recipients_and_record_versions_are_typed() -> None:
     by_key = {(m.name, m.version): m.field_classes or {} for m in all_manifests()}
     assert by_key[("email.send", "2.0.0")]["delivery.mailboxes"] == "typed"
     assert by_key[("crm.write_assessment", "2.0.0")]["record.contract_version"] == "typed"
+    assert by_key[("crm.write_assessment", "3.0.0")]["prior.risk_level"] == "typed"
     assert by_key[("iam.grant_access", "2.0.0")]["expires_at"] == "typed"
     # Recipients first on the card.
     assert next(iter(by_key[("esign.send_for_signature", "2.0.0")])) == "signer_email"
@@ -100,8 +102,13 @@ def test_registration_fails_on_an_incomplete_classification(
         ToolRegistry().register(manifest)
 
 
+CRM_1 = ("crm.write_assessment", "1.0.0")
+
+
 def test_a_retired_version_must_be_classified_too() -> None:
-    (retired,) = [m for m in contract_review.MANIFESTS if m.retired and m.name.startswith("crm")]
+    (retired,) = [
+        m for m in contract_review.MANIFESTS if m.retired and (m.name, m.version) == CRM_1
+    ]
     unclassified = retired.model_copy(update={"field_classes": {"contract_id": "typed"}})
     with pytest.raises(InvalidManifestError, match="crm.write_assessment@1.0.0 undeclared"):
         ToolRegistry().register(unclassified)

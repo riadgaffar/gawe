@@ -13,6 +13,10 @@ relies on and refuses to start when the target doesn't guarantee it:
 * `atomic_reservation`: the system reserves against a running total in the write's own
   transaction, so two writes can't both pass a cap that only one fits. A write that a rule judges
   with a running total (a `counter` policy source) needs it; separate numeric checks race.
+* `reversible` (M26): the system can put back the state a write replaced, only while the record
+  still has the revision it had right after that write, checked in the reversal's own
+  transaction, and it reports that revision on read-back. No write needs it; an app may make a
+  write undoable only when its target declares it.
 
 A tool version the app makes prepare-only (M20) needs nothing: GAWE never sends it.
 
@@ -32,7 +36,11 @@ from gawe.core.records import StepRecord
 from gawe.core.runs import RunRecord
 
 Guarantee = Literal[
-    "idempotent_by_key", "authoritative_readback", "conditional_write", "atomic_reservation"
+    "idempotent_by_key",
+    "authoritative_readback",
+    "conditional_write",
+    "atomic_reservation",
+    "reversible",
 ]
 GUARANTEES: frozenset[str] = frozenset(get_args(Guarantee))
 EVERY_WRITE: frozenset[Guarantee] = frozenset({"idempotent_by_key", "authoritative_readback"})

@@ -144,3 +144,72 @@ def test_due_cursor_pages_past_earlier_jobs_and_counts_keep_terminal_outcomes(
     jobs.replace(unknown.model_copy(update={"revision": 2, "continued": True}), expected_revision=1)
     assert jobs.counts("write_readback") == {"unresolved": 3, "unknown": 1}
     assert jobs.counts("another_kind") == {}
+
+
+def test_snapshot_and_diagnostic_use_existing_json_storage(
+    jobs: MaintenanceStore, backend: Backend
+) -> None:
+    from gawe.core.record_changes import RecordSnapshot, RefusalDiagnostic
+    from gawe.core.records import StepRecord
+    from tests.unit.test_record_changes import observation, snapshot
+
+    captured = snapshot()
+    backend.steps.add(
+        StepRecord(
+            run_id=backend.run_id,
+            step_id="s1",
+            tool="crm.write_assessment",
+            tool_version="3.0.0",
+            resolved_args={"record": captured.model_dump(mode="json")},
+        )
+    )
+    step = backend.steps.get(backend.run_id, "s1")
+    assert RecordSnapshot.model_validate(step.resolved_args["record"]) == captured
+    diagnostic = RefusalDiagnostic(
+        action_hash="b" * 64,
+        code="record_changed",
+        coverage="complete",
+        observations=(observation(timing="after_refusal"),),
+    )
+    job = make_job(backend)
+    jobs.add(job)
+    jobs.replace(
+        job.model_copy(
+            update={
+                "revision": 1,
+                "result": {"outcome": "refused", "diagnostic": diagnostic.model_dump(mode="json")},
+            }
+        ),
+        expected_revision=0,
+    )
+    loaded = jobs.get(TENANT, job.job_id)
+    assert loaded is not None and loaded.result is not None
+    reloaded = RefusalDiagnostic.model_validate(loaded.result["diagnostic"])
+    assert reloaded == diagnostic
+    reloaded.validate_for(step.action_hash or "b" * 64, {("clm.contract", "C-1001")})
+
+
+def test_refusal_proof_survives_reload_and_fences_outcomes(
+    jobs: MaintenanceStore, backend: Backend
+) -> None:
+    job = make_job(backend)
+    jobs.add(job)
+    proof = {"code": "record_changed", "observations": []}
+    saved = job.model_copy(update={"revision": 1, "evidence": {"refusal": proof}})
+    jobs.replace(saved, expected_revision=0)
+    assert jobs.get(TENANT, job.job_id).evidence == {"refusal": proof}
+    for changes in [
+        {"evidence": {}},
+        {"result": {"outcome": "agreement", "code": "readback_agreed"}},
+    ]:
+        with pytest.raises(JobConflictError, match="refusal"):
+            jobs.replace(saved.model_copy(update={"revision": 2, **changes}), expected_revision=1)
+    terminal = saved.model_copy(
+        update={
+            "revision": 2,
+            "evidence": {"refusal": proof, "diagnostic_unavailable": True},
+            "result": {"outcome": "not_dispatched", "code": "record_changed"},
+        }
+    )
+    jobs.replace(terminal, expected_revision=1)
+    assert jobs.get(TENANT, job.job_id) == terminal

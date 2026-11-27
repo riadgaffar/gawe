@@ -200,13 +200,18 @@ def renamed_assessment(manifest: ToolManifest) -> ToolManifest:
     return manifest.model_copy(update={"input_schema": schema, "field_classes": classes})
 
 
-@pytest.mark.parametrize("renamed_version", [None, "1.0.0", "2.0.0"])
+@pytest.mark.parametrize("renamed_version", [None, "1.0.0", "2.0.0", "3.0.0", "4.0.0"])
 def test_assembly_checks_every_executable_tool_version(
     tmp_path: Path, renamed_version: str | None
 ) -> None:
     bundle = contract_review.bundle(tmp_path)
     originals = [m for m in bundle.manifests if m.name == "crm.write_assessment"]
-    assert {(m.version, m.retired) for m in originals} == {("1.0.0", True), ("2.0.0", False)}
+    assert {(m.version, m.retired) for m in originals} == {
+        ("1.0.0", True),
+        ("2.0.0", True),
+        ("3.0.0", False),
+        ("4.0.0", False),
+    }
     versions = [renamed_assessment(m) if m.version == renamed_version else m for m in originals]
     bundle = replace(
         bundle,
@@ -218,7 +223,7 @@ def test_assembly_checks_every_executable_tool_version(
         provider=FakeProvider([]),
         background=InlineBackground(),
     )
-    if renamed_version == "2.0.0":
+    if renamed_version in {"3.0.0", "4.0.0"}:
         with pytest.raises(RuleConfigError) as error:
             assemble(bundle, **kwargs)
         assert "low-risk-contradicted-needs-legal" in str(error.value)

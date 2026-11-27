@@ -31,12 +31,22 @@ from gawe.core.policy.rules import (
     load_rules,
     parse_rules,
 )
-from tests.helpers import TOOLS, make_ctx, prepared_email, signer
+from tests.helpers import TOOLS, bound_args, make_ctx, prepared_email, signer
 
 # Expected outcomes are independently specified, not computed from the policy being tested.
 CASES = {
     "contract_review": {
         "clm.get_contract": ({"contract_id": "C-1001"}, "allow"),
+        "crm.restore_assessment": (
+            {
+                "contract_id": "C-1001",
+                "risk_level": "low",
+                "summary": "Prior",
+                "record": {"contract_version": "rev-1"},
+                "undo_id": "a" * 64,
+            },
+            "needs_approval",
+        ),
         "crm.write_assessment": (
             {
                 "contract_id": "C-1001",
@@ -44,6 +54,7 @@ CASES = {
                 "risk_level": "low",
                 "summary": "Review",
                 "record": {"contract_version": "rev-1"},
+                "prior": {"risk_level": "none", "summary": ""},  # M26, added by preparation
             },
             "needs_approval",
         ),
@@ -128,6 +139,10 @@ MANIFESTS = {
     "event_replay": {m.name: m for m in er.MANIFESTS if not m.retired},
     "example": TOOLS,
 }
+for app, cases in CASES.items():
+    for name, (args, outcome) in cases.items():
+        cases[name] = (bound_args(MANIFESTS[app][name], args), outcome)
+
 PATHS = {
     "contract_review": cr.HERE / "policies.yaml",
     "it_access": ia.HERE / "policies.yaml",
@@ -165,6 +180,9 @@ DOMAIN_TARGETS = {
     ("example", "contracts.send_email", "to"): ("needs_approval", "external-email-needs-legal"),
 }
 VARIABLE_TARGETS = [
+    ("contract_review", "crm.restore_assessment", "review.unsupported_levels"),
+    ("contract_review", "crm.restore_assessment", "review.large_deals"),
+    ("contract_review", "crm.restore_assessment", "history.lower_ratings"),
     ("contract_review", "email.send", "tenant.internal_domains"),
     ("contract_review", "email.send", "tenant.blocked_domains"),
     ("contract_review", "crm.write_assessment", "review.unsupported_levels"),

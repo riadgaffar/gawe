@@ -40,6 +40,7 @@ from gawe.core.models import PolicyDecision, ToolManifest
 from gawe.core.policy.signing import PolicySigner, PolicySigningError
 from gawe.core.preparation import RecipientChanged
 from gawe.core.readback import operation_identity
+from gawe.core.record_changes import RecordObservation
 from gawe.core.records import (
     AttemptConflictError,
     ExecutionStore,
@@ -47,6 +48,7 @@ from gawe.core.records import (
     StepRecord,
     StepStore,
 )
+from gawe.core.refusals import REFUSAL_CODES
 from gawe.core.registry import RegistryError, ToolRegistry
 from gawe.core.statemachine import StepStatus
 from gawe.core.verification import VerificationResolver
@@ -70,6 +72,8 @@ class ToolTransientError(Exception):
 
 class ToolPreDispatchError(Exception):
     """Connector guarantees this invocation failed before any possible external acceptance."""
+
+    observations: tuple[RecordObservation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -331,6 +335,12 @@ class Executor:
                 self._close_failed(step, number, "recipient_changed", retryable=False)
                 return self.reconcile(step, owned=job)
             except ToolPreDispatchError as exc:
+                code = _error_code(exc)
+                if code in REFUSAL_CODES:
+                    # Persist the refusal before closing the attempt or doing diagnostic IO.
+                    job = self.verification.refuse(step, job, code, exc.observations)
+                    self._close_failed(step, number, code, retryable=False)
+                    return self.reconcile(step, owned=job)
                 retryable = (
                     isinstance(exc, ToolTransientError) and attempts < self._retry.max_attempts
                 )

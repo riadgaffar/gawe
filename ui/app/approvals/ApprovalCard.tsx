@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import { RecordEvidenceCard } from "@/components/RecordEvidenceCard";
 import { useActionState } from "react";
 import { decide, type ActionState } from "@/app/actions";
 import { Notice } from "@/components/Notice";
@@ -20,6 +21,9 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
         <span className="muted">needs {approval.approver_role}</span>
       </div>
       <p>{approval.reason}</p>
+      {approval.tool === "crm.restore_assessment" && <p className="notice wait">
+        Restore the previous rating shown below. Later actions and their effects stay as they are.
+      </p>}
       <p className="muted">
         Requested by {approval.requested_by} {relativeTime(approval.requested_at)} · expires{" "}
         {relativeTime(approval.expires_at)} ·{" "}
@@ -51,6 +55,7 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
           ))}
         </dl>
       </div>
+      <RecordEvidenceCard card={card.records} />
       {card.history.length > 0 && (
         <div>
           <strong>Earlier actions on the same subject</strong>{" "}

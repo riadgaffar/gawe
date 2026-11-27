@@ -10,7 +10,7 @@ the batch only while every event still has the revision it was prepared against.
 from collections.abc import Mapping
 from typing import Any
 
-from gawe.apps.record_binding import record_schema
+from gawe.apps.record_binding import record_schema, with_snapshots
 from gawe.connectors.credentials import Credential, ScopedClient
 from gawe.connectors.mock_billing import MockBilling
 from gawe.core.executor import ToolCall, ToolImplementation
@@ -129,7 +129,7 @@ REPLAY_FIELDS: dict[str, FieldClass] = {
     "record.batch_revision": "typed",
 }
 
-MANIFESTS = (
+MANIFESTS: tuple[ToolManifest, ...] = (
     ToolManifest(
         name="events.list_failed",
         writes=(),
@@ -221,3 +221,14 @@ def implementations(billing: MockBilling) -> dict[str, ToolImplementation]:
         )
 
     return {"events.list_failed": list_failed, "billing.replay_events": replay}
+
+
+# M27: versioned snapshots; preceding versions still serve persisted plans/approvals.
+
+MANIFESTS += (
+    with_snapshots(
+        next(m for m in MANIFESTS if m.name == "billing.replay_events" and m.version == "1.0.0"),
+        "2.0.0",
+        maximum=200,
+    ),
+)

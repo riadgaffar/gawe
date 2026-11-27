@@ -56,6 +56,7 @@ class HistoryEntry:
     status: StepStatus
     resolved_args: Mapping[str, Any]
     started_at: datetime  # when its run started
+    tool: str = ""
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,8 @@ class HistorySubject:
     variables: Callable[[Sequence[HistoryEntry], Mapping[str, Any], RunRecord], Mapping[str, Any]]
     lower: bool = False
     shown: tuple[str, ...] = ()
+    # An explicit family shares both its earlier actions and its policy lock.
+    tools: tuple[str, ...] = ()
 
     def subject(self, args: Mapping[str, Any]) -> str | None:
         value = args.get(self.argument)
@@ -124,6 +127,7 @@ def entry(step: StepRecord, started_at: datetime) -> HistoryEntry:
         status=step.status,
         resolved_args=step.resolved_args,
         started_at=started_at,
+        tool=step.tool,
     )
 
 
@@ -175,7 +179,9 @@ class History:
         return tool in self._subjects
 
     def hold(self, tenant_id: str, tool: str, value: str) -> AbstractContextManager[None]:
-        return self._locks.hold(f"{tenant_id}\x1f{tool}\x1f{value}")
+        family = self._subjects[tool].tools or (tool,)
+        lock_tool = min(family)
+        return self._locks.hold(f"{tenant_id}\x1f{lock_tool}\x1f{value}")
 
     def read(
         self,
@@ -195,7 +201,14 @@ class History:
             raise HistoryUnreadableError("history subject missing")
         order = [s.id for s in run.plan.steps] if run.plan else []
         before = order[: order.index(step_id)] if step_id in order else []
-        found = self._reader.earlier(run.tenant_id, tool, declared, value)
+        found = sorted(
+            (
+                e
+                for member in declared.tools or (tool,)
+                for e in self._reader.earlier(run.tenant_id, member, declared, value)
+            ),
+            key=lambda e: (e.started_at, e.run_id, e.step_id),
+        )
         others = [
             e for e in found if e.run_id != run.run_id and (as_of is None or e.started_at <= as_of)
         ]
@@ -215,7 +228,7 @@ class History:
 def shown_item(tool: str, entry: HistoryEntry, names: Sequence[str]) -> dict[str, Any]:
     """One earlier action as the approver sees it. JSON values only: it is stored with the step."""
     return {
-        "tool": tool,
+        "tool": entry.tool or tool,
         "run_id": entry.run_id,
         "step_id": entry.step_id,
         "run_started_at": entry.started_at.isoformat(),

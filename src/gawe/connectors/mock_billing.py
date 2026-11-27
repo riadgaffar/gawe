@@ -71,6 +71,11 @@ class MockBilling:
         ),
     }
 
+    GUARANTEES = {
+        **GUARANTEES,
+        ("billing.replay_events", "2.0.0"): GUARANTEES[("billing.replay_events", "1.0.0")],
+    }
+
     def __init__(
         self,
         events: Sequence[Mapping[str, Any]],
@@ -272,9 +277,8 @@ class MockBilling:
         ).fetchone()
         return row is not None
 
-    @staticmethod
     def _checked(
-        conn: sqlite3.Connection, item: Mapping[str, Any], tenant_id: str
+        self, conn: sqlite3.Connection, item: Mapping[str, Any], tenant_id: str
     ) -> dict[str, Any]:
         row = conn.execute(
             "SELECT record, revision FROM events WHERE record_id=?", (str(item["event_id"]),)
@@ -285,11 +289,23 @@ class MockBilling:
         if record["tenant_id"] != tenant_id:
             raise ConnectorError("event_other_tenant")
         if revision != item["revision"]:
-            raise ConnectorError("event_changed")
+            try:
+                observations = self.events.guard_observations(
+                    str(item["event_id"]), record, revision
+                )
+            except Exception:
+                observations = ()
+            raise ConnectorError("event_changed", observations=observations)
         if record["status"] != "failed":
             raise ConnectorError("event_not_failed")
         if record["delivery_key"] != item["delivery_key"] or record["amount"] != item["amount"]:
-            raise ConnectorError("event_changed")
+            try:
+                observations = self.events.guard_observations(
+                    str(item["event_id"]), record, revision
+                )
+            except Exception:
+                observations = ()
+            raise ConnectorError("event_changed", observations=observations)
         return record
 
     def _reserve(self, conn: sqlite3.Connection, tenant_id: str, day: str, total: int) -> None:

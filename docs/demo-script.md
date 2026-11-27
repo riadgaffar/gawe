@@ -2,9 +2,10 @@
 
 Everything below uses invented contracts, tickets and billing events, and mock systems. Nothing is
 emailed, signed, granted or billed for real; the mock systems write what they did to
-`.demo-data/ledger.jsonl`. The model is real (Anthropic): every run calls it, billed to the key in
-`.env`, and plans can differ slightly between runs. The *decisions* come from the policy rules and
-do not. To try the same flows without a model, see [Without a model](#without-a-model).
+`.demo-data/ledger.jsonl`. The model is real (Anthropic): ordinary contract/ticket runs call it,
+billed to the key in `.env`, and plans can differ slightly between runs. The *decisions* come from the policy rules and
+do not. Undo runs use a trusted plan and make no model call. To try the same flows without a
+model, see [Without a model](#without-a-model).
 
 ## What you need
 
@@ -57,6 +58,11 @@ Everything below is a `make` target.
    moment to start the first time) and run the second line again. If it still fails, run
    `make down up` and try again: that recreates a container left without its port by an earlier
    failed start, for instance one that found port 5432 taken.
+
+   For an existing M26 S2 database, `make migrate` must apply migration 0011 before requesting
+   undo: it expands the original undo-record constraints to the reversal states. Fresh databases
+   apply both 0010 and 0011. This demo setup changes your configured database; the automated
+   checkpoint tests use isolated databases/schemas instead.
 
    `app-role` lets the API log in as the limited `gawe_app` database role, which can't change or
    delete audit rows. It uses `GAWE_APP_DB_PASSWORD` from `.env`, or generates one and adds it
@@ -167,6 +173,61 @@ curl -s -X POST $API/v1/approvals/$A/decision -H "Authorization: Bearer $BOB" \
 Check: run `completed`; `grep email.sent .demo-data/ledger.jsonl` shows exactly one email.
 
 Try it as Alice: the same call with `$ALICE` is refused (403). Try a wrong hash: 409.
+
+### 1b. Undo the rating through a separate run (M26)
+
+This walkthrough reuses the completed `$RUN` above. Creating that original run calls the real
+model; an optional live UI pass therefore needs the owner's approval during milestone work.
+The free undo integrity cases in [Without a model](#without-a-model) exercise the same service
+flow with a fake model, including revision races and unknown outcomes.
+
+As Alice, open the original run's rating step and expand its undo card. It shows the rating
+written by that step and the captured prior rating, the write-time revision condition, and any
+later steps with direct output references. Those are snapshots, not a live CRM read. A later
+email remains sent even if it is not a direct output consumer listed in the card.
+
+Click **Undo**. The UI opens a separate run. If the captured prior was low or absent, sign in as
+Bob and approve the restore in the existing inbox. On a fresh seed the original rating replaced
+no rating, so undo removes it and needs legal. If the prior was medium/high, existing rating
+rules decide whether the restore needs review. After success the original card says the previous
+rating was restored; the undo run has its own verification and audit trail.
+
+The same flow through HTTP (use the completed run from section 1, not an arbitrary old run):
+
+```bash
+RATING_STEP=$(curl -sS "$API/v1/runs/$RUN" -H "Authorization: Bearer $ALICE" |
+  jq -r '.steps[] | select(.tool == "crm.write_assessment" and .status == "succeeded") | .step_id' | head -n 1)
+curl -sS "$API/v1/runs/$RUN/steps/$RATING_STEP/undo" -H "Authorization: Bearer $ALICE" | jq
+
+# Submit no rating or revision: the server fills them from the confirmed undo record.
+UNDO_RUN=$(curl -sS -X POST "$API/v1/runs/$RUN/steps/$RATING_STEP/undo" \
+  -H "Authorization: Bearer $ALICE" | jq -r .run_id)
+curl -sS "$API/v1/runs/$UNDO_RUN" -H "Authorization: Bearer $ALICE" | jq '{status, steps}'
+```
+
+Continue only if the response contains a run id. If it is still running, refresh it; if it is
+`paused_for_approval`, approve the item for **that undo run** as Bob:
+
+```bash
+UNDO_APPROVAL=$(curl -sS "$API/v1/approvals" -H "Authorization: Bearer $BOB" |
+  jq --arg run "$UNDO_RUN" '[.[] | select(.run_id == $run)][0]')
+A=$(printf '%s' "$UNDO_APPROVAL" | jq -r .approval_id)
+H=$(printf '%s' "$UNDO_APPROVAL" | jq -r .action_hash)
+curl -sS -X POST "$API/v1/approvals/$A/decision" -H "Authorization: Bearer $BOB" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg hash "$H" '{decision: "approved", action_hash: $hash}')" | jq
+```
+
+Refresh the undo run until terminal and inspect its `restore` step and independent read-back.
+The original audit tail contains `step.undo_requested`, then `step.undone` or `step.undo_failed`;
+verify both chains with their `/audit/verify` endpoints. Repeating the original undo POST returns
+`409 already_undone`, and asking to undo the restore returns `409 undo_of_undo`.
+
+If the contract changed after the original write, even away and back, the restore fails with
+`record_changed` and changes nothing. An original unknown/mismatched outcome is `undo_unavailable`
+and starts no reversal run. Undoing an email, e-signature, grant or replay is `not_reversible`.
+Do not reset mock state between the write and undo: that would discard the target records this
+check relies on. This restores the rating only, not the email or anything a recipient did with it.
 
 ### 2. Finance approval for a high-value deal (C-1002)
 
@@ -321,10 +382,42 @@ per case and writes its records under `bench-results/`.
 
 ```bash
 python -m bench scripted    # 38 prompt-injection attacks across contract review and IT access
-python -m bench integrity   # 23 execution-integrity scenarios (poisoned tool output, encoded text)
+python -m bench integrity   # 23 existing integrity scenarios plus 4 undo cases in a separate group
+python -m bench record-changes  # 18 saved record-evidence cases; no model or server needed
 python -m bench replay      # 9 event replay cases (another tenant, widened scope, the daily limit,
                             # the same events twice, a changed event, a late delivery, a lost reply)
 ```
+
+## Explain a refused record change (M27)
+
+With the virtual environment active, run `python -m bench record-changes`. This uses temporary
+mock systems and fixed plans; it needs no API server, database, model credentials or spend.
+Expect `18/18 match their expected records` and a new `bench-results/*-record-changes/` directory
+containing the manifest, `trials.jsonl` and status. Any mismatch makes the command exit nonzero.
+The original scripted, integrity, undo and replay groups retain their own counts.
+
+Use these rows to walk through the evidence:
+
+- RC01 captures deal value 45,000 and observes 150,000 at the refusing guard. RC02 changes the
+  value away and back: the selected fields match, but the moved revision still refuses the write.
+- RC03 sees 250,000 only in a later read. Its `after_refusal` label does not claim that value was
+  present at the guard. RC04–RC07 distinguish missing records, unreadable records, old captures
+  and absent diagnostics.
+- RC08 retains the original confirmed capture for undo and separately checks the restore's guard
+  revision. RC18 removes the original provenance source from the presenter: the capture becomes
+  unavailable. RC09 retains the unobserved second target in a partial replay batch; RC10 checks
+  tenant scope. RC17 explicitly says IAM tracks no account fields.
+- RC11–RC15 reject copied-view tampering without modifying immutable stored evidence. RC16
+  recovers after the refusal proof is saved and shows the original observation despite a later
+  target edit. Every case verifies no effect from the refused write and no second attempt.
+
+In the running UI, an approval's record card shows the selected captured fields separately from
+its action arguments and model-written prose. A refused step shows captured/observed columns,
+comparison state, observation timing and batch coverage. Undo evidence names its original source.
+Missing, null and unavailable values have different labels. Refresh retains the saved evidence;
+matching fields still require a fresh run, with no retry or second-approval control. These cards
+have API, card-model and rendered component coverage (M28). Run `make ui-check` for the DOM
+interaction tests and production build; full browser layout and routing remain outside that suite.
 
 ## Stop and reset
 

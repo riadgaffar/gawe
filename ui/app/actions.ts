@@ -1,5 +1,7 @@
 "use server";
 // Every mutation goes through here. The UI relays what the user chose; the API decides.
+import { revalidatePath } from "next/cache";
+import { undoReason } from "@/lib/undo-view";
 import { redirect } from "next/navigation";
 import { ApiError } from "@/lib/api-client";
 import { clearToken, clientFor, requireSession, setToken } from "@/lib/session";
@@ -164,4 +166,23 @@ export async function verifyAudit(_prev: VerifyState, form: FormData): Promise<V
   } catch (error) {
     return { error: fail(error)?.error };
   }
+}
+
+
+export async function requestUndo(_prev: ActionState, form: FormData): Promise<ActionState> {
+  const { client, me } = await requireSession();
+  if (!me.roles.includes("case_manager")) return { error: undoReason("forbidden") };
+  const runId = text(form, "run_id");
+  const stepId = text(form, "step_id");
+  if (!runId || !stepId) return { error: "Choose a run and step." };
+  let undoRunId: string;
+  try {
+    // No rating, revision or prior text comes from the form; trusted API code supplies them.
+    undoRunId = (await client.requestUndo(runId, stepId)).run_id;
+  } catch (error) {
+    revalidatePath(`/runs/${encodeURIComponent(runId)}`);
+    return { error: error instanceof ApiError ? undoReason(error.code) : "The request outcome is unknown. Refresh the status before trying again." };
+  }
+  revalidatePath(`/runs/${encodeURIComponent(runId)}`);
+  redirect(`/runs/${encodeURIComponent(undoRunId)}`);
 }

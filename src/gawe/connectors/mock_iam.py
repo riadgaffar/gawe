@@ -53,6 +53,7 @@ class MockIAM:
     # revision in the write's transaction; 1.0.0 (the older store) doesn't.
     GUARANTEES = {
         ("iam.grant_access", "2.0.0"): EVERY_WRITE | {"conditional_write"},
+        ("iam.grant_access", "3.0.0"): EVERY_WRITE | {"conditional_write"},
         ("iam.grant_access", "1.0.0"): EVERY_WRITE,
     }
 

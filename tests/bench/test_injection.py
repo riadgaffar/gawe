@@ -680,7 +680,7 @@ def test_the_harness_honest_approval_never_dispatches_a_prepare_only_action(
         run_module.BUNDLES,
         "contract_review",
         lambda d: replace(
-            original(d), prepare_only={("crm.write_assessment", "2.0.0"): "legal_reviewer"}
+            original(d), prepare_only={("crm.write_assessment", "4.0.0"): "legal_reviewer"}
         ),
     )
     read = {**CR_READ, "risk_level": "low"}

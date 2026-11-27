@@ -18,8 +18,8 @@ from gawe.core.statemachine import RunStatus, StepStatus
 from gawe.engine.orchestrator import HandoffError
 from gawe.llm.fake import FakeProvider
 
-CRM_WRITE = ("crm.write_assessment", "2.0.0")
-SIGNATURE = ("esign.send_for_signature", "2.0.0")
+CRM_WRITE = ("crm.write_assessment", "4.0.0")
+SIGNATURE = ("esign.send_for_signature", "3.0.0")
 
 
 def prepare_only(e: Env, *classes: tuple[str, str]) -> None:

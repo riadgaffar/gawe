@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from gawe.core.executor import ToolPreDispatchError, ToolTransientError
+from gawe.core.record_changes import RecordObservation
 
 
 class ConnectorError(ToolPreDispatchError):
@@ -17,9 +18,10 @@ class ConnectorError(ToolPreDispatchError):
     Failures after possible acceptance must use an ordinary exception, so the executor reconciles.
     """
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, observations: tuple[RecordObservation, ...] = ()) -> None:
         super().__init__(code)
         self.code = code
+        self.observations = observations
 
 
 class TransientConnectorError(ToolTransientError, ToolPreDispatchError):

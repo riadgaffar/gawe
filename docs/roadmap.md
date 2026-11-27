@@ -34,8 +34,12 @@ adds. If verification fails twice on a milestone, stop and report instead of loo
 | M23  | Credentials and controls the agent can't touch: each tool's code holds a credential scoped to what the tool does, checked by the target system; the controls inventory pinned by tests, and access to a system holding another app's controls waits for a person; a per-step trace that links decision, approval, attempts, condition checks, hand-off and read-back, and names any broken link | Done (2026-11-23: 2627 passed, 80 skipped; 122 Postgres tests pass; no migration; no paid runs. Found while exploring and fixed: the IT app granted write on the CRM automatically, and the CRM holds the deal values contract review's policy reads; write or admin there now waits for security. One honest benchmark ticket now waits too, so M18's "33 of 43 needed no person" would be 32. Credentials are proved on the mocks; the list of systems holding controls is kept by hand. Scripted and integrity unchanged. See [m23-design.md](m23-design.md)) |
 | M24  | Combination rules within one app: a rule may read the app's own earlier actions on the same subject, from GAWE's step records, only to add a review; a lock per subject so two runs at once can't both see nothing before; the earlier actions on the approval card. Contract Review: a rating lower than the contract's standing rating needs legal. IT access: a third grant of one system to one person within 30 days needs security | Done (2026-11-23: 2875 passed, 84 skipped; 126 Postgres tests pass; no migration; no paid runs. Found while building and fixed: the daily review would have counted actions taken after the one it judges, and a waiting downgrade could have hidden the rating before it. Scripted, integrity and the clean set unchanged: every trial starts with empty stores. See [m24-design.md](m24-design.md)) |
 | M25  | Replay of failed events, scoped to a tenant: a third app over a mock billing platform with its own dead-letter queue. The batch is frozen at preview from the platform's records (tenant from the run, never the model); policy judges its count, total, customers and what is left of the day; the platform applies it whole or not at all, each event under its own delivery key, and reserves the total against a daily limit in the same transaction (M22's reservation, first used); the model never sees payloads; the approval card shows the batch as a table | Done (2026-11-23: 3152 passed, 84 skipped; 126 Postgres tests pass; no migration; no paid runs. `python -m bench replay`: 9 scripted cases, each matching its record, including the readers' A/B/C test, a late callback and a lost reply. Found while building and fixed: billing write was automatic in the IT app though billing now holds replay's events and limit; it waits for security, which added a rule to three scripted lateral-grant records with the same outcome. Integrity unchanged. See [m25-design.md](m25-design.md)) |
+| M26 | An undo record before each eligible rating write: trusted prior state, a revision moved by the write, a person-requested reversal through its own policy/approval/read-back run, linked audits and an undo card; counts-only telemetry | Done (2026-11-25; committed `7ce9438`): 3347 passed, 93 skipped; Postgres143, schema118, UI60/build, docs275/0. Scripted38 and existing integrity23 identical; undo4/4, replay9/9. No paid runs. Rating restoration is proved on the mock only; legal review for low/no rating stays. See [m26-design.md](m26-design.md#build-record) and [m26-plan.md](m26-plan.md) |
+| M27 | Explain refused record changes: hash-bound selected fields on approval cards; saved guard or later-read observations; explicit missing, unchanged and partial evidence; original undo provenance | Done (2026-11-26; committed `f03b948`): 3524 passed, 100 skipped; Postgres155, UI74/build, docs280/0. New free record-changes18/18; scripted38, integrity23, undo4 and replay9 identical to approved baselines. No migration or paid calls. Matching fields never cancel a refusal; old history stays unavailable. See [m27-design.md](m27-design.md#build-record) and [m27-plan.md](m27-plan.md) |
+| M28 | Rendered approval-card tests: actual approval and record-evidence components in jsdom; safe disclosures, evidence states/provenance and decision-form interaction; included in the UI checkpoint | Done (2026-11-26; awaiting review/commit): 3524 passed, 100 skipped; UI72 model + 21 DOM tests/build; docs285/0. All five free benchmark groups identical to M27. No production behavior or runtime dependency changes. Browser layout and full Next page/session/transport flows remain outside scope. See [m28-design.md](m28-design.md) |
 
-Next: an undo record before each action (item 10 in the queue below, which needs its own design).
+M28 completes item 12. Item 13 remains waiting for a real mail system and directory in Pilot-ready.
+No next milestone has been started.
 
 Planned, not scheduled: **Pilot-ready** (OIDC sign-in and the first real connector against a sandbox
 account). It starts when there is a design partner or a sandbox to connect to, and gets a number then.
@@ -102,13 +106,25 @@ ahead of replay, and the connector-guarantee and credential items are merged.
    read from GAWE's own step records, which only the engine writes, so no keyed subject hash or
    key management was needed. Combinations across workflows still need a shared subject key from
    a system of record.
-10. **An undo record written before each action.** Save the prior values before an eligible change
-   and bind undo to the original action and the record's revision, so undo stops if anything
-   changed since. Undo needs its own policy decision, idempotency and read-back, and never claims
-   to reverse an effect someone outside has already seen. Needs its own design (reader comment).
-11. **A rendering test for the approval card.** The UI tests check the card's model and its
-    source, not a rendered page. A rendering test needs a DOM test dependency.
-12. **Follow-ups that wait for a real mail system and directory** (Pilot-ready): a directory change
+10. **An undo record written before each action** (done 2026-11-25 as M26). Implemented
+   for the current risk rating only: capture prior values before dispatch, arm only on agreeing
+   read-back, and restore through a separate guarded run requested by a person. Low or no rating
+   needs legal. Other effects stay; later revisions, including away-and-back edits, block undo.
+   Credit to the r/LLMDevs readers' 2026-11-13 suggestions about trusted prior-state capture and
+   conditional restoration; see [m26-design.md](m26-design.md).
+11. **Say what changed when a record change refuses a step.** Done as M27 (2026-11-26). Selected policy fields are captured with their revision inside the action hash
+    and shown on approval cards. Refusals show saved captured/observed fields, distinguish atomic
+    guard evidence from later reads, and name unavailable history, missing records and partial
+    coverage. Unchanged fields still refuse; reassessment requires a fresh run. Undo retains
+    confirmed original provenance separately from its restore guard. The dedicated free
+    `record-changes` benchmark has 18 cases; existing benchmark groups stay separate. See
+    [m27-design.md](m27-design.md) and [m27-plan.md](m27-plan.md).
+12. **A rendering test for the approval card.** Done as M28 (2026-11-26).
+    The actual approval and record-evidence cards render in jsdom, with interaction tests for
+    disclosures and decisions. Only the server action is mocked. Both model and DOM suites run
+    in `make ui-check`; the two source-inspection tests are replaced. Browser layout and complete
+    Next routing/session integration remain outside this scope. See [m28-design.md](m28-design.md).
+13. **Follow-ups that wait for a real mail system and directory** (Pilot-ready): a directory change
     marker per group, or none, since the sorted mailbox set is the real binding; mailboxes that
     forward outside treated as external at expansion, if the directory exposes forwarding; and an
     expansion cache only if the marker moves when anything under the group changes, including
@@ -462,6 +478,14 @@ Reader suggestions weighed and not adopted, with the reason:
   or replay is prepare-only. Its caps are proposals, not measured.
 - The IAM's `billing` and the billing platform are linked by name only, kept by hand, like the
   CRM (M23); `billing` write waits for security since M25.
+- Undo (M26) restores the mock contract's rating and summary only, at a person's request. A real
+  CRM must move its revision on every mutation, including its own rating writes/restores, and
+  provide atomic conditional restore, idempotency and authoritative read-back. Older assessment
+  versions have no undo record. Later effects and decisions made from a rating are not recalled.
+- Undo metrics count stored armed/used/unavailable states per tenant and bounded reason; they
+  do not poll live eligibility or measure how often a wrong rating is caught in time. They do not
+  justify removing M17's legal review rule. The UI uses captured values with model and rendered
+  component tests (M28); browser layout and complete page/session flows remain untested.
 - The next-day review covers the last seven days and needs `GAWE_REVIEW_SAMPLE_KEY` for its
   sample; without the key the sample is off.
 

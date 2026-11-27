@@ -31,6 +31,7 @@ python -m venv .venv && source .venv/bin/activate
 make install                 # core + db + dev dependencies
 make check                   # ruff + mypy --strict + the full test suite, on a fake model
 python -m bench scripted     # every attack, model fooled on purpose; writes a report
+python -m bench record-changes  # 18 record-change evidence cases, no model calls
 ```
 
 ## What it enforces
@@ -43,6 +44,9 @@ python -m bench scripted     # every attack, model fooled on purpose; writes a r
 - **Approvals bind to the exact action**, including the version of every record it refers to;
   any change, or a record replaced underneath, invalidates the approval. The approval screen shows
   typed fields first and collapses text the model wrote.
+- **Refused record changes are explained:** approval cards show captured policy fields; refusals
+  compare saved observations and distinguish atomic-guard evidence from later reads. Matching
+  fields never cancel a revision refusal. Missing history stays explicitly unavailable.
 - **Writes are checked against the target, not the tool's reply**: read back from the system's
   own record, with pending states, deadlines and a scheduled sweep. Email goes only to the
   mailboxes a directory expands, and each connector declares what its system actually guarantees.

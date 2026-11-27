@@ -26,6 +26,7 @@ from gawe.apps.it_access.tools import (
     implementations,
 )
 from gawe.apps.readback import operation_adapter
+from gawe.apps.refusal_observers import accounts as refusal_observers
 from gawe.connectors.base import Ledger
 from gawe.connectors.mock_iam import MockIAM
 from gawe.connectors.mock_tickets import MockTickets, Ticket
@@ -140,21 +141,31 @@ def bundle(
         tickets.seed(sample_tickets())
     return AppBundle(
         manifests=MANIFESTS,
+        refusal_observers=refusal_observers(iam, MANIFESTS),
         tools=implementations(iam),
         readbacks=readbacks(iam),
         preparers={
+            ("iam.grant_access", "3.0.0"): GrantPreparer(
+                iam,
+                lifetime_hours=grant_lifetime_hours,
+                clock=clock,
+                tickets=tickets,
+                snapshots=True,
+            ),
             ("iam.grant_access", "2.0.0"): GrantPreparer(
                 iam, lifetime_hours=grant_lifetime_hours, clock=clock, tickets=tickets
-            )
+            ),
         },
         tool_scopes=TOOL_SCOPES,
         write_scopes=WRITE_SCOPES,
         guarantees=iam.GUARANTEES,
         # The ticket lives in another system, so the IAM write can't check it: it is read again
         # just before a grant is sent (M22).
-        dispatch_conditions={("iam.grant_access", "2.0.0"): (ticket_open(tickets),)},
+        dispatch_conditions={
+            ("iam.grant_access", v): (ticket_open(tickets),) for v in ("2.0.0", "3.0.0")
+        },
         # 1.0.0 grants have no end date; GAWE ends them on one it sets (M21).
-        revokers={("iam.grant_access", "2.0.0"): iam, ("iam.grant_access", "1.0.0"): iam},
+        revokers={("iam.grant_access", v): iam for v in ("1.0.0", "2.0.0", "3.0.0")},
         grant_lifetime=timedelta(hours=grant_lifetime_hours),
         # Runs read their ticket from the ticket system; uploads are refused.
         sources={PROFILE_NAME: tickets},
@@ -186,7 +197,7 @@ def bundle(
 
 def readbacks(iam: MockIAM) -> dict[tuple[str, str], ReadbackAdapter]:
     """Version-specific read-back. 1.0.0 reads the older store, for earlier dispatches only."""
-    return {
+    adapters = {
         ("iam.grant_access", "1.0.0"): operation_adapter(
             iam.legacy_operations,
             ("email", "system", "level"),
@@ -198,6 +209,9 @@ def readbacks(iam: MockIAM) -> dict[tuple[str, str], ReadbackAdapter]:
             ("grant_id", "email", "system", "level"),
         ),
     }
+
+    adapters[("iam.grant_access", "3.0.0")] = adapters[("iam.grant_access", "2.0.0")]
+    return adapters
 
 
 def request_variables(findings: Mapping[str, Any] | None) -> dict[str, str]:

@@ -3,6 +3,8 @@
 // header that carries only its path, a label and its length, never any of its text.
 import type { ApprovalView, ChangeView, HistoryItemView } from "./api-types.ts";
 
+import { recordCardModel, snapshotPath, type RecordCardModel } from "./record-evidence.ts";
+
 export type Table = { columns: string[]; rows: string[][] };
 export type TypedRow = { path: string; display: string; table?: Table };
 export type FreeTextSection = { path: string; header: string; content: string };
@@ -10,6 +12,7 @@ export type DifferenceModel = { summary: string; rows: string[] };
 export type HistoryRow = { key: string; runId: string; text: string };
 export type ApprovalCardModel = {
   typed: TypedRow[];
+  records: RecordCardModel | null;
   history: HistoryRow[];
   actionHash: string;
   difference: DifferenceModel;
@@ -51,6 +54,7 @@ export function freeTextHeader(label: string, length: number): string {
 }
 
 function changeRow(change: ChangeView): string {
+  if (snapshotPath(change.path)) return `${change.path}: ${change.change} (captured record evidence; see captured fields)`;
   if (change.kind === "free_text") {
     return `${change.path}: ${change.change} (model-written text, not shown)`;
   }
@@ -64,13 +68,14 @@ export function differenceModel(approval: ApprovalView): DifferenceModel {
   if (!difference.previous_approval_id) {
     return { summary: "No earlier approved call", rows: [] };
   }
-  const meaningful = difference.changes.filter((c) => c.change !== "unchanged");
+  const changes = difference.changes;
+  const meaningful = changes.filter((c) => c.change !== "unchanged");
   return {
     summary:
       meaningful.length === 0
         ? "Same as the last approved call"
         : `${meaningful.length} ${meaningful.length === 1 ? "difference" : "differences"} from the last approved call`,
-    rows: difference.changes.map(changeRow),
+    rows: changes.map(changeRow),
   };
 }
 
@@ -86,7 +91,8 @@ export function historyRow(item: HistoryItemView): HistoryRow {
 
 export function approvalCardModel(approval: ApprovalView): ApprovalCardModel {
   return {
-    typed: approval.typed_fields.map((field) => typedRow(field.path, field.value)),
+    records: recordCardModel(approval.record_evidence, approval.action_hash, false, approval.typed_fields.some(field => snapshotPath(field.path))),
+    typed: approval.typed_fields.filter(field => !snapshotPath(field.path)).map((field) => typedRow(field.path, field.value)),
     history: (approval.history ?? []).map(historyRow),
     actionHash: approval.action_hash,
     difference: differenceModel(approval),

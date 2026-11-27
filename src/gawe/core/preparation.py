@@ -1,10 +1,12 @@
 """Trusted, version-specific argument preparation, before policy signing."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from gawe.core.runs import RunRecord
+
+ActionVariables = Callable[[RunRecord, Mapping[str, Any]], Mapping[str, Any]]
 
 
 @dataclass(frozen=True)

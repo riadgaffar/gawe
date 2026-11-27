@@ -1,3 +1,8 @@
+import { Fragment } from "react";
+import { RecordEvidenceCard } from "@/components/RecordEvidenceCard";
+import { refusalCardModel, isRevisionRefusal } from "@/lib/record-evidence";
+import { undoCardModel } from "@/lib/undo-view";
+import { UndoCard } from "./UndoCard";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Shell } from "@/components/Shell";
@@ -21,6 +26,11 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
     if (error instanceof ApiError && error.status === 404) notFound();
     throw error;
   }
+  const undoCards = await Promise.all(run.steps.map(async (step) => {
+    if (step.tool !== "crm.write_assessment" && step.tool !== "crm.restore_assessment") return null;
+    const view = await client.undoView(run.run_id, step.step_id).catch(() => null);
+    return undoCardModel(step, view, me.roles, run.profile);
+  }));
   const finished = isFinished(run.status);
   const canControl = me.user_id === run.acting_user_id || me.roles.includes("admin");
   const waiting = run.steps.some((step) => step.status === "awaiting_approval");
@@ -65,8 +75,8 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
             <tr><th>Step</th><th>Tool</th><th>Status</th><th>Policy</th><th>Needs</th><th>Action hash</th></tr>
           </thead>
           <tbody>
-            {run.steps.map((step) => (
-              <tr key={step.step_id}>
+            {run.steps.map((step, index) => (
+              <Fragment key={step.step_id}><tr>
                 <td>
                   {step.step_id}
                   {step.depends_on.length > 0 && <div className="muted">after {step.depends_on.join(", ")}</div>}
@@ -75,11 +85,12 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                 <td>
                   <StatusBadge status={step.status} />
                   {step.error && <div className="muted">{step.error}</div>}
+                  {!undoCards[index] && <div className="muted">This action cannot be undone.</div>}
                   {step.handoff && <div className="muted">{handoffSummary(step.handoff, step.status)}</div>}
                   {conditionsNote(step.checked_not_enforced) && (
                     <div className="muted">{conditionsNote(step.checked_not_enforced)}</div>
                   )}
-                  {step.verification && <details><summary>Verification evidence</summary>
+                  {step.verification && !isRevisionRefusal(step.error) && !isRevisionRefusal(step.verification.code) && <details><summary>Verification evidence</summary>
                     <p>Deadline: {step.verification.deadline}</p>
                     <pre>{JSON.stringify(step.verification.evidence, null, 2)}</pre>
                   </details>}
@@ -91,6 +102,11 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                 <td>{step.handoff?.role ?? step.approver_role ?? "-"}</td>
                 <td><code title={step.action_hash ?? ""}>{shortHash(step.action_hash)}</code></td>
               </tr>
+              {refusalCardModel(step) && <tr><td colSpan={6}><RecordEvidenceCard card={refusalCardModel(step)} /></td></tr>}
+              {undoCards[index] && <tr><td colSpan={6}>
+                <UndoCard runId={run.run_id} stepId={step.step_id} card={undoCards[index]!} />
+              </td></tr>}
+              </Fragment>
             ))}
           </tbody>
         </table>

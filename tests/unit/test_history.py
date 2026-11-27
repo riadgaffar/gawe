@@ -394,3 +394,59 @@ def test_a_history_source_must_name_declared_history() -> None:
 def test_stores_without_a_history_reader_refuse_an_app_that_reads_history() -> None:
     with pytest.raises(ValueError, match="no history reader"):
         App([], replace(memory_stores(), history=None))
+
+
+# M26: declared tool families share history and serialization.
+def test_family_reads_both_tools_and_uses_one_lock() -> None:
+    from contextlib import nullcontext
+
+    other = "crm.restore_assessment"
+    declared = replace(SUBJECT, tools=(TOOL, other))
+    runs, steps = InMemoryRunStore(), InMemoryStepStore()
+    first = add_run(runs, steps, "first", T0, ["C-1"])
+    restored = add_run(runs, steps, "restore", T0 + timedelta(days=1), [])
+    steps.add(
+        StepRecord(
+            run_id=restored.run_id,
+            step_id="restore",
+            tool=other,
+            tool_version="1.0.0",
+            resolved_args={"contract_id": "C-1", "risk_score": 3},
+            action_hash="a" * 64,
+            status=StepStatus.SUCCEEDED,
+        )
+    )
+    judged = add_run(runs, steps, "judge", T0 + timedelta(days=2), ["C-1"])
+    keys: list[str] = []
+
+    class Locks:
+        def hold(self, key: str):  # type: ignore[no-untyped-def]
+            keys.append(key)
+            return nullcontext()
+
+    history = History(
+        {TOOL: declared, other: declared},
+        InMemoryHistoryReader(runs, steps),
+        Locks(),
+    )
+    read = history.read(judged, "s0", TOOL, {"contract_id": "C-1"})
+    assert [(e.run_id, e.tool) for e in read.entries] == [
+        (first.run_id, TOOL),
+        (restored.run_id, other),
+    ]
+    assert [e["tool"] for e in read.shown] == [TOOL, other]
+    assert history.read(
+        judged,
+        "s0",
+        TOOL,
+        {"contract_id": "C-1"},
+        as_of=T0,
+    ).entries == (read.entries[0],)
+    with history.hold("t1", TOOL, "C-1"), history.hold("t1", other, "C-1"):
+        assert keys[0] == keys[1]
+
+
+def test_inconsistent_history_family_is_refused() -> None:
+    b = history_bundle(history={TOOL: replace(SUBJECT, tools=(TOOL, "missing.tool"))})
+    with pytest.raises(ValueError, match="history family"):
+        load_app_rules(b)

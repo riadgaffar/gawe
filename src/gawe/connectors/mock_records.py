@@ -9,11 +9,14 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping
+from datetime import UTC, datetime
 from typing import Any, TypeVar
 from uuid import uuid4
 
 from gawe.connectors.base import ConnectorError
 from gawe.connectors.mock_operations import Guard, MockDatabase
+from gawe.core.record_changes import RecordObservation, SnapshotSpec
+from gawe.core.refusals import observe_record
 
 T = TypeVar("T")
 _TABLE = re.compile(r"[a-z][a-z0-9_]*")
@@ -42,6 +45,7 @@ class VersionedRecords:
         self._missing = missing
         self._normalize = normalize
         self._seed_rows: list[tuple[str, str, str]] = []
+        self.observation_spec: SnapshotSpec | None = None
 
     def seed(self, records: Iterable[tuple[str, Mapping[str, Any]]]) -> None:
         """Insert missing seed records lazily, in the first transaction that reads them, so
@@ -90,25 +94,53 @@ class VersionedRecords:
 
         return {rid: dict(json.loads(r)) for rid, r in self._run(read)}
 
-    def replace(self, record_id: str, fields: Mapping[str, Any]) -> str:
-        """Test hook for another actor's change: merge fields, issue a new revision."""
+    def replace(
+        self, record_id: str, fields: Mapping[str, Any], *, remove: Iterable[str] = ()
+    ) -> str:
+        """Test hook for another actor's change: merge fields, drop `remove`, issue a new
+        revision."""
+        return self._run(
+            lambda conn: self.update_in(conn, record_id, set_fields=fields, remove_fields=remove)
+        )
+
+    def update_in(
+        self,
+        conn: sqlite3.Connection,
+        record_id: str,
+        *,
+        set_fields: Mapping[str, Any],
+        remove_fields: Iterable[str] = (),
+    ) -> str:
+        """Change a record inside a caller's transaction (after its guard) and issue a new
+        revision, so the system's own write moves the revision like anyone else's (M26)."""
+        key = self._normalize(record_id)
+        row = conn.execute(f"SELECT record FROM {self._table} WHERE record_id=?", (key,)).fetchone()
+        if row is None:
+            raise ConnectorError(self._missing)
+        record = {**json.loads(row[0]), **set_fields}
+        for name in remove_fields:
+            record.pop(name, None)
         revision = _revision()
-
-        def write(conn: sqlite3.Connection) -> None:
-            key = self._normalize(record_id)
-            row = conn.execute(
-                f"SELECT record FROM {self._table} WHERE record_id=?", (key,)
-            ).fetchone()
-            if row is None:
-                raise ConnectorError(self._missing)
-            merged = {**json.loads(row[0]), **fields}
-            conn.execute(
-                f"UPDATE {self._table} SET record=?, revision=? WHERE record_id=?",
-                (json.dumps(merged, sort_keys=True), revision, key),
-            )
-
-        self._run(write)
+        conn.execute(
+            f"UPDATE {self._table} SET record=?, revision=? WHERE record_id=?",
+            (json.dumps(record, sort_keys=True), revision, key),
+        )
         return revision
+
+    def guard_observations(
+        self, subject: str, record: Mapping[str, Any], revision: str
+    ) -> tuple[RecordObservation, ...]:
+        if self.observation_spec is None:
+            return ()
+        return (
+            observe_record(
+                self.observation_spec,
+                self._normalize(subject),
+                (record, revision),
+                timing="at_guard",
+                now=datetime.now(UTC),
+            ),
+        )
 
     def guard(
         self, record_id: str, revision: str, check: Callable[[dict[str, Any]], None] | None = None
@@ -124,7 +156,13 @@ class VersionedRecords:
             if row is None:
                 raise ConnectorError(self._missing)
             if row[1] != revision:
-                raise ConnectorError("record_changed")
+                try:
+                    observations = self.guard_observations(
+                        record_id, dict(json.loads(row[0])), row[1]
+                    )
+                except Exception:
+                    observations = ()  # Diagnostic failure cannot erase the proven refusal.
+                raise ConnectorError("record_changed", observations=observations)
             if check is not None:
                 check(dict(json.loads(row[0])))
 

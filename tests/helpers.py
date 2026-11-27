@@ -130,11 +130,15 @@ def make_ctx(
 
 def current_manifest(manifests: Sequence[ToolManifest], name: str) -> ToolManifest:
     """The executable (not retired) version of a tool."""
-    return next(m for m in manifests if m.name == name and not m.retired)
+    return max(
+        (m for m in manifests if m.name == name and not m.retired),
+        key=lambda m: tuple(int(v) for v in m.version.split(".")),
+    )
 
 
 TEST_REVISION = "rev-test"
 TEST_EXPIRY = "2026-11-22T00:00:00Z"
+TEST_PRIOR = {"risk_level": "none", "summary": ""}
 
 
 def bound_args(manifest: ToolManifest, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -150,6 +154,34 @@ def bound_args(manifest: ToolManifest, args: Mapping[str, Any]) -> dict[str, Any
             "expires_at": TEST_EXPIRY,
             "lifetime_hours": 168,
         }
+    if "prior" in manifest.input_schema.get("properties", {}):  # M26: the rating it replaces
+        trusted["prior"] = TEST_PRIOR
+    if "snapshots" in manifest.input_schema.get("properties", {}) and "snapshots" not in args:
+        # Direct-policy fixture only: explicitly supply the new required trusted envelope.
+        from gawe.core.record_changes import CapturedField, RecordSnapshot
+
+        resource = manifest.record_binding
+        values = {"deal_value": args.get("deal_value", 45000)} if resource == "clm.contract" else {}
+        records = args.get(
+            "batch", [{"subject": args.get("contract_id", args.get("email", "fixture"))}]
+        )
+        trusted["snapshots"] = [
+            RecordSnapshot(
+                resource=resource,
+                subject=row.get("event_id", row.get("subject", "fixture")),
+                revision=row.get("revision", TEST_REVISION),
+                captured_at="2026-11-25T00:00:00Z",
+                fields=tuple(
+                    CapturedField(path=k, value=v)
+                    for k, v in (
+                        {"customer": row["customer"], "amount": row["amount"]}
+                        if resource == "billing.event"
+                        else values
+                    ).items()
+                ),
+            ).model_dump(mode="json")
+            for row in records
+        ]
     return {**trusted, **args}
 
 

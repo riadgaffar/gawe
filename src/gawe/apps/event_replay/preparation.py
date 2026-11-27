@@ -6,9 +6,11 @@ from the run, and each event's customer, amount, destination, delivery key and r
 platform's own record. A proposal carries event ids only.
 """
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from datetime import datetime
 from typing import Any
 
+from gawe.apps.record_binding import EVENT_FIELDS, capture, utc_now
 from gawe.connectors.base import ConnectorError
 from gawe.connectors.mock_billing import MockBilling
 from gawe.core.canonical import canonical_json, sha256_hex
@@ -38,8 +40,15 @@ class ReplayPreparer:
     longer failed, a duplicate or an empty batch. An event already delivered under its own key
     (its original delivery landed late) is left out and listed: it needs no replay."""
 
-    def __init__(self, billing: MockBilling) -> None:
+    def __init__(
+        self,
+        billing: MockBilling,
+        *,
+        snapshots: bool = False,
+        clock: Callable[[], datetime] = utc_now,
+    ) -> None:
         self._billing = billing
+        self.snapshots, self.clock = snapshots, clock
 
     def __call__(
         self, args: Mapping[str, Any], *, reapproval: bool, run: RunRecord | None = None
@@ -50,6 +59,7 @@ class ReplayPreparer:
             raise PreparationError("batch_invalid")
         batch: list[dict[str, Any]] = []
         delivered: list[str] = []
+        snapshots: list[dict[str, Any]] = []
         for event_id in ids:
             try:
                 record, revision = self._billing.event(event_id)
@@ -63,6 +73,11 @@ class ReplayPreparer:
                 continue
             if record["status"] != "failed":
                 raise PreparationError("event_not_failed")
+            if self.snapshots:
+                try:
+                    snapshots.append(capture(EVENT_FIELDS, event_id, record, revision, self.clock))
+                except Exception as exc:
+                    raise PreparationError("record_version_unavailable") from exc
             batch.append({**{k: record[k] for k in FROZEN}, "revision": revision})
         if not batch:
             raise PreparationError("nothing_to_replay")
@@ -82,4 +97,6 @@ class ReplayPreparer:
                 )
             },
         }
+        if self.snapshots:
+            prepared["snapshots"] = snapshots
         return PreparedAction(args=prepared, metadata={})

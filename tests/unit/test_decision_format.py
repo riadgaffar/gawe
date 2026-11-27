@@ -401,7 +401,19 @@ def test_api_exposes_checks_as_ids_paths_operators_and_booleans(tmp_path: Path) 
     assert [c.model_dump() for c in step.policy_checks] == [c.model_dump() for c in stored.checks]
     for check in step.policy_checks:
         assert set(check.model_dump()) == {"rule_id", "path", "op", "unreadable"}
-    text = view.model_dump_json()
+    # M27 permits only declared capture fields in the separate evidence projection.
+    assert step.verification is None  # This action is still waiting for approval.
+    assert step.record_evidence is not None
+    (record,) = step.record_evidence.records
+    assert record.subject == "C-1001" and record.snapshot is not None
+    assert [field.model_dump() for field in record.snapshot.fields] == [
+        {"path": "deal_value", "present": True, "value": 45000}
+    ]
+    assert record.observation is None and record.rows == ()
+    # The signer stays private everywhere; policy checks and the rest of the run view
+    # still carry no argument values. Exempt only the validated evidence projection.
+    assert "vendor@outside.example" not in view.model_dump_json()
+    text = view.model_dump_json(exclude={"steps": {"__all__": {"record_evidence"}}})
     for value in ("vendor@outside.example", "45000", "C-1001"):
         assert value not in text
 

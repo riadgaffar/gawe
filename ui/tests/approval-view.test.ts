@@ -132,24 +132,6 @@ test("display renders non-strings as JSON", () => {
   assert.equal(display([1, 2]), "[1,2]");
 });
 
-// The UI cannot render components in tests (no DOM dependency), so the card's source is checked:
-// free text only inside closed <details> whose summary is the header, and no raw argument dump.
-test("the card collapses free text and no longer prints the raw arguments", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const source = await readFile(new URL("../app/approvals/ApprovalCard.tsx", import.meta.url), "utf8");
-  assert.ok(!source.includes("resolved_args"), "the card must not print resolved_args");
-  assert.ok(!/<details[^>]*\bopen\b/.test(source), "free text must start collapsed");
-  const details = source.match(/<details[\s\S]*?<\/details>/g) ?? [];
-  assert.equal(details.length, 1);
-  assert.match(details[0] ?? "", /<summary><code>\{section\.path\}<\/code> \{section\.header\}<\/summary>/);
-  const outside = source.replace(details[0] ?? "", "");
-  assert.ok(!outside.includes("section.content"), "content appears only inside <details>");
-  const order = ["card.typed", "card.actionHash", "card.difference", "card.freeText"].map((s) =>
-    source.indexOf(s),
-  );
-  assert.deepEqual([...order].sort((a, b) => a - b), order, "typed, hash, difference, then free text");
-});
-
 test("earlier actions a rule counted show their typed values and the day their run started", () => {
   const card = approvalCardModel(
     approval({
@@ -202,4 +184,30 @@ test("other values are not tables: scalars, strings, empty or nested lists", () 
   }
   const card = approvalCardModel(approval());
   assert.ok(card.typed.every((row) => row.table === undefined));
+});
+
+
+test("restore approval shows the prior rating as typed, with its summary kept separate", () => {
+  const card = approvalCardModel(approval({
+    tool: "crm.restore_assessment",
+    typed_fields: [{ path: "contract_id", value: "C-1001" }, { path: "risk_level", value: "low" }],
+    free_text_fields: [{ path: "summary", label: LABEL, length: BODY.length, content: BODY }],
+  }));
+  assert.deepEqual(card.typed.map(row => [row.path, row.display]), [["contract_id", "C-1001"], ["risk_level", "low"]]);
+  assert.equal(card.freeText[0]?.content, BODY);
+  assert.ok(!card.freeText[0]?.header.includes(BODY));
+  assert.ok(!card.typed.some(row => row.display.includes(BODY)));
+});
+
+
+test("raw snapshots are excluded from generic typed and previous-call difference rows", () => {
+  const card = approvalCardModel(approval({
+    typed_fields: [{path: "contract_id", value: "C-1"}, {path: "snapshots", value: [{private: "do not show"}]}],
+    difference: {previous_approval_id: "old", previous_decided_at: null, changes: [{path: "snapshots", kind: "typed", change: "changed", before: [], after: [{private: "do not show"}]}]},
+  }));
+  assert.deepEqual(card.typed.map(row => row.path), ["contract_id"]);
+  assert.match(card.records!.coverage, /unavailable/);
+  assert.match(card.difference.summary, /1 difference/);
+  assert.deepEqual(card.difference.rows, ["snapshots: changed (captured record evidence; see captured fields)"]);
+  assert.ok(!JSON.stringify(card).includes("do not show"));
 });

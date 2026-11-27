@@ -12,6 +12,7 @@ import type {
   RunView,
   StartRunInput,
   Verdict,
+  UndoView,
 } from "./api-types";
 
 export class ApiError extends Error {
@@ -57,6 +58,10 @@ export function createClient(options: { baseUrl: string; token: string; fetchImp
     me: () => call<MeView>("GET", "/v1/me"),
     listRuns: (limit = 50) => call<RunView[]>("GET", `/v1/runs?limit=${limit}`),
     getRun: (id: string) => call<RunView>("GET", `/v1/runs/${enc(id)}`),
+    undoView: (runId: string, stepId: string) =>
+      call<UndoView>("GET", `/v1/runs/${enc(runId)}/steps/${enc(stepId)}/undo`),
+    requestUndo: (runId: string, stepId: string) =>
+      call<RunView>("POST", `/v1/runs/${enc(runId)}/steps/${enc(stepId)}/undo`, {}),
     startRun: (input: StartRunInput) => call<RunView>("POST", "/v1/runs", input),
     cancelRun: (id: string) => call<RunView>("POST", `/v1/runs/${enc(id)}/cancel`, {}),
     resumeRun: (id: string) => call<RunView>("POST", `/v1/runs/${enc(id)}/resume`, {}),

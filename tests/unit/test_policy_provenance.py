@@ -120,14 +120,14 @@ def test_every_variable_operand_requires_a_variable_declaration(operand: str) ->
         )
 
 
-@pytest.mark.parametrize("unsafe_version", ["1.0.0", "2.0.0"])
+@pytest.mark.parametrize("unsafe_version", ["1.0.0", "2.0.0", "3.0.0", "4.0.0"])
 def test_assembly_rejects_deal_value_writes_in_every_registered_version(
     tmp_path, unsafe_version
 ) -> None:
     bundle = contract_review.bundle(tmp_path)
-    # 1.0.0 is retired but still registered, so its declarations are still checked.
+    # 1.0.0 and 2.0.0 are retired but still registered, so their declarations are still checked.
     originals = [m for m in bundle.manifests if m.name == "crm.write_assessment"]
-    assert {m.version for m in originals} == {"1.0.0", "2.0.0"}
+    assert {m.version for m in originals} == {"1.0.0", "2.0.0", "3.0.0", "4.0.0"}
     versions = [
         m.model_copy(
             update={
@@ -219,10 +219,34 @@ def test_safe_callbacks_remain_unchanged_after_real_mock_writes(tmp_path: Path, 
             call = ToolCall(
                 run_id="fixed", step_id=f"s{count}", attempt=1, idempotency_key=f"key{count}"
             )
-            args = actions[manifest.name]
+            if manifest.name == "crm.restore_assessment":
+                # Bind the current revision using the same trusted contract reader, then really
+                # restore through the scoped tool; never omit trusted tools from provenance tests.
+                prepared = bundle.preparers[("crm.write_assessment", "3.0.0")](
+                    actions["crm.write_assessment"], reapproval=False, run=run
+                )
+                args = {
+                    **actions["crm.write_assessment"],
+                    "risk_level": "none",
+                    "summary": "",
+                    "undo_id": "a" * 64,
+                    "record": prepared.args["record"],
+                }
+            else:
+                args = actions[manifest.name]
             if manifest.preparation_required:
                 prepare = bundle.preparers[(manifest.name, manifest.version)]
-                args = dict(prepare(args, reapproval=False, run=run).args)
+                args = dict(
+                    prepare(
+                        args,
+                        reapproval=False,
+                        run=(
+                            run.model_copy(update={"profile": "undo"})
+                            if manifest.trusted_only
+                            else run
+                        ),
+                    ).args
+                )
             assert bundle.tools[manifest.name](args, call)
             assert bundle.variables(run) == before
     assert len((tmp_path / "ledger.jsonl").read_text().splitlines()) == count
