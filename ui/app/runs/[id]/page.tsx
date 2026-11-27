@@ -5,6 +5,7 @@ import { undoCardModel } from "@/lib/undo-view";
 import { UndoCard } from "./UndoCard";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { ModelModeLabel } from "@/components/ModelModeLabel";
 import { Shell } from "@/components/Shell";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ApiError } from "@/lib/api-client";
@@ -38,6 +39,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   return (
     <Shell me={me}>
       <LiveRefresh runId={run.run_id} finished={finished} />
+      <ModelModeLabel mode={run.model_mode} />
       <p><Link href="/runs">← Runs</Link></p>
       <h1>{run.objective}</h1>
       <p className="row">

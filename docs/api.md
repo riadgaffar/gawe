@@ -30,9 +30,10 @@ Every error is `{"error": {"code": "...", "message": "..."}}`.
 | Method and path | Who | Purpose |
 |---|---|---|
 | `GET /healthz` | anyone | liveness |
+| `GET /v1/demo` | anyone, demo mode only | the packaged demo's companies, people and scenes; `404` unless the API runs the scripted demo model. See [The scripted demo model](#the-scripted-demo-model-m29) |
 | `GET /v1/me` | any user | the caller's `user_id`, `tenant_id` and `roles` (used by the UI to check a token) |
 | `GET /v1/tools` | any user | registered tools with input schemas |
-| `POST /v1/runs` | any user | start a run: `{objective, profile, document?, source_id?}`. Returns `201` with the new run; planning and execution continue in the background. See [Runs started from a record](#runs-started-from-a-record) |
+| `POST /v1/runs` | any user | start a run: `{objective, profile, document?, source_id?, model_mode?}`. Returns `201` with the new run; planning and execution continue in the background. See [Runs started from a record](#runs-started-from-a-record) |
 | `GET /v1/runs?limit=` | any user | the tenant's runs, newest first |
 | `GET /v1/runs/{id}` | any user in tenant | run, steps, policy outcome and evaluated checks per step, each write step's verification record, and the conditions it is only checked against (`checked_not_enforced`, see [What targets guarantee](#what-targets-guarantee)) |
 | `GET /v1/runs/{id}/verification` | any user in tenant | independent read-back records for the run, see [Independent write verification](#independent-write-verification) |
@@ -50,6 +51,47 @@ Every error is `{"error": {"code": "...", "message": "..."}}`.
 | `POST /v1/handoffs/{run_id}/{step_id}` | the same | `{outcome: "done"\|"not_done", action_hash, reference?}`, once |
 | `GET /v1/review-items?status=` | `legal_reviewer` | next-day review items in the tenant; `status` is `open` (default), `confirmed`, `missed_risk` or `all` |
 | `POST /v1/review-items/{id}/verdict` | `legal_reviewer` who did not start the run | `{verdict: "confirmed"\|"missed_risk"}`, once; a second verdict is a `409` |
+
+## The scripted demo model (M29)
+
+`GAWE_LLM_PROVIDER` picks the model: `anthropic` (the default; needs `ANTHROPIC_API_KEY` and
+`GAWE_LLM_MODEL`) or `demo`, the packaged demo's scripted model, which needs no key. `make demo`
+sets it; see [docs/demo-script.md](demo-script.md#the-packaged-demo).
+
+- **It answers only the demo's documents.** Each scene's objective and document are fixed; the
+  model finds its script by the objective's hash and refuses a run whose document does not match
+  it. It cannot answer anything else.
+- **`model_mode`** on `POST /v1/runs` is `honest` or `fooled` and picks which script answers.
+  It is accepted only under the demo model: under `anthropic`, sending it at all is a
+  `422 bad_request`, as is any other value. The run view and the approval view carry the run's
+  `model_mode` (`null` for every run under a real model), and the UI labels such runs "Scripted
+  demo model" on the run, its approval card and its audit trail.
+- **`GET /v1/demo`** needs no token and returns the companies (key, name, tenant id, people with
+  their roles), the scenes (objective, document, modes, what to expect) and, on memory stores,
+  `fixture: {company, run_id}`, the pre-built run whose audit trail was altered. It never returns
+  a token. Outside demo mode it is a `404`.
+- **Sign-in tokens** are written by the launcher (`python -m gawe.demo run`) into
+  `.demo-data/demo/tokens/`, fresh each start: the API's token file (hashes only) and the UI
+  server's sign-in file. The API never writes either. The UI's one-click sign-in reads the second
+  only with `GAWE_UI_DEMO=1`, only while `GET /v1/demo` answers, and only for a request whose
+  host is this machine.
+
+## Per-company settings (M29)
+
+`GAWE_TENANT_SETTINGS` names a JSON file, read once at startup, that sets an app's settings per
+tenant:
+
+```json
+{"tenants": {"<tenant id>": {"review_levels_always": [], "large_deal_threshold": 250000}}}
+```
+
+Each tenant's values are checked against the app's schema and merged over its defaults; a
+tenant not in the file gets the defaults, and with no file every tenant does. An unknown key, a
+wrong type or an empty list where one is required stops startup. Contract review's settings are
+`review_levels_always` (default `["low"]`, the ratings that always need legal),
+`large_deal_threshold` (100,000), `internal_domains` and `blocked_domains`. The settings are
+frozen once loaded: no route, tool or maintenance command can change them, and a change needs a
+restart.
 
 ## Runs started from a record
 

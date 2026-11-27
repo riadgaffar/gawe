@@ -19,6 +19,7 @@ from gawe.llm.provider import (
     LLMOutputError,
     LLMProvider,
     LLMRequest,
+    RequestContext,
     request_hash,
     response_hash,
 )
@@ -127,7 +128,14 @@ class Planner:
         self._max_attempts = max_attempts
         self._max_output_tokens = max_output_tokens
 
-    def plan(self, objective: str, findings: Findings | None = None) -> PlanResult:
+    def plan(
+        self,
+        objective: str,
+        findings: Findings | None = None,
+        *,
+        context: RequestContext | None = None,
+    ) -> PlanResult:
+        """`context` is passed to the provider with each request, for a scripted provider."""
         if findings is not None and not isinstance(findings, Findings):
             raise TypeError("findings must be a Findings object produced by a Reader")
         clean_objective = sanitize_text(objective).strip()
@@ -158,6 +166,7 @@ class Planner:
                 ),
                 output_schema=schema,
                 max_output_tokens=self._max_output_tokens,
+                context=context,
             )
             try:
                 response = self._provider.complete(request)  # LLMUnavailableError propagates

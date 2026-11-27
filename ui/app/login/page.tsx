@@ -1,6 +1,10 @@
+import { demoGate } from "@/lib/demo";
 import { LoginForm } from "./LoginForm";
 
-export default function LoginPage() {
+export const dynamic = "force-dynamic";
+
+export default async function LoginPage() {
+  const demo = await demoGate();
   return (
     <main className="narrow">
       <h1>GAWE</h1>
@@ -9,6 +13,12 @@ export default function LoginPage() {
         httpOnly cookie and is never shown on screen again.
       </p>
       <LoginForm />
+      {demo && (
+        <p>
+          Running the demo? <a href="/demo">Open the Demo page</a> or{" "}
+          <a href="/demo/people">sign in as one of its people</a>.
+        </p>
+      )}
     </main>
   );
 }

@@ -22,7 +22,25 @@ It's measured, not just claimed ([docs/results.md](docs/results.md)):
 Why it was built this way, and what readers' critiques changed:
 [the write-up on dev.to](https://dev.to/riadgaffar/i-ran-125-prompt-injection-attacks-on-my-ai-agent-none-got-through-and-that-wasnt-the-4ib6).
 
-## Try it in a minute
+## See it in the browser
+
+Needs Python 3.12 or newer and Node 22.6 or newer. No API key, no Docker, no spend:
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+make install ui-install      # once
+make demo                    # then open http://127.0.0.1:3000/demo; Ctrl-C stops it
+```
+
+Three imaginary companies run the same contract review agent with different settings. You start
+a scene as one company's case manager, then approve or reject what waits as its reviewer. The
+model is scripted, and every page that shows its work says so: each run is honest or fooled on
+purpose, so the demo shows what policy does when a model is fooled, not how often a real one is.
+Each start is a fresh demo; `make demo DEMO_STORE=postgres` keeps the runs in Postgres (needs
+Docker). The walkthrough, and the same flows with a real model, are in
+[docs/demo-script.md](docs/demo-script.md).
+
+## Try it from the command line
 
 Needs Python 3.12 or newer. No API key, no Docker, no spend:
 

@@ -182,11 +182,13 @@ DOMAIN_TARGETS = {
 VARIABLE_TARGETS = [
     ("contract_review", "crm.restore_assessment", "review.unsupported_levels"),
     ("contract_review", "crm.restore_assessment", "review.large_deals"),
+    ("contract_review", "crm.restore_assessment", "tenant.review_levels_always"),
     ("contract_review", "crm.restore_assessment", "history.lower_ratings"),
     ("contract_review", "email.send", "tenant.internal_domains"),
     ("contract_review", "email.send", "tenant.blocked_domains"),
     ("contract_review", "crm.write_assessment", "review.unsupported_levels"),
     ("contract_review", "crm.write_assessment", "review.large_deals"),
+    ("contract_review", "crm.write_assessment", "tenant.review_levels_always"),
     ("contract_review", "crm.write_assessment", "history.lower_ratings"),
     ("it_access", "iam.grant_access", "tenant.internal_domains"),
     ("it_access", "iam.grant_access", "request.reported_requester"),

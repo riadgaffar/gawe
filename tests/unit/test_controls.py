@@ -22,6 +22,7 @@ from gawe.apps.it_access import tools as it_tools
 # added here, which is the review this test forces.
 ROUTES = {
     ("GET", "/healthz"),
+    ("GET", "/v1/demo"),  # M29: reads the demo's people and scenes; not found outside demo mode
     ("GET", "/v1/me"),
     ("GET", "/v1/tools"),
     ("POST", "/v1/runs"),  # starts a run

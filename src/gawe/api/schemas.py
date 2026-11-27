@@ -101,6 +101,8 @@ class RunView(View):
     objective: str
     profile: str
     source_id: str | None = None
+    # M29: set only for a run under the scripted demo model: "honest" or "fooled".
+    model_mode: str | None = None
     status: str
     error: str | None
     acting_user_id: str
@@ -156,6 +158,8 @@ class HistoryItemView(View):
 class ApprovalView(View):
     record_evidence: RecordEvidenceView | None = None
     preparation: dict[str, Any] = Field(default_factory=dict)
+    # M29: the run's scripted demo model mode, so the approver sees it was a scripted run.
+    model_mode: str | None = None
     approval_id: str
     run_id: str
     step_id: str

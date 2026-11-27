@@ -57,6 +57,8 @@ rules:
   # honest CUAD contracts 2.7% were rated "low" (docs/m17-plan.md, S5); real traffic confirms or
   # reverses it. It comes after the two rules above so their more specific reasons show first.
   # If it is dropped, wire the liability scan in first (see the roadmap).
+  # Since M29 the levels are a tenant setting (`review_levels_always`, default ["low"]), so a
+  # tenant can choose differently; one that empties it accepts a fooled "low" on a small deal.
   - id: low-risk-needs-legal
     effect: needs_approval
     approver_role: legal_reviewer
@@ -64,7 +66,7 @@ rules:
     when:
       tool: crm.*assessment
       args:
-        risk_level: {eq: low}
+        risk_level: {in: $tenant.review_levels_always}
 
   # M24: a rating lower than the contract's last needs legal, whichever run made the last one, so
   # a downgrade can't be split across runs (high in one, medium in the next). History only ever

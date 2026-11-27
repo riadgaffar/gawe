@@ -82,6 +82,18 @@ def test_a_runs_source_id_round_trips_and_survives_updates(store: RunStore) -> N
     assert store.get(plain.run_id).source_id is None
 
 
+def test_a_runs_model_mode_round_trips_and_survives_updates(store: RunStore) -> None:
+    """M29: a scripted demo run keeps its mode; any other run has none."""
+    run = make_run(document="contract", model_mode="fooled")
+    store.add(run)
+    store.transition(run.run_id, expected=RunStatus.CREATED, to=RunStatus.PLANNING)
+    store.update(run.run_id, document=None)
+    assert store.get(run.run_id).model_mode == "fooled"
+    plain = make_run()
+    store.add(plain)
+    assert store.get(plain.run_id).model_mode is None
+
+
 def test_duplicate_and_unknown(store: RunStore) -> None:
     run = make_run()
     store.add(run)

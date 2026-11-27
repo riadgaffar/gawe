@@ -30,6 +30,7 @@ from gawe.apps.refusal_observers import accounts as refusal_observers
 from gawe.connectors.base import Ledger
 from gawe.connectors.mock_iam import MockIAM
 from gawe.connectors.mock_tickets import MockTickets, Ticket
+from gawe.core import tenant_settings
 from gawe.core.guarantees import DispatchCondition
 from gawe.core.history import HistoryEntry, HistorySubject
 from gawe.core.policy.provenance import PolicySource, PolicyVariable
@@ -37,24 +38,46 @@ from gawe.core.policy.rules import email_domain
 from gawe.core.readback import ReadbackAdapter
 from gawe.core.records import StepRecord
 from gawe.core.runs import RunRecord
+from gawe.core.tenant_settings import TenantSettings
 
 HERE = Path(__file__).parent
 PROFILE_NAME = "it_access"
 GRANT = "iam.grant_access"
 MAX_GRANT_LIFETIME_HOURS = 30 * 24
-TENANT_VARIABLES: Mapping[str, Any] = {
-    "tenant": {
-        "internal_domains": ["acme.example"],
-        "max_grant_lifetime_hours": MAX_GRANT_LIFETIME_HOURS,
-        # Systems that hold another app's controls (M23): contract review's deal values, which
-        # decide whether a signature needs finance, live in the CRM; event replay's events,
-        # amounts, daily total and limit live in billing (M25). Changing them takes a person.
-        "control_systems": ["crm", "billing"],
-        # M24: how many grants of one system to one person run automatically within the window;
-        # the next one needs security. Counted from GAWE's own records, every level alike.
-        "automatic_grants": 2,
-        "history_days": 30,
-    }
+DEFAULT_SETTINGS: Mapping[str, Any] = {
+    "internal_domains": ["acme.example"],
+    "max_grant_lifetime_hours": MAX_GRANT_LIFETIME_HOURS,
+    # Systems that hold another app's controls (M23): contract review's deal values, which
+    # decide whether a signature needs finance, live in the CRM; event replay's events,
+    # amounts, daily total and limit live in billing (M25). Changing them takes a person.
+    "control_systems": ["crm", "billing"],
+    # M24: how many grants of one system to one person run automatically within the window;
+    # the next one needs security. Counted from GAWE's own records, every level alike.
+    "automatic_grants": 2,
+    "history_days": 30,
+}
+TENANT_VARIABLES: Mapping[str, Any] = {"tenant": DEFAULT_SETTINGS}
+# Per-tenant settings (M29). Defaults are the values above, so a deployment without a settings
+# file decides as before. grant_history and policy still treat an unusable value as missing.
+_NAMES = {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": True}
+_POSITIVE = {"type": "integer", "minimum": 1}
+SETTINGS_SCHEMA: Mapping[str, Any] = {
+    "type": "object",
+    "properties": {
+        "internal_domains": _NAMES,
+        "max_grant_lifetime_hours": _POSITIVE,
+        "control_systems": _NAMES,
+        "automatic_grants": _POSITIVE,
+        "history_days": _POSITIVE,
+    },
+    "required": [
+        "internal_domains",
+        "max_grant_lifetime_hours",
+        "control_systems",
+        "automatic_grants",
+        "history_days",
+    ],
+    "additionalProperties": False,
 }
 
 
@@ -87,6 +110,29 @@ def grant_history(
     return variables
 
 
+def grant_history_for(
+    settings: TenantSettings,
+) -> Callable[[Sequence[HistoryEntry], Mapping[str, Any], RunRecord], dict[str, list[str]]]:
+    """`grant_history` with the judged run's tenant's settings."""
+
+    def variables(
+        entries: Sequence[HistoryEntry], args: Mapping[str, Any], run: RunRecord
+    ) -> dict[str, list[str]]:
+        return grant_history(settings.for_tenant(run.tenant_id))(entries, args, run)
+
+    return variables
+
+
+def grant_subject(settings: TenantSettings) -> HistorySubject:
+    return HistorySubject(
+        argument="email",
+        lower=True,
+        variables=grant_history_for(settings),
+        shown=("system", "level"),
+    )
+
+
+# Every tenant's defaults, for callers outside a bundle (tests, benchmarks).
 GRANT_HISTORY = HistorySubject(
     argument="email",
     lower=True,
@@ -132,7 +178,10 @@ def bundle(
     tickets: MockTickets | None = None,
     grant_lifetime_hours: int = DEFAULT_LIFETIME_HOURS,
     clock: Callable[[], datetime] = _utc_now,
+    settings: TenantSettings | None = None,
 ) -> AppBundle:
+    """The app. `settings` default to `GAWE_TENANT_SETTINGS` over `DEFAULT_SETTINGS`."""
+    settings = settings or tenant_settings.from_env(SETTINGS_SCHEMA, DEFAULT_SETTINGS)
     directory = demo_dir or Path(os.environ.get("GAWE_DEMO_DIR", ".demo-data"))
     ledger = Ledger(directory / "ledger.jsonl")
     iam = iam or MockIAM.from_seed(HERE / "samples" / "iam_seed.json", ledger)
@@ -172,9 +221,10 @@ def bundle(
         policy_rules=HERE / "policies.yaml",
         profiles=frozenset({PROFILE_NAME}),
         reader_profile=PROFILE,
-        variables=variables_for(tickets),
+        variables=variables_for(tickets, settings),
         postconditions=POSTCONDITIONS,
-        history={GRANT: GRANT_HISTORY},
+        history={GRANT: grant_subject(settings)},
+        tenant_settings=settings,
         policy_sources={
             "tenant_config": PolicySource(kind="configuration", resource="config.tenant"),
             "reader_findings": PolicySource(kind="findings", resource="run.findings"),
@@ -243,10 +293,14 @@ def ticket_variables(run: RunRecord | None, tickets: MockTickets) -> dict[str, l
     return {"submitters": [ticket.submitted_by], "portal_submitters": trusted}
 
 
-def variables_for(tickets: MockTickets) -> Callable[[RunRecord | None], Mapping[str, Any]]:
+def variables_for(
+    tickets: MockTickets, settings: TenantSettings | None = None
+) -> Callable[[RunRecord | None], Mapping[str, Any]]:
+    settings = settings or TenantSettings(SETTINGS_SCHEMA, DEFAULT_SETTINGS)
+
     def variables(run: RunRecord | None) -> Mapping[str, Any]:
         return {
-            **TENANT_VARIABLES,
+            "tenant": settings.for_tenant(run.tenant_id if run is not None else None),
             "request": {
                 **request_variables(run.findings if run is not None else None),
                 **ticket_variables(run, tickets),

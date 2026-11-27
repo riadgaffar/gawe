@@ -53,6 +53,8 @@ export type RunView = {
   objective: string;
   profile: string;
   source_id: string | null;
+  // M29: set only for a run under the scripted demo model.
+  model_mode?: "honest" | "fooled" | null;
   status: string;
   error: string | null;
   acting_user_id: string;
@@ -64,6 +66,7 @@ export type RunView = {
 
 export type ApprovalView = {
   record_evidence?: RecordEvidenceView | null;
+  model_mode?: "honest" | "fooled" | null;
   approval_id: string;
   run_id: string;
   step_id: string;
@@ -179,7 +182,38 @@ export type AuditVerificationView = {
 export type MeView = { user_id: string; tenant_id: string; roles: string[] };
 
 // IT access names a ticket (`source_id`) instead of sending a document; the server reads it.
-export type StartRunInput = { objective: string; profile: string; document?: string; source_id?: string };
+export type StartRunInput = {
+  objective: string;
+  profile: string;
+  document?: string;
+  source_id?: string;
+  model_mode?: "honest" | "fooled";
+};
+
+// M29: what GET /v1/demo tells the UI. Names, roles and scenes; never a token.
+export type DemoPerson = { key: string; name: string; title: string; roles: string[] };
+export type DemoCompany = {
+  key: string;
+  name: string;
+  tenant_id: string;
+  summary: string;
+  people: DemoPerson[];
+};
+export type DemoScene = {
+  scene_id: string;
+  title: string;
+  objective: string;
+  document: string;
+  modes: ("honest" | "fooled")[];
+  fooled_how: string | null;
+  expect: string;
+};
+export type DemoInfo = {
+  model: string;
+  companies: DemoCompany[];
+  scenes: DemoScene[];
+  fixture: { company: string; run_id: string } | null;
+};
 
 // A next-day review finding or sample: ids and a reason, never argument values.
 export type ReviewItemView = {

@@ -286,14 +286,24 @@ BELOW = {None: [], "low": [], "medium": ["low"], "high": ["low", "medium"]}
 @pytest.mark.parametrize("unsupported", [False, True])
 @pytest.mark.parametrize("large", [False, True])
 @pytest.mark.parametrize("last", list(BELOW))
+# M29: the levels a company always reviews, written out by hand; ["low"] is the default.
+@pytest.mark.parametrize(
+    "always", [("low",), (), ("low", "medium")], ids=["low", "none", "low+medium"]
+)
 @seed(FIXED_SEED)
 @GENERATED
 @given(contract=st.integers(1000, 9999))
 def test_assessment_boundaries(
-    level: str, unsupported: bool, large: bool, last: str | None, contract: int
+    level: str,
+    unsupported: bool,
+    large: bool,
+    last: str | None,
+    always: tuple[str, ...],
+    contract: int,
 ) -> None:
     cid = f"C-{contract}"
     variables = deepcopy(VARIABLES["contract_review"])
+    variables["tenant"]["review_levels_always"] = list(always)
     variables["review"] = {
         "unsupported_levels": [level] if unsupported else [],
         "large_deals": [cid] if large else [],
@@ -306,7 +316,7 @@ def test_assessment_boundaries(
         ids.add("low-risk-contradicted-needs-legal")
     if large and level == "low":
         ids.add("low-risk-large-deal-needs-legal")
-    if level == "low":
+    if level in always:
         ids.add("low-risk-needs-legal")
     assert_decision(
         "contract_review",

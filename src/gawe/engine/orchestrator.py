@@ -46,13 +46,13 @@ from gawe.core.preparation import ActionVariables, PreparationError, Preparer
 from gawe.core.records import ExecutionStore, Handoff, StaleStateError, StepRecord, StepStore
 from gawe.core.refs import RefResolutionError, resolve_args
 from gawe.core.registry import RegistryError, ToolRegistry
-from gawe.core.runs import RunRecord, RunStore, StaleRunError
+from gawe.core.runs import ModelMode, RunRecord, RunStore, StaleRunError
 from gawe.core.statemachine import RUN_TERMINAL, STEP_TERMINAL, RunStatus, StepStatus
 from gawe.core.telemetry import NoopTelemetry, Telemetry
 from gawe.core.undo import legacy_restore_version
 from gawe.core.verification import READBACK_KIND
 from gawe.llm.planner import Planner, PlanningError
-from gawe.llm.provider import LLMUnavailableError
+from gawe.llm.provider import LLMUnavailableError, RequestContext, content_sha256
 from gawe.llm.reader import Findings, Reader, ReaderError
 
 log = logging.getLogger("gawe.engine")
@@ -156,9 +156,12 @@ class Orchestrator:
         document: str | None = None,
         run_id: str | None = None,
         source_id: str | None = None,
+        model_mode: ModelMode | None = None,
     ) -> RunRecord:
         """`source_id` names the record the document was fetched from; the caller (the API
-        service) fetched it, so a run never holds text and a source that disagree."""
+        service) fetched it, so a run never holds text and a source that disagree.
+        `model_mode` (M29) is for the scripted demo model only; the API service refuses it for
+        any other provider."""
         if document is not None and self._reader is None:
             raise ValueError("a document was provided but no Reader is configured")
         run = RunRecord(
@@ -170,6 +173,7 @@ class Orchestrator:
             profile=profile,
             document=document,
             source_id=source_id,
+            model_mode=model_mode,
             created_at=self._clock(),
         )
         self._runs.add(run)
@@ -183,6 +187,8 @@ class Orchestrator:
                 "objective_sha256": sha256_hex(objective.encode("utf-8")),
                 # Only runs with a source carry the key, so earlier payloads keep their shape.
                 **({"source_id": source_id} if source_id is not None else {}),
+                # M29: only scripted demo runs carry it, so every other payload keeps its shape.
+                **({"model_mode": model_mode} if model_mode is not None else {}),
             },
         )
         return run
@@ -293,7 +299,9 @@ class Orchestrator:
             try:
                 with self._telemetry.span("gawe.plan", run_id=run.run_id):
                     findings = self._read(run)
-                    result = self._planner.plan(run.objective, findings)
+                    result = self._planner.plan(
+                        run.objective, findings, context=self._model_context(run)
+                    )
             except LLMUnavailableError:
                 self._audit.record(run.run_id, "run.planning_deferred", ACTOR, {})
                 self._telemetry.count("gawe.plan.attempts", valid=False, first_try=True)
@@ -333,12 +341,22 @@ class Orchestrator:
         self._materialize(run)
         return self._runs.transition(run.run_id, expected=RunStatus.PLANNING, to=RunStatus.RUNNING)
 
+    @staticmethod
+    def _model_context(run: RunRecord) -> RequestContext:
+        """What a scripted provider needs to know about the run (M29). The document's key is
+        taken while the document is still held; it is dropped once read."""
+        return RequestContext(
+            model_mode=run.model_mode,
+            objective_sha256=content_sha256(run.objective),
+            document_sha256=content_sha256(run.document) if run.document is not None else None,
+        )
+
     def _read(self, run: RunRecord) -> Findings | None:
         if run.findings is not None and run.findings_schema_id is not None:
             return Findings(run.findings_schema_id, run.findings)
         if run.document is None or self._reader is None:
             return None
-        result = self._reader.read(run.document)
+        result = self._reader.read(run.document, context=self._model_context(run))
         self._runs.update(
             run.run_id,
             findings=dict(result.findings.data),

@@ -93,7 +93,7 @@ from gawe.core.review import (
     Status,
     Verdict,
 )
-from gawe.core.runs import SOURCE_ID_PATTERN, RunNotFoundError, RunRecord, RunStore
+from gawe.core.runs import MODEL_MODES, SOURCE_ID_PATTERN, RunNotFoundError, RunRecord, RunStore
 from gawe.core.sources import DocumentSource, SourceError
 from gawe.core.statemachine import RUN_TERMINAL, RunStatus, StepStatus
 from gawe.core.verification import READBACK_KIND
@@ -147,7 +147,10 @@ class ApiService:
         signer: PolicySigner | None = None,
         readback_tools: frozenset[tuple[str, str]] = frozenset(),
         clock: Callable[[], datetime] = _utc_now,
+        model_modes: bool = False,
     ) -> None:
+        # M29: whether runs may choose a scripted demo model mode (only under the demo model).
+        self._model_modes = model_modes
         self._executions = executions
         self._signer = signer
         self._readback_tools = readback_tools
@@ -197,9 +200,16 @@ class ApiService:
         profile: str,
         document: str | None = None,
         source_id: str | None = None,
+        model_mode: str | None = None,
     ) -> RunView:
         """A profile with a source (IT access) takes `source_id`, never an uploaded document:
-        the server fetches the text from that record in the caller's tenant."""
+        the server fetches the text from that record in the caller's tenant. `model_mode`
+        (M29) is accepted only when the API runs the scripted demo model."""
+        if model_mode is not None:
+            if not self._model_modes:
+                raise BadRequestError("model_mode is only accepted under the scripted demo model")
+            if model_mode not in MODEL_MODES:
+                raise BadRequestError("model_mode must be honest or fooled")
         if not objective.strip():
             raise BadRequestError("objective is required")
         if len(objective) > MAX_OBJECTIVE_CHARS:
@@ -233,6 +243,7 @@ class ApiService:
                 profile=profile,
                 document=document,
                 source_id=source_id,
+                model_mode=model_mode,  # checked above
             )
         except ValueError as exc:
             raise BadRequestError(str(exc)) from exc
@@ -705,6 +716,7 @@ class ApiService:
             objective=run.objective,
             profile=run.profile,
             source_id=run.source_id,
+            model_mode=run.model_mode,
             status=run.status.value,
             error=run.error,
             acting_user_id=run.acting_user_id,
@@ -723,6 +735,7 @@ class ApiService:
         classes = manifest.field_classes or {}
         shown = fields(snapshot, classes)
         return ApprovalView(
+            model_mode=run.model_mode,
             record_evidence=(
                 self._record_presenter.project(run, step, args=snapshot, digest=record.action_hash)
                 if self._record_presenter

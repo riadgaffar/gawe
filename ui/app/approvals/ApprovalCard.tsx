@@ -3,6 +3,7 @@ import Link from "next/link";
 import { RecordEvidenceCard } from "@/components/RecordEvidenceCard";
 import { useActionState } from "react";
 import { decide, type ActionState } from "@/app/actions";
+import { ModelModeLabel } from "@/components/ModelModeLabel";
 import { Notice } from "@/components/Notice";
 import { SubmitButton } from "@/components/SubmitButton";
 import type { ApprovalView } from "@/lib/api-types";
@@ -20,6 +21,7 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
         <span className="badge tone-wait">{approval.risk_tier} risk</span>
         <span className="muted">needs {approval.approver_role}</span>
       </div>
+      <ModelModeLabel mode={approval.model_mode} />
       <p>{approval.reason}</p>
       {approval.tool === "crm.restore_assessment" && <p className="notice wait">
         Restore the previous rating shown below. Later actions and their effects stay as they are.

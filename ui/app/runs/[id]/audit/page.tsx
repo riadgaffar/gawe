@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { ModelModeLabel } from "@/components/ModelModeLabel";
 import { Shell } from "@/components/Shell";
 import { ApiError } from "@/lib/api-client";
 import { shortHash } from "@/lib/format";
@@ -12,8 +13,9 @@ export default async function AuditPage({ params }: { params: Promise<{ id: stri
   const { id } = await params;
   const { client, me } = await requireSession();
   let events;
+  let run;
   try {
-    events = await client.audit(id);
+    [events, run] = await Promise.all([client.audit(id), client.getRun(id)]);
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) notFound();
     throw error;
@@ -22,6 +24,7 @@ export default async function AuditPage({ params }: { params: Promise<{ id: stri
     <Shell me={me}>
       <p><Link href={`/runs/${encodeURIComponent(id)}`}>← Run</Link></p>
       <h1>Audit trail</h1>
+      <ModelModeLabel mode={run.model_mode} />
       <p className="muted">
         Each event stores the hash of the one before it. Verifying recomputes the whole chain, so an
         edited or deleted row is detected.

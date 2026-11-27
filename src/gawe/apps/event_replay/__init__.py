@@ -29,21 +29,31 @@ from gawe.apps.event_replay.tools import (
 from gawe.apps.refusal_observers import events as refusal_observers
 from gawe.connectors.base import Ledger
 from gawe.connectors.mock_billing import MockBilling
+from gawe.core import tenant_settings
 from gawe.core.policy.provenance import PolicySource, PolicyVariable
 from gawe.core.readback import ReadbackAdapter, ReadbackResult, compare
 from gawe.core.runs import RunRecord
+from gawe.core.tenant_settings import TenantSettings
 
 HERE = Path(__file__).parent
 PROFILE_NAME = "event_replay"
 REPLAY = ("billing.replay_events", "1.0.0")
 DAILY_REPLAY_LIMIT = 50_000  # the billing platform's per-tenant setting, in whole units
-TENANT_VARIABLES: Mapping[str, Any] = {
-    "tenant": {
-        "automatic_events": 10,
-        "automatic_total": 1_000,
-        "approval_events": 100,
-        "approval_total": 25_000,
-    }
+DEFAULT_SETTINGS: Mapping[str, Any] = {
+    "automatic_events": 10,
+    "automatic_total": 1_000,
+    "approval_events": 100,
+    "approval_total": 25_000,
+}
+TENANT_VARIABLES: Mapping[str, Any] = {"tenant": DEFAULT_SETTINGS}
+# Per-tenant settings (M29); the defaults above are what every tenant had before. The daily limit
+# is the billing platform's own setting, not GAWE's.
+_COUNT = {"type": "integer", "minimum": 0}
+SETTINGS_SCHEMA: Mapping[str, Any] = {
+    "type": "object",
+    "properties": {name: _COUNT for name in DEFAULT_SETTINGS},
+    "required": sorted(DEFAULT_SETTINGS),
+    "additionalProperties": False,
 }
 
 
@@ -56,7 +66,10 @@ def bundle(
     *,
     billing: MockBilling | None = None,
     clock: Callable[[], datetime] = _utc_now,
+    settings: TenantSettings | None = None,
 ) -> AppBundle:
+    """The app. `settings` default to `GAWE_TENANT_SETTINGS` over `DEFAULT_SETTINGS`."""
+    settings = settings or tenant_settings.from_env(SETTINGS_SCHEMA, DEFAULT_SETTINGS)
     directory = demo_dir or Path(os.environ.get("GAWE_DEMO_DIR", ".demo-data"))
     billing = billing or MockBilling.from_seed(
         Ledger(directory / "ledger.jsonl"),
@@ -79,8 +92,9 @@ def bundle(
         guarantees=billing.GUARANTEES,
         policy_rules=HERE / "policies.yaml",
         profiles=frozenset({PROFILE_NAME}),
-        variables=variables_for(billing),
+        variables=variables_for(billing, settings),
         postconditions=POSTCONDITIONS,
+        tenant_settings=settings,
         policy_sources={
             "tenant_config": PolicySource(kind="configuration", resource="config.tenant"),
             # The day's running total, kept by the platform. Replays use it up, so it can only
@@ -97,14 +111,18 @@ def bundle(
     )
 
 
-def variables_for(billing: MockBilling) -> Callable[[RunRecord | None], Mapping[str, Any]]:
+def variables_for(
+    billing: MockBilling, settings: TenantSettings | None = None
+) -> Callable[[RunRecord | None], Mapping[str, Any]]:
     """Tenant settings, and what is left of the run's tenant's daily limit. With no run, or a
     platform that sets no limit, it is absent, and a replay denies."""
+    settings = settings or TenantSettings(SETTINGS_SCHEMA, DEFAULT_SETTINGS)
 
     def variables(run: RunRecord | None) -> Mapping[str, Any]:
         remaining = billing.remaining_today(run.tenant_id) if run is not None else None
         found = {} if remaining is None else {"remaining_today": remaining}
-        return {**TENANT_VARIABLES, "billing": found}
+        tenant = settings.for_tenant(run.tenant_id if run is not None else None)
+        return {"tenant": tenant, "billing": found}
 
     return variables
 

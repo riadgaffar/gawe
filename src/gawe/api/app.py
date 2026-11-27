@@ -25,7 +25,7 @@ Endpoints (all under /v1 except /healthz; every one needs `Authorization: Bearer
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
@@ -37,7 +37,13 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from gawe.api.auth import AuthError, Identity, TokenAuthenticator, parse_bearer
-from gawe.api.errors import ApiError, BadRequestError, TooManyRequestsError, UnauthorizedError
+from gawe.api.errors import (
+    ApiError,
+    BadRequestError,
+    NotFoundError,
+    TooManyRequestsError,
+    UnauthorizedError,
+)
 from gawe.api.schemas import (
     ApprovalView,
     AuditEventView,
@@ -67,6 +73,8 @@ class StartRunBody(BaseModel):
     profile: str = Field(min_length=1, max_length=64)
     document: str | None = None  # length is limited by the service and the body-size cap
     source_id: str | None = Field(default=None, max_length=64)  # format checked by the service
+    # M29: honest or fooled, for the scripted demo model only; refused under a real model.
+    model_mode: Literal["honest", "fooled"] | None = None
 
 
 class DecisionBody(BaseModel):
@@ -102,9 +110,11 @@ def create_app(
     max_stream_seconds: float = 3600.0,
     throttle: FailureThrottle | None = None,
     maintenance_interval: float | None = None,
+    demo: Mapping[str, Any] | None = None,
 ) -> FastAPI:
     """With `maintenance_interval`, the service's maintenance runner ticks on that schedule
-    for the app's lifetime (first tick at startup), independent of requests."""
+    for the app's lifetime (first tick at startup), independent of requests. `demo` (M29) is
+    what `GET /v1/demo` answers; without it, that route is not found."""
     failures = throttle if throttle is not None else FailureThrottle()
     runner = service.maintenance_runner
     if maintenance_interval is not None and runner is None:
@@ -179,6 +189,14 @@ def create_app(
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/v1/demo")
+    def demo_view() -> Mapping[str, Any]:
+        # M29: no sign-in needed, because the demo's sign-in page lists its people from it. Only
+        # an API started with the scripted demo model has it; it holds no token.
+        if demo is None:
+            raise NotFoundError("not found")
+        return demo
+
     @app.get("/v1/me")
     def me(who: Identity = Depends(identity)) -> MeView:
         return MeView(user_id=who.user_id, tenant_id=who.tenant_id, roles=tuple(sorted(who.roles)))
@@ -195,6 +213,7 @@ def create_app(
             profile=body.profile,
             document=body.document,
             source_id=body.source_id,
+            model_mode=body.model_mode,
         )
 
     @app.get("/v1/runs")

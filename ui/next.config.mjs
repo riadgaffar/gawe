@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   poweredByHeader: false,
+  // `next dev` would otherwise write ui/AGENTS.md on every start.
+  agentRules: false,
   async headers() {
     return [
       {

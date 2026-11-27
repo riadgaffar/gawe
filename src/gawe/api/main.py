@@ -4,7 +4,9 @@
 
 Required: GAWE_APP (module:function returning an AppBundle), GAWE_POLICY_SIGNING_KEY,
 GAWE_API_TOKENS_FILE, and ANTHROPIC_API_KEY + GAWE_LLM_MODEL for the LLM.
-Optional: GAWE_STORE=memory|postgres (default postgres, see gawe.db.session for the database
+Optional: GAWE_LLM_PROVIDER=anthropic|demo (default anthropic; `demo` is the scripted demo model,
+no key needed, M29), GAWE_TENANT_SETTINGS (per-tenant app settings, M29),
+GAWE_STORE=memory|postgres (default postgres, see gawe.db.session for the database
 variables), GAWE_CORS_ORIGINS (comma-separated), GAWE_WORKERS (default 4),
 GAWE_APP_DB_PASSWORD (connect as the limited gawe_app role; see `make app-role`),
 GAWE_AUTO_RESUME=0 (do not restart unfinished runs at startup; default on),
@@ -84,11 +86,27 @@ def review_key_from_env() -> ReviewKey | None:
     return key
 
 
-def create_app_from_env() -> Any:
-    from gawe.api.app import create_app
+def _provider_from_env() -> Any:
+    """`GAWE_LLM_PROVIDER`: `anthropic` (the default) or `demo`, the scripted demo model (M29),
+    which needs no key and answers only the demo's scenes."""
+    kind = os.environ.get("GAWE_LLM_PROVIDER", "anthropic").strip().lower()
+    if kind == "demo":
+        from gawe.demo.model import DemoModel
+
+        log.warning("the API is running the scripted demo model, not a real one")
+        return DemoModel()
+    if kind != "anthropic":
+        raise ConfigError("GAWE_LLM_PROVIDER must be 'anthropic' or 'demo'")
     from gawe.llm.anthropic_provider import AnthropicProvider
 
+    return AnthropicProvider()
+
+
+def create_app_from_env() -> Any:
+    from gawe.api.app import create_app
+
     bundle = _load_bundle(_required("GAWE_APP"))
+    provider = _provider_from_env()
     store_kind = os.environ.get("GAWE_STORE", "postgres").strip().lower()
     if store_kind == "memory":
         stores = memory_stores()
@@ -118,11 +136,25 @@ def create_app_from_env() -> Any:
         log.info("audit-head anchoring is off; set GAWE_ANCHOR_SINKS to turn it on")
     review_key = review_key_from_env()
 
+    signer = PolicySigner.from_env()
+    demo = None
+    if getattr(provider, "ACCEPTS_MODEL_MODE", False):
+        # M29: the scripted demo model. On memory stores, which have no database to edit, the
+        # demo's tamper scene gets a pre-built run whose audit trail was altered.
+        from gawe.demo import fixtures
+        from gawe.demo.info import demo_info
+
+        fixture_run_id = None
+        if store_kind == "memory":
+            fixture = fixtures.build(signer)
+            fixtures.install(stores, fixture)
+            fixture_run_id = fixture.run_id
+        demo = demo_info(fixture_run_id)
     service = assemble(
         bundle,
         stores=stores,
-        signer=PolicySigner.from_env(),
-        provider=AnthropicProvider(),
+        signer=signer,
+        provider=provider,
         background=ThreadBackground(max_workers=workers),
         anchor_sinks=anchor_sinks,
         maintenance=maintenance,
@@ -137,6 +169,7 @@ def create_app_from_env() -> Any:
             window_seconds=_int_env("GAWE_AUTH_FAIL_WINDOW_SECONDS", int(DEFAULT_WINDOW_SECONDS)),
         ),
         service=service,
+        demo=demo,
         authenticator=TokenAuthenticator.from_file(Path(_required("GAWE_API_TOKENS_FILE"))),
         cors_origins=origins,
         maintenance_interval=maintenance.interval_seconds,

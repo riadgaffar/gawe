@@ -11,12 +11,15 @@ Status changes are compare-and-set and follow the run state machine.
 import threading
 from collections.abc import Collection, Mapping
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import Field
 
 from gawe.core.models import FrozenModel, Plan, PolicyDecision
 from gawe.core.statemachine import RunStatus, check_run_transition
+
+ModelMode = Literal["honest", "fooled"]
+MODEL_MODES: tuple[ModelMode, ...] = ("honest", "fooled")
 
 _UPDATABLE = frozenset(
     {
@@ -63,6 +66,9 @@ class RunRecord(FrozenModel):
     # The record the document came from (an IT-access ticket), when the profile has a source.
     # Set once at creation; the server fetched the document from it.
     source_id: str | None = Field(default=None, pattern=SOURCE_ID_PATTERN)
+    # M29: how the scripted demo model behaves for this run, when the API runs it. Set once at
+    # creation; a run under a real model has none.
+    model_mode: ModelMode | None = None
     findings_schema_id: str | None = None
     findings: dict[str, Any] | None = None
     plan: Plan | None = None

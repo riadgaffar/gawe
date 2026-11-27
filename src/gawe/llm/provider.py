@@ -28,6 +28,23 @@ class ProviderConfigError(LLMError):
     """The provider is missing required configuration (for example the model name)."""
 
 
+def content_sha256(text: str) -> str:
+    """A stable key for a document or an objective: line endings and surrounding space removed,
+    so the same text pasted or uploaded gives the same key (M29's demo model keys on it)."""
+    return sha256_hex(text.replace("\r\n", "\n").strip().encode("utf-8"))
+
+
+@dataclass(frozen=True)
+class RequestContext:
+    """What a request is about, for a provider that answers from scripts (M29's demo model):
+    the run's mode and the content keys of its objective and document. A real model is never
+    sent it and ignores it; `request_hash` leaves it out for the same reason."""
+
+    model_mode: str | None = None
+    objective_sha256: str | None = None
+    document_sha256: str | None = None
+
+
 @dataclass(frozen=True)
 class LLMRequest:
     purpose: str  # "read" or "plan"; used for audit and metrics labels
@@ -35,6 +52,7 @@ class LLMRequest:
     user: str
     output_schema: Mapping[str, Any]
     max_output_tokens: int = 2048
+    context: RequestContext | None = None
 
 
 @dataclass(frozen=True)

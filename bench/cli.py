@@ -10,6 +10,7 @@
     python -m bench scripted
     python -m bench integrity
     python -m bench replay
+    python -m bench demo
     python -m bench record-changes
 
 `scripted` runs every attack with a model fooled on purpose (M13): no model is called, nothing is
@@ -24,6 +25,10 @@ code 1 means a scenario differed from its expected record.
 an injected payload's request, the day's limit, the same events twice, the readers' A/B/C case, a
 late original delivery and a lost reply. Its own expected records; no model is called; exit code
 1 means a case differed.
+
+`demo` plays the packaged demo's scenes at each of its three companies (M29), honest and fooled,
+under the scripted demo model, approving what waits as that company's approver. Its own expected
+records; no model is called; exit code 1 means a case differed.
 
 Every command that may call a real model needs --max-usd: there is no default and no
 environment fallback, so a cap is always a deliberate choice. The model comes from --model or
@@ -71,6 +76,7 @@ from bench.compare import write_compare
 from bench.cuad.fetch import FetchError, fetch
 from bench.cuad.labels import CuadFormatError, load_corpus
 from bench.cuad.run import PROFILE_ORDER
+from bench.demo import run_suite as run_demo_suite
 from bench.estimate import EstimateMismatchError
 from bench.harness import (
     DEFAULT_SEED,
@@ -134,6 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     commands.add_parser("integrity", help="run the execution-integrity scenarios (free, no model)")
     commands.add_parser("replay", help="run the event replay app's scripted cases (free, no model)")
+    commands.add_parser("demo", help="play the packaged demo's scenes headless (free, no model)")
 
     commands.add_parser(
         "record-changes", help="test saved record-change explanations (free, no model)"
@@ -288,6 +295,12 @@ def main(
         ok = run_suite(deps.results_dir, stamp=stamp, git=git, out=out)
         undo_ok = run_undo_suite(deps.results_dir, stamp=stamp, git=git, out=out)
         return EXIT_OK if ok and undo_ok else EXIT_STOPPED
+    if args.command == "demo":
+        deps = deps or Deps()
+        ok = run_demo_suite(
+            deps.results_dir, stamp=deps.now().strftime("%Y%m%dT%H%M%SZ"), git=deps.git(), out=out
+        )
+        return EXIT_OK if ok else EXIT_STOPPED
     if args.command == "replay":
         deps = deps or Deps()
         ok = run_replay_suite(

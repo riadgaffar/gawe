@@ -1,4 +1,4 @@
-.PHONY: install lint type test check env up down migrate test-schema test-integration env-fill seed dev-tokens api sweep smoke demo anchor-backfill bench-data bench-estimate bench
+.PHONY: install lint type test check env up down migrate test-schema test-integration env-fill seed dev-tokens api sweep smoke demo demo-reset anchor-backfill bench-data bench-estimate bench
 
 install:
 	pip install -e ".[dev]"
@@ -80,11 +80,26 @@ APP ?= contract_review
 smoke:
 	@set -a; . ./.env; set +a; python scripts/live_smoke.py $(APP)
 
-# First-time setup in one go, then start the API.
-demo: env env-fill up
-	@sleep 3
-	$(MAKE) migrate seed dev-tokens
-	$(MAKE) api
+# The packaged demo (M29): API and UI on 127.0.0.1, the scripted model, no API key. Ctrl-C stops
+# both. Memory stores by default (a fresh demo each start); DEMO_STORE=postgres keeps its runs in
+# a separate gawe_demo database, never the development one. Needs `make install ui-install` once.
+DEMO_STORE ?= memory
+demo:
+ifeq ($(DEMO_STORE),postgres)
+	$(MAKE) up
+	bash scripts/demo_postgres.sh
+else ifeq ($(DEMO_STORE),memory)
+	python -m gawe.demo run
+else
+	@echo "DEMO_STORE must be memory or postgres"; exit 2
+endif
+
+# Drops the Postgres demo's database (gawe_demo) and its mock systems. Leaves .env and the
+# development database alone.
+demo-reset:
+	@set -a; . ./.env; set +a; \
+	docker compose exec -T postgres psql -U $$GAWE_DB_USER -d postgres -v ON_ERROR_STOP=1 -q \
+	  -c "DROP DATABASE IF EXISTS gawe_demo" && rm -rf .demo-data/demo && echo "demo reset"
 
 ui-install:
 	cd ui && npm install

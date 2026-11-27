@@ -28,6 +28,7 @@ _COLUMNS = (
     "CAST(r.acting_user_id AS text) AS acting_user_id, r.roles, r.objective, r.profile, "
     "r.status, r.document, r.findings_schema_id, r.findings, r.decisions, r.error, "
     "r.created_at, r.completed_at, r.current_plan_version AS plan_version, r.source_id, "
+    "r.model_mode, "
     "(SELECT p.steps FROM plans p WHERE p.run_id = r.id AND p.version = r.current_plan_version) "
     "AS plan_steps, "
     "(SELECT p.planner_model FROM plans p "
@@ -47,9 +48,9 @@ _LIST_BY_STATUS = text(
 )
 _INSERT = text(
     "INSERT INTO runs (id, tenant_id, acting_user_id, roles, objective, profile, status, "
-    "document, source_id, created_at) VALUES (CAST(:run_id AS uuid), "
+    "document, source_id, model_mode, created_at) VALUES (CAST(:run_id AS uuid), "
     "CAST(:tenant_id AS uuid), CAST(:acting_user_id AS uuid), :roles, :objective, :profile, "
-    ":status, :document, :source_id, :created_at)"
+    ":status, :document, :source_id, :model_mode, :created_at)"
 )
 _INSERT_PLAN = text(
     "INSERT INTO plans (run_id, version, steps, planner_model, validated_at) "
@@ -89,6 +90,7 @@ def _to_record(row: Any) -> RunRecord:
         created_at=row["created_at"],
         completed_at=row["completed_at"],
         source_id=row["source_id"],
+        model_mode=row["model_mode"],
     )
 
 
@@ -111,6 +113,7 @@ class PostgresRunStore:
             "status": run.status.value,
             "document": run.document,
             "source_id": run.source_id,
+            "model_mode": run.model_mode,
             "created_at": run.created_at,
         }
         with connection_for(self._bind) as conn:

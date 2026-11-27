@@ -58,6 +58,7 @@ from gawe.core.review import InMemoryReviewStore, ReviewKey, ReviewStore
 from gawe.core.runs import InMemoryRunStore, RunNotFoundError, RunRecord, RunStore
 from gawe.core.sources import DocumentSource
 from gawe.core.telemetry import NoopTelemetry, Telemetry
+from gawe.core.tenant_settings import TenantSettings
 from gawe.core.undo import InMemoryUndoStore, Undoable, UndoStore
 from gawe.core.verification import VerificationResolver
 from gawe.core.verifier import PostCondition, Verifier
@@ -113,6 +114,8 @@ class AppBundle:
     # Tool name -> the argument naming its subject and what its rules read from earlier actions
     # (M24). History rules may only escalate; startup refuses one in an allow rule.
     history: Mapping[str, HistorySubject] = field(default_factory=dict)
+    # M29: the app's settings per tenant, frozen at startup (None: the app has no settings).
+    tenant_settings: TenantSettings | None = None
     # How long a grant lasts when the app makes one today. A grant made before end dates existed
     # is ended as if made that way, after a notice period (M21). None: the app grants nothing.
     grant_lifetime: timedelta | None = None
@@ -599,6 +602,8 @@ def assemble(
         clock=clock,
     )
     service = ApiService(
+        # M29: only the scripted demo model lets a run choose how it behaves.
+        model_modes=bool(getattr(provider, "ACCEPTS_MODEL_MODE", False)),
         orchestrator=engine.orchestrator,
         runs=stores.runs,
         steps=stores.steps,

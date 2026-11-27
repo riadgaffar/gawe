@@ -21,6 +21,7 @@ from gawe.llm.provider import (
     LLMOutputError,
     LLMProvider,
     LLMRequest,
+    RequestContext,
     request_hash,
     response_hash,
 )
@@ -112,7 +113,8 @@ class Reader:
         self._max_attempts = max_attempts
         self._validator = Draft202012Validator(dict(profile.schema))
 
-    def read(self, document: str) -> ReadResult:
+    def read(self, document: str, *, context: RequestContext | None = None) -> ReadResult:
+        """`context` is passed to the provider with each request, for a scripted provider."""
         clean = sanitize_text(document)
         if len(clean) > self._max_chars:
             raise DocumentTooLargeError(
@@ -127,6 +129,7 @@ class Reader:
                 user=wrapped,
                 output_schema=self._profile.schema,
                 max_output_tokens=self._max_output_tokens,
+                context=context,
             )
             try:
                 response = self._provider.complete(request)  # LLMUnavailableError propagates

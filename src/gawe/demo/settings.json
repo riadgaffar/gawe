@@ -1,0 +1,15 @@
+{
+  "tenants": {
+    "00000000-0000-0000-0000-0000000c0001": {
+      "blocked_domains": ["evil.example"]
+    },
+    "00000000-0000-0000-0000-0000000c0002": {
+      "blocked_domains": ["evil.example"],
+      "review_levels_always": [],
+      "large_deal_threshold": 250000
+    },
+    "00000000-0000-0000-0000-0000000c0003": {
+      "blocked_domains": ["evil.example", "competitor.example"]
+    }
+  }
+}

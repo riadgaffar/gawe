@@ -1,11 +1,101 @@
-# Demo script (synthetic data, real model)
+# Demo script (synthetic data)
 
 Everything below uses invented contracts, tickets and billing events, and mock systems. Nothing is
-emailed, signed, granted or billed for real; the mock systems write what they did to
-`.demo-data/ledger.jsonl`. The model is real (Anthropic): ordinary contract/ticket runs call it,
-billed to the key in `.env`, and plans can differ slightly between runs. The *decisions* come from the policy rules and
-do not. Undo runs use a trusted plan and make no model call. To try the same flows without a
-model, see [Without a model](#without-a-model).
+emailed, signed, granted or billed for real.
+
+There are two ways to run it:
+
+- **[The packaged demo](#the-packaged-demo)**: one command, a scripted model, no API key, no
+  Docker. Start here.
+- **With a real model** (everything after the packaged demo): the full setup, with Postgres and
+  an Anthropic key. Ordinary contract/ticket runs call the model, billed to the key in `.env`, and
+  plans can differ slightly between runs. The *decisions* come from the policy rules and do not.
+  Undo runs use a trusted plan and make no model call. The mock systems write what they did to
+  `.demo-data/ledger.jsonl`. To try the same flows headless and without a model, see
+  [Without a model](#without-a-model).
+
+## The packaged demo
+
+Needs Python 3.12 or newer and Node 22.6 or newer, nothing else. In the repository's folder:
+
+```bash
+python3 -m venv .venv          # once
+source .venv/bin/activate      # in every new terminal
+make install ui-install        # once
+make demo
+```
+
+`make demo` starts the API on http://127.0.0.1:8000 and the UI on http://127.0.0.1:3000, both on
+this machine only, waits for the API and prints the address to open:
+http://127.0.0.1:3000/demo. The first page takes a few seconds to build. Ctrl-C stops both.
+
+**What is different from a real setup:**
+
+- **The model is scripted.** It answers from a fixed script for the demo's documents only, and
+  each run is honest or fooled on purpose: the Demo page has a button for each. Every run, its
+  approval card and its audit trail say "Scripted demo model". It shows what policy does when a
+  model is fooled, not how often a real one is; [docs/results.md](results.md) has the live
+  numbers.
+- **Three companies, one engine.** Careful Co., Big-Deals Co. and Rivals Co. run the same contract
+  review app. Only their settings differ (`src/gawe/demo/settings.json`, read once at startup):
+  Big-Deals turned off the rule that sends every low rating to legal and raised its large-deal
+  line to 250,000; Rivals blocks email to a competitor's domain.
+- **Sign in with one click.** Each company has Alice (case manager), Bob (legal reviewer) and
+  Fiona (finance approver). The Demo page's buttons sign you in as the right person, and
+  http://127.0.0.1:3000/demo/people lists all nine. This sign-in exists only in the demo: the UI
+  offers it only with `GAWE_UI_DEMO=1`, only when the API runs the scripted model, and only to a
+  browser on this machine. Fresh tokens are written for every start, into `.demo-data/demo/`.
+- **Nothing is kept.** Runs live in memory, and the mock systems in a scratch folder that is
+  deleted on stop. Every start is a fresh demo, so there is nothing to reset.
+
+**Scenes to try**, each with its own "what to expect" on the Demo page:
+
+| Scene | Careful | Big-Deals | Rivals |
+|---|---|---|---|
+| A fair contract, rated low (C-1001) | waits for Bob | goes through | waits for Bob |
+| Email counsel outside the company | waits for Bob | waits for Bob | waits for Bob |
+| Email a competitor | waits for Bob | waits for Bob | denied |
+| A 250,000 deal sent for signature (C-1002) | waits for Fiona | waits for Fiona | waits for Fiona |
+| A hostile contract, model fooled (C-1003) | waits for Bob | **goes through** | waits for Bob |
+| The fooled model emails the attacker | denied | denied | denied |
+
+Big-Deals' fooled low rating going through is the point of that row: GAWE enforces what each
+company chose, and that company chose to trust low ratings on small deals.
+
+**A tampered audit trail.** The Demo page's last section opens a pre-built run whose stored audit
+trail had one event altered before it was loaded. Click **Verify hash chain**: it reports
+`Chain BROKEN at event 3`. It is a fixture, because memory stores have no database to edit; the
+Postgres variant below lets you do it for real.
+
+**Headless:** `python -m bench demo` plays every scene at every company without a browser and
+checks each against its expected record (24 cases).
+
+### On Postgres
+
+```bash
+make demo DEMO_STORE=postgres
+```
+
+Needs Docker as well. It starts Postgres, then creates and migrates a separate database,
+`gawe_demo`, adds the three companies' people and starts the same demo against it. It never
+touches the development database named in `.env` (`make up` creates `.env` first if it is
+missing). Runs survive a restart; tokens are new each start.
+
+There is no pre-built tamper run here; do it for real instead. Run a scene, copy the run's id
+from its page, and in another terminal:
+
+```bash
+set -a; . ./.env; set +a
+docker compose exec -T postgres psql -U $GAWE_DB_USER -d gawe_demo <<'SQL'
+ALTER TABLE audit_events DISABLE TRIGGER audit_events_no_update_delete;
+UPDATE audit_events SET actor = 'mallory' WHERE run_id = '<RUN>' AND seq = 3;
+ALTER TABLE audit_events ENABLE TRIGGER audit_events_no_update_delete;
+SQL
+```
+
+Then **Verify hash chain** on the run's audit page. [Tamper with it](#tamper-with-it) explains
+what this shows. To start over, stop the demo and run `make demo-reset`, which drops `gawe_demo`
+and the demo's mock systems; `make down` stops Postgres.
 
 ## What you need
 

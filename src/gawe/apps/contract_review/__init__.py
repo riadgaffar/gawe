@@ -41,6 +41,7 @@ from gawe.connectors.mock_clm import MockCLM
 from gawe.connectors.mock_directory import MockDirectory
 from gawe.connectors.mock_email import MockEmail
 from gawe.connectors.mock_esign import MockESign
+from gawe.core import tenant_settings
 from gawe.core.canonical import canonical_json, sha256_hex
 from gawe.core.history import HistoryEntry, HistorySubject
 from gawe.core.policy.provenance import PolicySource, PolicyVariable
@@ -50,6 +51,7 @@ from gawe.core.record_changes import RecordSnapshot
 from gawe.core.records import StepRecord
 from gawe.core.runs import RunRecord
 from gawe.core.statemachine import StepStatus
+from gawe.core.tenant_settings import TenantSettings
 from gawe.core.undo import Undoable
 
 HERE = Path(__file__).parent
@@ -79,17 +81,51 @@ UNDOABLE = {
 UNDOABLE[ASSESSMENT_4] = replace(
     UNDOABLE[ASSESSMENT_3], snapshots=lambda args: (_captured_contract(args),)
 )
-TENANT_VARIABLES: Mapping[str, Any] = {
-    "tenant": {
-        "internal_domains": ["acme.example"],
-        "blocked_domains": ["competitor.example", "evil.example"],
-    }
+# Settings each tenant may have its own of (M29), with every tenant's defaults. Defaults are the
+# values this app always used, so a deployment without a settings file decides as before.
+DOMAINS = {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": True}
+SETTINGS_SCHEMA: Mapping[str, Any] = {
+    "type": "object",
+    "properties": {
+        "internal_domains": DOMAINS,
+        "blocked_domains": DOMAINS,
+        # Rating levels that always need legal, whatever the deal or the findings. M17's
+        # provisional call is ["low"]: a tenant that empties it accepts a fooled "low" on a deal
+        # under its threshold.
+        "review_levels_always": {
+            "type": "array",
+            "items": {"enum": ["low", "medium", "high"]},
+            "uniqueItems": True,
+        },
+        # A "low" on a deal over this needs legal (low-risk-large-deal-needs-legal).
+        "large_deal_threshold": {"type": "number", "minimum": 0},
+    },
+    "required": [
+        "internal_domains",
+        "blocked_domains",
+        "review_levels_always",
+        "large_deal_threshold",
+    ],
+    "additionalProperties": False,
 }
+DEFAULT_SETTINGS: Mapping[str, Any] = {
+    "internal_domains": ["acme.example"],
+    "blocked_domains": ["competitor.example", "evil.example"],
+    "review_levels_always": ["low"],
+    "large_deal_threshold": LARGE_DEAL_THRESHOLD,
+}
+TENANT_VARIABLES: Mapping[str, Any] = {"tenant": DEFAULT_SETTINGS}
 
 
 def bundle(
-    demo_dir: Path | None = None, *, email: MockEmail | None = None, clm: MockCLM | None = None
+    demo_dir: Path | None = None,
+    *,
+    email: MockEmail | None = None,
+    clm: MockCLM | None = None,
+    settings: TenantSettings | None = None,
 ) -> AppBundle:
+    """The app. `settings` default to `GAWE_TENANT_SETTINGS` over `DEFAULT_SETTINGS`."""
+    settings = settings or tenant_settings.from_env(SETTINGS_SCHEMA, DEFAULT_SETTINGS)
     directory = demo_dir or Path(os.environ.get("GAWE_DEMO_DIR", ".demo-data"))
     ledger = Ledger(directory / "ledger.jsonl")
     clm = clm or MockCLM.from_seed(HERE / "samples" / "clm_seed.json", ledger)
@@ -114,8 +150,12 @@ def bundle(
         policy_rules=HERE / "policies.yaml",
         profiles=frozenset({PROFILE_NAME}),
         reader_profile=PROFILE,
-        variables=_variables_for(clm),
-        action_variables={ASSESSMENT_4: captured_variables, SIGNATURE: captured_variables},
+        variables=_variables_for(clm, settings),
+        action_variables={
+            ASSESSMENT_4: captured_variables_for(settings),
+            SIGNATURE: captured_variables_for(settings),
+        },
+        tenant_settings=settings,
         postconditions=POSTCONDITIONS,
         history={ASSESSMENT: RATING_HISTORY, "crm.restore_assessment": RATING_HISTORY},
         policy_sources={
@@ -127,6 +167,7 @@ def bundle(
         policy_variables={
             "tenant.internal_domains": PolicyVariable(dependencies=("tenant_config",)),
             "tenant.blocked_domains": PolicyVariable(dependencies=("tenant_config",)),
+            "tenant.review_levels_always": PolicyVariable(dependencies=("tenant_config",)),
             "review.unsupported_levels": PolicyVariable(dependencies=("reader_findings",)),
             "review.large_deals": PolicyVariable(dependencies=("deal_values",)),
             "history.lower_ratings": PolicyVariable(dependencies=("earlier_ratings",)),
@@ -250,10 +291,14 @@ def preparers(clm: MockCLM, directory: MockDirectory) -> dict[tuple[str, str], P
     }
 
 
-def _variables_for(clm: MockCLM) -> Callable[[RunRecord | None], Mapping[str, Any]]:
+def _variables_for(
+    clm: MockCLM, settings: TenantSettings
+) -> Callable[[RunRecord | None], Mapping[str, Any]]:
     def variables(run: RunRecord | None) -> Mapping[str, Any]:
         findings = run.findings if run is not None else None
-        return {**TENANT_VARIABLES, "review": review_variables(findings, clm.deal_values())}
+        tenant = settings.for_tenant(run.tenant_id if run is not None else None)
+        review = review_variables(findings, clm.deal_values(), tenant["large_deal_threshold"])
+        return {"tenant": tenant, "review": review}
 
     return variables
 
@@ -285,14 +330,17 @@ RATING_HISTORY = HistorySubject(
 
 
 def review_variables(
-    findings: Mapping[str, Any] | None, deal_values: Mapping[str, float]
+    findings: Mapping[str, Any] | None,
+    deal_values: Mapping[str, float],
+    threshold: float = LARGE_DEAL_THRESHOLD,
 ) -> dict[str, list[str]]:
     """Values the downgrade rules compare a CRM assessment with.
 
     - `unsupported_levels`: ["low"] when the Reader's findings hold a high-severity flagged clause
       (text aimed at an AI reviewer is reported as one), so "low" contradicts them; else [].
       Catches a Reader fooled partway, not one that reports "low" with nothing flagged.
-    - `large_deals`: contract ids whose deal value in the contract system is over the threshold.
+    - `large_deals`: contract ids whose deal value in the contract system is over `threshold`
+      (the tenant's `large_deal_threshold`).
       Catches a fully fooled "low" on a large deal. Since M17 every "low" also needs legal
       (provisional), so these two lists now only choose the reason the approver sees.
     """
@@ -300,9 +348,7 @@ def review_variables(
     contradicted = any(isinstance(c, Mapping) and c.get("severity") == "high" for c in clauses)
     return {
         "unsupported_levels": ["low"] if contradicted else [],
-        "large_deals": sorted(
-            cid for cid, value in deal_values.items() if value > LARGE_DEAL_THRESHOLD
-        ),
+        "large_deals": sorted(cid for cid, value in deal_values.items() if value > threshold),
     }
 
 
@@ -327,9 +373,23 @@ def _captured_contract(args: Mapping[str, Any]) -> RecordSnapshot:
     return snapshot
 
 
-def captured_variables(run: RunRecord, args: Mapping[str, Any]) -> Mapping[str, Any]:
+def captured_variables_for(
+    settings: TenantSettings,
+) -> Callable[[RunRecord, Mapping[str, Any]], Mapping[str, Any]]:
     """Authorization for new versions never reads a different deal value after preparation."""
-    snapshot = _captured_contract(args)
-    value = snapshot.fields[0].value
-    assert isinstance(value, (int, float)) and not isinstance(value, bool)
-    return {**TENANT_VARIABLES, "review": review_variables(run.findings, {snapshot.subject: value})}
+
+    def captured(run: RunRecord, args: Mapping[str, Any]) -> Mapping[str, Any]:
+        snapshot = _captured_contract(args)
+        value = snapshot.fields[0].value
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        tenant = settings.for_tenant(run.tenant_id)
+        review = review_variables(
+            run.findings, {snapshot.subject: value}, tenant["large_deal_threshold"]
+        )
+        return {"tenant": tenant, "review": review}
+
+    return captured
+
+
+# Every tenant's defaults, for callers outside a bundle (tests, benchmarks).
+captured_variables = captured_variables_for(TenantSettings(SETTINGS_SCHEMA, DEFAULT_SETTINGS))
